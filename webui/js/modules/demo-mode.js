@@ -603,7 +603,7 @@
       // SetupWizard.isInitialized → Api.config → GET /api/v1/cluster/config).
       return { status: 200, body: {
         initialized: true, backendType: 'llama_cpp',
-        algorithm: 'resource-aware', modelAffinity: true, sessionStickiness: true,
+        modelAffinity: true, sessionStickiness: true,
         useEnhancedScoring: true, predictionFiltering: true,
         gpuMaxUsage: 90, vramMaxUsage: 85, cpuMaxUsage: 80, ramMaxUsage: 85, minFreeDisk: 10,
         backendEngine: 'llama_cpp', demo: true

@@ -42,7 +42,7 @@ func TestResources_Scenario_GPULimit_BackendExcluded(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 			{ID: "o2", Name: "o2", Host: o2.host, OllamaPort: o2.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 50}, // 50% max
 		},
@@ -84,7 +84,6 @@ func TestResources_Scenario_QueueOverflow(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      types.AlgorithmRoundRobin,
 			QueueMaxSize:   10,
 			QueueTimeout:   1,
 			RequestTimeout: 30,
@@ -135,7 +134,7 @@ func TestResources_Scenario_MaxConcurrentReqs(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, MaxConcurrentReqs: 2, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
@@ -222,7 +221,7 @@ func TestResources_Scenario_SlowBackend_Timeout(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
@@ -283,7 +282,7 @@ func TestResources_Scenario_AdaptiveTimeout_Recalculate(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
@@ -320,7 +319,7 @@ func TestResources_Scenario_WeightBased_Distribution(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Weight: 1, Status: types.StatusHealthy},
 			{ID: "o2", Name: "o2", Host: o2.host, OllamaPort: o2.port, Weight: 9, Status: types.StatusHealthy}, // 9x
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
@@ -363,7 +362,7 @@ func TestResources_Scenario_MultipleLimits(t *testing.T) {
 				Weight: 5, MaxConcurrentReqs: 3, Status: types.StatusHealthy,
 			},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 75},
 		},
@@ -389,7 +388,7 @@ func TestResources_Scenario_NegativeConfigValues(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: "127.0.0.1", OllamaPort: 11434, Weight: -1, MaxConcurrentReqs: -1, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	require.NotPanics(t, func() {
 		proxy := newProxyWithCleanup(t, conf)

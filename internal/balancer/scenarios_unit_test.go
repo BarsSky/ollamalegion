@@ -147,7 +147,7 @@ func TestAgent_Scenario_RegisterNew(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, HasAgent: true, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
@@ -177,7 +177,7 @@ func TestAgent_Scenario_HeartbeatUpdate(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, HasAgent: true, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -210,7 +210,7 @@ func TestAgent_Scenario_AgentMismatch_Ignored(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port,
 				HasAgent: true, AgentID: "agent-1", Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -235,7 +235,7 @@ func TestAgent_Scenario_AgentPortChange(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port,
 				AgentPort: 18032, HasAgent: true, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -259,7 +259,6 @@ func TestAgent_Scenario_AgentTimeout(t *testing.T) {
 				HasAgent: true, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmRoundRobin,
 			HealthCheckInterval: 60,
 		},
 	}
@@ -287,7 +286,7 @@ func TestUnit_Scenario_BackendState_GetBackendState(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -308,7 +307,7 @@ func TestUnit_Scenario_BackendState_GetBackendStates(t *testing.T) {
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 			{ID: "b2", Name: "b2", Host: o2.host, OllamaPort: o2.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -326,7 +325,7 @@ func TestUnit_Scenario_BackendState_ActiveReqs(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -358,7 +357,7 @@ func TestUnit_Scenario_BackendState_TotalRequests(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -391,7 +390,7 @@ func TestUnit_Scenario_BackendState_MetricsHistory(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -425,7 +424,7 @@ func TestUnit_Scenario_BackendState_Prediction(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -459,7 +458,7 @@ func TestUnit_Scenario_BackendState_RequestHistory(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -493,7 +492,7 @@ func TestUnit_Scenario_BackendState_CalculatedRPS(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -524,7 +523,7 @@ func TestUnit_Scenario_BackendState_ErrorCount(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -555,7 +554,7 @@ func TestUnit_Scenario_BackendState_AdaptiveTimeout(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -591,7 +590,7 @@ func TestUnit_Scenario_BackendState_WarmingUpModels(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -624,7 +623,7 @@ func TestUnit_Scenario_BackendState_LastUsed(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -655,7 +654,7 @@ func TestUnit_Scenario_BackendState_TotalAttempts(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -688,7 +687,7 @@ func TestUnit_Scenario_BackendState_AgentID(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: o1.host, OllamaPort: o1.port, HasAgent: true, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -745,7 +744,7 @@ func TestUnit_Scenario_JSONMarshal_LoadBalancerConfig(t *testing.T) {
 	t.Parallel()
 	conf := types.LoadBalancerConfig{
 		LoadBalancer: types.LoadBalancerSettings{Host: "0.0.0.0", Port: 18080, APIPort: 18081},
-		Balancing:    types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing:    types.BalancingSettings{},
 	}
 	data, err := json.Marshal(conf)
 	require.NoError(t, err)

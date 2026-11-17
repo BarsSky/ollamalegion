@@ -42,7 +42,6 @@ func TestBackend_Scenario_HealthyToUnhealthy(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmRoundRobin,
 			HealthCheckInterval: 1, // 1s for fast tests
 		},
 		Resources: types.ResourceLimits{
@@ -82,7 +81,7 @@ func TestBackend_Scenario_UnhealthyToRecovered(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Weight: 1, Status: types.StatusUnhealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -114,7 +113,7 @@ func TestBackend_Scenario_EvacuateBackend(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Weight: 1, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -153,7 +152,7 @@ func TestBackend_Scenario_AgentContact_MarkAndTouch(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, AgentPort: 18032, HasAgent: true, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -186,7 +185,7 @@ func TestBackend_Scenario_FindBackendByAgentID(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "agent-host-1", Name: "a1", Host: o1.host, OllamaPort: o1.port, AgentPort: 18032, HasAgent: true, AgentID: "agent-1", Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -210,7 +209,7 @@ func TestBackend_Scenario_UpdateAgentPort(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, AgentPort: 18032, HasAgent: true, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -234,7 +233,7 @@ func TestBackend_Scenario_UpdateBackendAgentStatus(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, AgentPort: 18032, HasAgent: true, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -257,7 +256,7 @@ func TestBackend_Scenario_UpdateBackendLimits(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -285,7 +284,7 @@ func TestBackend_Scenario_BackendHasModelStrict(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -304,7 +303,7 @@ func TestBackend_Scenario_FindHealthyBackendForModel(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -332,7 +331,7 @@ func TestBackend_Scenario_BackendStateFields(t *testing.T) {
 				Type: types.BackendTypeOllama,
 			},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -361,7 +360,7 @@ func TestBackend_Scenario_ConcurrentStateChanges(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, AgentPort: 18032, HasAgent: true, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -401,7 +400,7 @@ func TestBackend_Scenario_ConcurrentActiveReqs(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, MaxConcurrentReqs: 100, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -453,7 +452,7 @@ func TestBackend_Scenario_UpdateConfigReload(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -485,7 +484,7 @@ func TestBackend_Scenario_GetBackends_All(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 			{ID: "o2", Name: "o2", Host: o2.host, OllamaPort: o2.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 	}
 	proxy := newProxyWithCleanup(t, conf)
 	proxy.SetQueueManagerProxy()
@@ -518,7 +517,7 @@ func TestBackend_Scenario_LiveRecovery_BackendComesBack(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 			{ID: "o2", Name: "o2", Host: o2.host, OllamaPort: o2.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},

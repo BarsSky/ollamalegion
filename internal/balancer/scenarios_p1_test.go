@@ -62,7 +62,6 @@ func newRpcTestRig(t *testing.T) *rpcTestRig {
 			{ID: "w2", Name: "w2", Host: r.w2.host, OllamaPort: r.w2.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmRoundRobin,
 			HealthCheckInterval: 60,
 			RequestTimeout:      30,
 			OperatingMode:       string(types.OperatingModeRpcCoordinator),

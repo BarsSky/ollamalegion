@@ -426,7 +426,7 @@ func TestImageRequestMetrics_NoBackendIsRejectedNotSilent(t *testing.T) {
 	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{
 		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", StatePath: t.TempDir() + "/state.json"},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, OperatingMode: "standard",
+			OperatingMode: "standard",
 			RequestTimeout: 5, QueueTimeout: 2, QueueMaxSize: 10, QueueWorkers: 1,
 		},
 	})

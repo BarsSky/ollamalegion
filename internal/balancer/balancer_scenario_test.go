@@ -30,7 +30,6 @@ func setupBalancerScenario(t *testing.T) *Proxy {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			QueueMaxSize:      100,

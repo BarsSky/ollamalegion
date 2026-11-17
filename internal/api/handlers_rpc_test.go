@@ -36,7 +36,6 @@ func createTestServerWithRPC(t *testing.T, enableRPC bool) (*Server, *balancer.P
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			ModelAffinity:       true,
 			SessionStickiness:   true,
 			HealthCheckInterval: 10,

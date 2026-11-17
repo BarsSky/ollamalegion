@@ -144,7 +144,6 @@ func TestConfigReset_Idempotent(t *testing.T) {
 	config.Backends = []types.Backend{
 		{ID: "agent-1", Host: "localhost", OllamaPort: 11434, Status: types.StatusHealthy},
 	}
-	config.Balancing.Algorithm = types.AlgorithmRoundRobin
 	config.Balancing.OperatingMode = "replication"
 	config.BackendEngine = types.EngineOllamaAPI
 	config.Initialized = true
@@ -187,7 +186,10 @@ func TestConfigReset_ResponseStructure(t *testing.T) {
 	assert.NotNil(t, result["config"])
 
 	cfg := result["config"].(map[string]interface{})
-	for _, field := range []string{"algorithm", "modelAffinity", "sessionStickiness", "operatingMode", "backendEngine", "initialized"} {
+	// R493 (12n): «algorithm» удалён; ответ отдаёт effectiveAlgorithm (факт).
+	// Удалённое поле проверяем отдельно, чтобы оно не вернулось молча.
+	for _, field := range []string{"effectiveAlgorithm", "modelAffinity", "sessionStickiness", "operatingMode", "backendEngine", "initialized"} {
 		assert.Contains(t, cfg, field, "Missing field: %s", field)
 	}
+	assert.NotContains(t, cfg, "algorithm", "поле algorithm удалено (R493, 12n) — в ответе сброса его быть не должно")
 }

@@ -957,7 +957,7 @@ func TestOpenWebUI_NDJSON_ContentType(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true,
+			ModelAffinity: true,
 			SessionStickiness: true, RequestTimeout: 30,
 			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
 		},

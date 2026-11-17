@@ -36,7 +36,8 @@
 |---------|------|---------|-----------------|---------------------|-------|
 | `LB_API_TOKEN` | string | — | `conf.Auth.Tokens` (полная замена) | Высший | Если задан, заменяет весь config token list + `auth.Enabled=true`. Auth bypass. |
 | `LB_AUTH_TOKENS` | CSV | — | `conf.Auth.Tokens` | Высший | Используется ТОЛЬКО если `LB_API_TOKEN` пуст. |
-| `LB_ALGORITHM` | string | `resource-aware` | `conf.Balancing.Algorithm` | Высший | Валидируется против whitelist. Invalid → warn + ignore. **На выбор НЕ влияет (проверено 2026-11-15):** селектор один, многоступенчатый (`backend_selector.go`); значение сохраняется и отдаётся API. См. `debts.ru.md` 12n. |
+| ~~`LB_ALGORITHM`~~ | — | — | — | — | **Удалена (R493, 12n):** переключателя алгоритма нет. Если переменная осталась в окружении, балансер пишет одно предупреждение `LB_ALGORITHM is removed and has no effect`. Порядок выбора задаёт `LB_SELECTION_ORDER`. |
+| `LB_SELECTION_ORDER` | string | `unified` | — | Высший | Порядок обхода уже допущенных кандидатов: `unified` (fit по VRAM, по умолчанию) или `leastconn` (сначала узел с меньшим числом активных запросов; при равенстве сохраняется порядок fit). Неизвестное значение → `unified` + одно предупреждение. Влияет ТОЛЬКО на порядок, не на фильтры допуска. См. `docs/plans/2026-11-17-selection-order-plan.md`. |
 | `LB_DATA_DIR` | path | `/app/data` | `dataDir` | Высший | Volume mount path. |
 | `LOG_LEVEL` | string | — | `conf.Logging.Level` | Только если `--log-level` flag НЕ задан | |
 | `LB_STREAMING_NEVER_TIMEOUT` | bool | `false` | Все streaming таймауты = 0 | **ВЫСШИЙ** (выше env и config) | `1/true/yes` → disable. Для OpenWebUI multi-turn. |

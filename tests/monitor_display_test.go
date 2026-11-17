@@ -67,7 +67,6 @@ func TestMonitorEndpointExists(t *testing.T) {
 			Host:    "localhost",
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           "roundrobin",
 			HealthCheckInterval: 30,
 			RequestTimeout:      300,
 		},
@@ -138,7 +137,6 @@ func TestAPIEndpointsForMonitor(t *testing.T) {
 			Host:    "localhost",
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           "roundrobin",
 			HealthCheckInterval: 30,
 			RequestTimeout:      300,
 		},
@@ -206,7 +204,6 @@ func TestMonitorHTMLHasErrorHandling(t *testing.T) {
 			Host:    "localhost",
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           "roundrobin",
 			HealthCheckInterval: 30,
 			RequestTimeout:      300,
 		},
@@ -276,7 +273,6 @@ func TestMonitorHandler_WEBUIConfig(t *testing.T) {
 			Host:    "localhost",
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           "roundrobin",
 			HealthCheckInterval: 30,
 			RequestTimeout:      300,
 		},

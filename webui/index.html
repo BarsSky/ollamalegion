@@ -1600,22 +1600,18 @@
                                 <span data-i18n="settings.section.general">Основные настройки</span>
                             </div>
                             <div class="settings-section-body open">
+                                <!-- R493 (долг 12n, решение владельца — удалить): выбора
+                                     «алгоритма балансировки» больше нет. Раньше здесь был
+                                     select с пятью вариантами: три из них сервер отвергал с
+                                     400, два принимаемых нельзя было выбрать, а сам выбор был
+                                     один и не переключался. Теперь показываем ФАКТ — его
+                                     отдаёт API как effectiveAlgorithm. -->
                                 <div class="form-group">
-                                    <label data-i18n="settings.balancing_mode">Алгоритм балансировки</label>
-                                    <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="settings.balancing_mode_desc">
-<strong>Resource-Aware</strong> - выбор по GPU/VRAM/CPU + скоринг (рекомендуется)<br>
-<strong>Least Connections</strong> - наименьшее число активных запросов<br>
-<strong>Round Robin</strong> - циклическое переключение с учётом веса<br>
-<strong>Weighted</strong> - пропорционально весу бэкенда<br>
-<strong>Model Affinity</strong> - приоритет бэкенда с загруженной моделью
-                                    </span></span>
-                                    <select id="balancingAlgorithm" class="form-control">
-                                        <option value="resource-aware" data-i18n="settings.balancing_resource_aware">Resource-Aware (по умолчанию)</option>
-                                        <option value="least-connections" data-i18n="settings.balancing_least_conn">Least Connections</option>
-                                        <option value="round-robin" data-i18n="settings.balancing_round_robin">Round Robin</option>
-                                        <option value="weighted" data-i18n="settings.balancing_weighted">Weighted</option>
-                                        <option value="model-affinity" data-i18n="settings.balancing_model_affinity">Model Affinity</option>
-                                    </select>
+                                    <label data-i18n="settings.selection_title">Выбор бэкенда</label>
+                                    <div class="settings-static-value" id="selectionAlgorithmValue">
+                                        <span data-i18n="settings.selection_single">unified-multistage — единый многоступенчатый выбор: загруженные → прогревающиеся → свободные → fallback, с учётом окна и нагрузки</span>
+                                    </div>
+                                    <div class="hint" data-i18n="settings.selection_hint">Переключателя нет: алгоритм один. Поле algorithm и переменная LB_ALGORITHM удалены; план будущей реализации порядка выбора — docs/plans/2026-11-17-selection-order-plan.md</div>
                                 </div>
                                 <div class="form-group">
                                     <label>Use Enhanced Scoring</label>

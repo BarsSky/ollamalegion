@@ -54,7 +54,6 @@ func setupTestEnvironment(t *testing.T) (*httptest.Server, *api.Server, *balance
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			ModelAffinity:       true,
 			SessionStickiness:   true,
 			HealthCheckInterval: 10,
@@ -717,7 +716,6 @@ func TestE2E_ProxyStreaming(t *testing.T) {
 			{ID: "ollama-1", Host: host, OllamaPort: port, Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:            "resource-aware",
 			FirstByteTimeout:     30,
 			RequestTimeout:       30,
 			StreamingIdleTimeout: 60,

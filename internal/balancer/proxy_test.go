@@ -79,7 +79,6 @@ func createTestConfig() *types.LoadBalancerConfig {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     false,
 			SessionStickiness: false,
 			RequestTimeout:    30,

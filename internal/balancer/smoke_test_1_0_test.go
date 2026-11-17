@@ -159,7 +159,6 @@ func TestSmoke_1_0Release_FullFlow(t *testing.T) {
 			{ID: "cppworker-2", Name: "cppworker-2", Host: w2.host, OllamaPort: w2.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmRoundRobin,
 			HealthCheckInterval: 60,
 			RequestTimeout:      30,
 			VirtualModels:       types.VirtualModelsConfig{Enabled: true},
@@ -383,7 +382,6 @@ func TestSmoke_1_0Release_GracefulShutdown(t *testing.T) {
 	conf := &types.LoadBalancerConfig{
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 18080, APIPort: 18081, StatePath: tmpDir + "/state.json"},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			VirtualModels: types.VirtualModelsConfig{Enabled: true},
 		},
 		Resources: types.ResourceLimits{

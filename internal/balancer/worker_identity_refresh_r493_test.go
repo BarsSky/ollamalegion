@@ -55,7 +55,7 @@ func identityProxyR493(t *testing.T, host string, port int) *Proxy {
 			MaxConcurrentReqs: 1, Weight: 1,
 			WorkerVersion: "261110-1925", WorkerCommit: "9d42a329",
 		}},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmResourceAware, MetricsInterval: 60},
+		Balancing: types.BalancingSettings{MetricsInterval: 60},
 	}
 	return newProxyWithCleanup(t, conf)
 }

@@ -72,7 +72,6 @@ func createProxy2(t *testing.T, fakes []*fakeOllama) *balancer.Proxy {
 	cfg := &types.LoadBalancerConfig{
 		Backends: backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: false,
 			QueueMaxSize:      5,

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * mode-wizard.js — Мастер переформирования режима работы балансера
  * OllamaLegion WebUI
  *
@@ -16,15 +16,13 @@
             descKey: 'settings.mode.standard_long',
             fields: [], // нет доп. полей
             paramDocs: {
-                algorithm: { desc: 'Алгоритм балансировки', values: 'resource-aware | least-connections | round-robin | weighted | model-affinity' },
                 modelAffinity: { desc: 'Привязка запросов к бэкенду с загруженной моделью', values: 'true | false' },
                 sessionStickiness: { desc: 'Закрепление сессии за одним бэкендом', values: 'true | false' }
             },
             examples: [
-                { param: 'algorithm', value: 'resource-aware', desc: 'Алгоритм балансировки по умолчанию' },
                 { param: 'modelAffinity', value: true, desc: 'Привязка запросов к бэкенду с загруженной моделью' }
             ],
-            jsonExample: '{\n  "balancing": {\n    "algorithm": "resource-aware",\n    "modelAffinity": true,\n    "sessionStickiness": true\n  }\n}'
+            jsonExample: '{\n  "balancing": {\n    "modelAffinity": true,\n    "sessionStickiness": true\n  }\n}'
         },
         replication: {
             icon: '📋',

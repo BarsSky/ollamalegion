@@ -65,7 +65,6 @@ func createHealthTestServer(t *testing.T) (*httptest.Server, *Server, *balancer.
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			HealthCheckInterval: 10,
 			RequestTimeout:      30,
 			QueueTimeout:        60,

@@ -46,7 +46,6 @@ func createTestCRUDConfig() *types.LoadBalancerConfig {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmRoundRobin,
 			HealthCheckInterval: 60,
 			VirtualModels: types.VirtualModelsConfig{
 				Enabled: true,

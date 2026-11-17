@@ -250,7 +250,6 @@ func setupProxyWithSlowLoadMock(t *testing.T, mock *mockOllamaWithSlowLoad, requ
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    requestTimeout,
@@ -458,7 +457,6 @@ func TestProxy_ModelNotAvailable_AutoPullRetry(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,

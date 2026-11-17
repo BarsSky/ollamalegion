@@ -50,7 +50,6 @@ func TestOpenAIChat_SlowFirstToken_HoldsConnection(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:            types.AlgorithmResourceAware,
 			ModelAffinity:        true,
 			SessionStickiness:    true,
 			FirstByteTimeout:     120,
@@ -157,7 +156,6 @@ func TestOpenAIChat_HeaderTimeout_StillWorks(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:            types.AlgorithmResourceAware,
 			ModelAffinity:        true,
 			SessionStickiness:    true,
 			FirstByteTimeout:     2, // короткий таймаут (см. профиль ниже)
@@ -261,7 +259,6 @@ func TestOpenAIChat_ProfileTimeoutIgnoredByDefault(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:            types.AlgorithmResourceAware,
 			ModelAffinity:        true,
 			SessionStickiness:    true,
 			FirstByteTimeout:     2,

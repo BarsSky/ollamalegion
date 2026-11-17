@@ -37,7 +37,6 @@ func setupHasAgentTestEnvironment(t *testing.T) (*httptest.Server, *balancer.Pro
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			HealthCheckInterval: 1,
 			MetricsInterval:     5,
 			RequestTimeout:      30,

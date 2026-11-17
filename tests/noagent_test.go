@@ -124,7 +124,6 @@ func createNoAgentProxy(t *testing.T, mocks []*noAgentMockOllama, algorithm type
 		},
 		Backends: backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:          algorithm,
 			ModelAffinity:      false, // Отключаем — требует метрик от агента
 			SessionStickiness:  true,
 			RequestTimeout:     30,
@@ -261,7 +260,6 @@ func TestNoAgent_RoundRobin(t *testing.T) {
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 0},
 		Backends:     backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:          types.AlgorithmRoundRobin,
 			ModelAffinity:      false,
 			SessionStickiness:  false, // Отключаем для чистого round-robin
 			RequestTimeout:     30,
@@ -395,7 +393,6 @@ func TestNoAgent_QueueWhenAllBusy(t *testing.T) {
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 0},
 		Backends:     backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:          types.AlgorithmRoundRobin,
 			ModelAffinity:      false,
 			SessionStickiness:  false,
 			RequestTimeout:     30,
@@ -528,7 +525,6 @@ func TestNoAgent_RetryOnBackendFailure(t *testing.T) {
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 0},
 		Backends:     backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmRoundRobin,
 			ModelAffinity:     false,
 			SessionStickiness: false,
 			RequestTimeout:    5,
@@ -761,7 +757,6 @@ func TestNoAgent_StreamingProxy(t *testing.T) {
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 0},
 		Backends:     backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmRoundRobin,
 			ModelAffinity:     false,
 			SessionStickiness: false,
 			RequestTimeout:    30,

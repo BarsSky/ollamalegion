@@ -72,7 +72,6 @@ func TestLoadBalancing_DetailedStressReport(t *testing.T) {
 			{ID: "b", Host: hB, OllamaPort: pB, Weight: 1, MaxConcurrentReqs: 3, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:            types.AlgorithmResourceAware,
 			ModelAffinity:        true,
 			SessionStickiness:    true,
 			FirstByteTimeout:     30,

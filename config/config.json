@@ -26,7 +26,6 @@
     "_note_backendEngine":  "R112 (2026-10-13): ЗНАЧЕНИЕ auto. До R112 здесь стоял llama_cpp — он был ОБЯЗАТЕЛЕН, потому что config.go выводил дефолт из operatingMode (standard → ollama_api), и явный backendEngine работал как жёсткий фильтр: getEffectiveBackendType()/getBackendEngine() возвращали один тип, а filterBackendsByEffectiveType() (internal/balancer/backend_type_filter.go) выбрасывал бэкенды ВТОРОГО типа из /api/v1/metrics, /api/v1/cluster и /api/ps (симптомы: \"backends\": [] при totalBackends>0, 503 \"no healthy backends\", пустой монитор). Теперь дефолт — auto, тип бэкенда определяется фактическим составом кластера, поэтому llama.cpp и Ollama могут работать в одном стенде, а залипшее значение больше не прячет второй тип (оно уважается, только пока бэкенды этого типа реально есть). Эталон — config/config.example.json:229.",
     "backendEngine":  "auto",
     "balancing":  {
-                      "algorithm":  "resource-aware",
                       "modelAffinity":  true,
                       "sessionStickiness":  true,
                       "healthCheckInterval":  10,

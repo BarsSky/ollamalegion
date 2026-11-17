@@ -78,14 +78,21 @@ Client                    Balancer                    Backend
 
 The `selectBackend()` method in `internal/balancer/backend_selector.go` implements 4-stage logic on top of `expandCandidates()` (plus a pre-step for Model Replication).
 
-**Один алгоритм, не переключаемый (факт 2026-11-15).** В коде ровно один
-селектор — описанный ниже. Поле `balancing.algorithm` (и `LB_ALGORITHM`)
-принимается ради совместимости конфигов, валидируется по whitelist и
-сохраняется, но ветвления «round-robin против least-connections» в выборе
-НЕТ: ни один продакшн-файл пакета `internal/balancer` это поле не читает.
-Проверка: `Select-String -Path internal\\balancer\\*.go -Pattern 'Algorithm'`
-даёт только комментарии. Это записано долгом (12n), а не «работает» — если
-нужны разные алгоритмы, это отдельная разработка.  
+**Один алгоритм, и выбора «алгоритма» больше нет (R493, 2026-11-17).** В коде
+ровно один селектор — описанный ниже. Поле `balancing.algorithm` и переменная
+`LB_ALGORITHM` **удалены** (решение владельца): API отвечает 400
+`algorithm_removed` на PUT с этим полем, из GET-ответов, WebUI,
+экспорта/импорта и диагностики оно убрано, в API остаётся только
+`effectiveAlgorithm: "unified-multistage"` — факт, а не намерение. Причина
+удаления: настройка принималась и не переключала выбор, а WebUI предлагал пять
+вариантов, три из которых сервер отвергал с 400. История — `debts.ru.md` 12n.
+
+Порядок обхода кандидатов вынесен в шов `selection_order_r493.go` и
+управляется `LB_SELECTION_ORDER`: `unified` (по умолчанию — прежний fit по
+VRAM) или `leastconn` (сначала узел с меньшим числом активных запросов, при
+равенстве — порядок fit). Порядок применяется ТОЛЬКО к уже допущенным
+кандидатам и не отменяет ни одного фильтра. План полноценного режима —
+`docs/plans/2026-11-17-selection-order-plan.md`.
 Stages 2–4 are optional and depend on configuration (`SyncModelLoad.Enabled`, `Prewarm`, etc.).
 
 #### 2.1.1 `expandCandidates(modelName)` — grouping backends by priority
@@ -803,7 +810,7 @@ Configuration: `balancing.virtual_models.enabled`.
 
 | Parameter | Description | Default |
 |----------|----------|---------|
-| `balancingAlgorithm` | **Настройка без эффекта (проверено 2026-11-15):** значения `roundrobin`/`leastconn`/`resource-aware`/`model-affinity` проходят whitelist, сохраняются в конфиге и отдаются API, но селектор их НЕ читает — выбор один, многоступенчатый (см. §2.1). См. `debts.ru.md`, пункт 12n | resource-aware |
+| ~~`balancingAlgorithm`~~ | **Удалён (R493, 12n):** поля нет ни в конфиге, ни в API; `PUT /api/v1/cluster/config` с ним → 400 `algorithm_removed`. Вместо него в ответе `effectiveAlgorithm` и переменная `LB_SELECTION_ORDER` (см. §2.1) | — |
 | `modelAffinity` | Prefer a backend with the model already loaded | true |
 | `sessionStickiness` | Bind a session to a backend | true |
 | `useEnhancedScoring` | Use the extended scoring formula v2 | true |

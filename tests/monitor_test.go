@@ -112,7 +112,6 @@ func TestLoadBalancerConfigStructure(t *testing.T) {
 			APIPort: 8081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			HealthCheckInterval: 5,
 			MetricsInterval:     5,
 			RequestTimeout:      30,
@@ -159,7 +158,6 @@ func TestLoadBalancerConfigStructure(t *testing.T) {
 	assert.Equal(t, "localhost", config.LoadBalancer.Host)
 	assert.Equal(t, 8080, config.LoadBalancer.Port)
 	assert.Equal(t, 8081, config.LoadBalancer.APIPort)
-	assert.Equal(t, types.AlgorithmResourceAware, config.Balancing.Algorithm)
 	assert.Equal(t, 5, config.Balancing.HealthCheckInterval)
 	assert.Equal(t, 5, config.Balancing.MetricsInterval)
 	assert.Equal(t, 30, config.Balancing.RequestTimeout)
@@ -276,15 +274,21 @@ func TestClusterStateWithEmptyBackends(t *testing.T) {
 func TestBalancingAlgorithmTypes(t *testing.T) {
 	t.Parallel()
 
+	// R493 (12n): имена алгоритмов остались ТОЛЬКО как словарь для будущей
+	// реализации порядка выбора; поля в конфиге больше нет — проверяем, что
+	// значения стабильны и что конфиг их не принимает.
 	assert.Equal(t, types.BalancingAlgorithm("roundrobin"), types.AlgorithmRoundRobin)
 	assert.Equal(t, types.BalancingAlgorithm("leastconn"), types.AlgorithmLeastConn)
 	assert.Equal(t, types.BalancingAlgorithm("resource-aware"), types.AlgorithmResourceAware)
 	assert.Equal(t, types.BalancingAlgorithm("model-affinity"), types.AlgorithmModelAffinity)
 
-	config := types.BalancingSettings{
-		Algorithm: types.AlgorithmResourceAware,
-	}
-	assert.Equal(t, types.AlgorithmResourceAware, config.Algorithm)
+	// Конфиг не содержит «алгоритма»: селектор один (unified-multistage).
+	// Если поле вернут, маршалинг снова начнёт обещать переключатель — тест R493
+	// в internal/api это ловит отдельно, здесь фиксируем сам тип.
+	var cfg types.BalancingSettings
+	b, err := json.Marshal(cfg)
+	assert.NoError(t, err)
+	assert.NotContains(t, string(b), "algorithm")
 }
 
 // TestMetricsSnapshotStructure - проверка структуры MetricsSnapshot

@@ -33,7 +33,7 @@ func newLoadedModelsProxy(t *testing.T) *Proxy {
 			ID: "cppworker-gpu-bundled-agent", Name: "w", Host: "127.0.0.1", CppWorkerPort: 18092,
 			Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy, MaxConcurrentReqs: 1,
 		}},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmResourceAware, OperatingMode: "standard"},
+		Balancing: types.BalancingSettings{OperatingMode: "standard"},
 	})
 }
 

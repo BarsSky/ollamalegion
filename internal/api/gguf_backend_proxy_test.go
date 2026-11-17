@@ -200,7 +200,6 @@ func createProxyTestServer(t *testing.T, cppWorkerURL string) (*httptest.Server,
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			ModelAffinity:       true,
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
@@ -448,7 +447,7 @@ func TestGgufBackendProxy_wrong_backend_type(t *testing.T) {
 				AgentPort: 9090, CppWorkerPort: 18092, Type: types.BackendTypeOllama,
 				Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmResourceAware},
+		Balancing: types.BalancingSettings{},
 		Auth:      types.AuthConfig{Enabled: false},
 	}
 	proxy := balancer.NewProxy(config)
@@ -485,7 +484,7 @@ func TestGgufBackendProxy_unreachable_target(t *testing.T) {
 				AgentPort: 9090, CppWorkerPort: closedPort, Type: types.BackendTypeLlamaCpp,
 				Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmResourceAware},
+		Balancing: types.BalancingSettings{},
 		Auth:      types.AuthConfig{Enabled: false},
 	}
 	proxy := balancer.NewProxy(config)

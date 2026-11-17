@@ -262,7 +262,7 @@ func TestRouteRequest_RuntimeConfigGoesToRouterNotAPIServer(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, HealthCheckInterval: 60,
+			HealthCheckInterval: 60,
 			MetricsInterval: 60, StreamingIdleTimeout: 30,
 		},
 		API:  types.APISettings{RateLimit: 100, RateBurst: 200},

@@ -32,7 +32,6 @@ func setupWebUITestServer(t *testing.T, engine types.BackendEngine, mode string)
 		},
 		BackendEngine: engine,
 		Balancing: types.BalancingSettings{
-			Algorithm:          types.AlgorithmResourceAware,
 			ModelAffinity:      true,
 			SessionStickiness:  true,
 			UseEnhancedScoring: true,

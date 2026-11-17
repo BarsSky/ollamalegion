@@ -37,7 +37,6 @@ func availProxyR493(t *testing.T, slots map[string]int) *Proxy {
 		sessionMgr:      NewSessionManager(),
 		lbAutoLoadAsync: true, // как в бандле: LB_AUTO_LOAD_ASYNC=1
 	}
-	p.config.Balancing.Algorithm = types.AlgorithmRoundRobin
 	for id, max := range slots {
 		p.backends[id] = &BackendState{Backend: &types.Backend{
 			ID: id, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp,

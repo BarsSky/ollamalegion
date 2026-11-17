@@ -33,7 +33,6 @@ func newEIServer(t *testing.T) (*api.Server, *types.LoadBalancerConfig) {
 		BackendEngine: types.EngineOllamaAPI,
 		Initialized:   true,
 		Balancing: types.BalancingSettings{
-			Algorithm:          types.AlgorithmResourceAware,
 			ModelAffinity:      true,
 			SessionStickiness:  true,
 			UseEnhancedScoring: true,
@@ -99,7 +98,6 @@ func TestConfigImport_Valid(t *testing.T) {
 
 	newCfg := &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmLeastConn,
 			OperatingMode: "standard",
 		},
 		Backends: []types.Backend{
@@ -251,9 +249,6 @@ func mapFromExport(exp map[string]interface{}) *types.LoadBalancerConfig {
 		cfg.BackendEngine = types.BackendEngine(be)
 	}
 	if bal, ok := exp["balancing"].(map[string]interface{}); ok {
-		if a, _ := bal["algorithm"].(string); a != "" {
-			cfg.Balancing.Algorithm = types.BalancingAlgorithm(a)
-		}
 		if m, _ := bal["operatingMode"].(string); m != "" {
 			cfg.Balancing.OperatingMode = m
 		}

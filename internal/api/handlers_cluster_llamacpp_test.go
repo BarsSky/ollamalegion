@@ -135,7 +135,7 @@ func TestClusterConfigHandler_Put_NoLlamaCppKey(t *testing.T) {
 	r := &s.config.LlamaCpp
 	originalCtx := r.ContextLength
 
-	body := `{"algorithm":"resource-aware","gpuMaxUsage":85.0}`
+	body := `{"gpuMaxUsage":85.0}`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/cluster/config",
 		bytes.NewBufferString(body))
 	w := httptest.NewRecorder()
@@ -148,6 +148,43 @@ func TestClusterConfigHandler_Put_NoLlamaCppKey(t *testing.T) {
 	if r.ContextLength != originalCtx {
 		t.Errorf("missing llamaCpp should not touch it, but ContextLength changed: got %d, want %d",
 			r.ContextLength, originalCtx)
+	}
+}
+
+// TestClusterConfigHandler_Put_RejectsRemovedAlgorithm — R493 (долг 12n):
+// поле algorithm удалено, и PUT с ним обязан отказать ЯВНО (400
+// algorithm_removed), а не принять значение «для совместимости».
+//
+// Живой факт до правки: значение принималось (200), сохранялось и не
+// переключало выбор; в WebUI при этом три из пяти вариантов давали 400 от
+// whitelist. Теперь отказ один и понятный.
+func TestClusterConfigHandler_Put_RejectsRemovedAlgorithm(t *testing.T) {
+	s := testClusterConfigServer(t)
+	gpuBefore := s.config.Resources.GPU.MaxUsagePercent
+	body := `{"algorithm":"roundrobin","gpuMaxUsage":85.0}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/cluster/config",
+		bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+
+	s.clusterConfigHandler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("PUT с удалённым полем = %d, ожидался 400 (%s)", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("ответ не JSON: %v (%s)", err, w.Body.String())
+	}
+	if code, _ := resp["error"].(string); code != "algorithm_removed" {
+		t.Errorf("error = %q, ожидалось algorithm_removed", code)
+	}
+	if eff, _ := resp["effectiveAlgorithm"].(string); eff != "unified-multistage" {
+		t.Errorf("effectiveAlgorithm = %q, ожидалось unified-multistage (подсказка «что работает вместо»)", eff)
+	}
+	// Отказ должен быть полным: второй параметр того же тела (gpuMaxUsage) НЕ
+	// применяется. Иначе клиент получил бы 400 и одновременно изменённый конфиг.
+	if got := s.config.Resources.GPU.MaxUsagePercent; got != gpuBefore {
+		t.Errorf("частичное применение: gpuMaxUsage изменился с %v на %v, хотя запрос отвергнут", gpuBefore, got)
 	}
 }
 

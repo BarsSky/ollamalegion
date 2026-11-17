@@ -35,7 +35,6 @@ func newReplicationFreeProxyR379(t *testing.T, ids ...string) *Proxy {
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 8080, APIPort: 8081},
 		Backends:     backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			HealthCheckInterval: 60,
 			MetricsInterval:     60,
 		},

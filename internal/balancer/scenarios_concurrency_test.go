@@ -163,7 +163,7 @@ func TestConcurrency_Scenario_Selector_SpreadsLoad(t *testing.T) {
 			{ID: "o3", Name: "o3", Host: o3.host, OllamaPort: o3.port, Status: types.StatusHealthy},
 			{ID: "o4", Name: "o4", Host: o4.host, OllamaPort: o4.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
@@ -454,7 +454,6 @@ func TestConcurrency_Scenario_HealthCheck_Concurrent(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmRoundRobin,
 			HealthCheckInterval: 60,
 		},
 	}

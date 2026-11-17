@@ -195,9 +195,12 @@ func TestWebUI_ConfigEndpoint_ExposesAllModeRelatedFields(t *testing.T) {
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	require.NoError(t, err)
 
-	// WebUI ожидает эти поля для отображения настроек (GET возвращает плоский объект)
+	// WebUI ожидает эти поля для отображения настроек (GET возвращает плоский объект).
+	// R493 (12n): «algorithm» здесь БОЛЬШЕ НЕТ — поле удалено, а вместо него API
+	// отдаёт effectiveAlgorithm (факт выбора). Проверяем оба требования: старое
+	// поле не вернулось, новое на месте.
 	requiredFields := []string{
-		"algorithm",
+		"effectiveAlgorithm",
 		"operatingMode",
 		"modelAffinity",
 		"sessionStickiness",
@@ -212,6 +215,9 @@ func TestWebUI_ConfigEndpoint_ExposesAllModeRelatedFields(t *testing.T) {
 	for _, field := range requiredFields {
 		assert.Contains(t, result, field, "Config endpoint should expose field required by WebUI: %s", field)
 	}
+	// Удалённое поле не должно вернуться: иначе клиенты снова увидят «переключатель».
+	assert.NotContains(t, result, "algorithm",
+		"поле algorithm удалено (R493, 12n): API обязано отдавать effectiveAlgorithm, а не сырое значение")
 }
 
 func TestWebUI_ModeSwitch_InvalidMode_NoCrash(t *testing.T) {

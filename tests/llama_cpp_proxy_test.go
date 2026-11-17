@@ -98,7 +98,6 @@ func TestLlamaCppProxy_Basic(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     "resource-aware",
 			ModelAffinity: true,
 		},
 		BackendEngine: types.EngineLlamaCPP,
@@ -257,7 +256,6 @@ func TestLlamaCppProxy_DifferentProxyPort(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      "resource-aware",
 			ModelAffinity:  true,
 			RequestTimeout: 10,
 		},
@@ -398,7 +396,6 @@ func TestLlamaCppProxy_OpenAICompatibleEndpoint(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      "resource-aware",
 			ModelAffinity:  true,
 			RequestTimeout: 10,
 		},
@@ -657,7 +654,6 @@ func TestLlamaCppProxy_StreamingResponse(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      "resource-aware",
 			ModelAffinity:  true,
 			RequestTimeout: 30,
 		},
@@ -780,7 +776,6 @@ func TestLlamaCppProxy_HealthCheckUsesCppWorkerPort(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      "resource-aware",
 			ModelAffinity:  true,
 			RequestTimeout: 10,
 		},
@@ -856,7 +851,6 @@ func TestLlamaCppProxy_ModelListFromCppWorker(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      "resource-aware",
 			ModelAffinity:  true,
 			RequestTimeout: 10,
 		},
@@ -960,7 +954,6 @@ func TestLlamaCppProxy_ErrorHandling_CppWorkerUnavailable(t *testing.T) {
 			APIPort: 18081,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      "resource-aware",
 			ModelAffinity:  true,
 			RequestTimeout: 2, // короткий таймаут для быстрого фейла
 		},

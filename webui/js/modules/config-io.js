@@ -55,7 +55,6 @@
 
     function collectCommonSettings() {
         return {
-            algorithm: getFieldValue('balancingAlgorithm', 'resource-aware'),
             useEnhancedScoring: getFieldChecked('useEnhancedScoring', true),
             modelAffinity: getFieldChecked('modelAffinity', true),
             sessionStickiness: getFieldChecked('sessionStickiness', true),
@@ -193,9 +192,6 @@
         if (data.settings) {
             var s = data.settings;
             var cs = current.settings;
-            if (s.algorithm && s.algorithm !== cs.algorithm) {
-                lines.push({ type: 'change', label: 'Algorithm', oldVal: cs.algorithm, newVal: s.algorithm });
-            }
             if (s.gpuMaxUsage && s.gpuMaxUsage !== cs.gpuMaxUsage) {
                 lines.push({ type: 'change', label: 'GPU Max %', oldVal: cs.gpuMaxUsage + '%', newVal: s.gpuMaxUsage + '%' });
             }
@@ -339,7 +335,6 @@
         // Apply common settings
         if (data.settings) {
             var s = data.settings;
-            setFieldValue('balancingAlgorithm', s.algorithm);
             setFieldChecked('useEnhancedScoring', s.useEnhancedScoring);
             setFieldChecked('modelAffinity', s.modelAffinity);
             setFieldChecked('sessionStickiness', s.sessionStickiness);

@@ -245,7 +245,6 @@ func TestR383_PollerTriggersHeal(t *testing.T) {
 			MaxConcurrentReqs: 4,
 		}},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			HealthCheckInterval: 60,
 			MetricsInterval:     60,
 		},

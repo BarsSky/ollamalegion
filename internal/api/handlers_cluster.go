@@ -64,12 +64,9 @@ func configDefaults(cfg *types.LoadBalancerConfig) {
 		cfg.API.RateBurst = 200
 	}
 
-	// Balancing defaults
-	if cfg.Balancing.Algorithm == "" {
-		cfg.Balancing.Algorithm = types.AlgorithmResourceAware
-	}
-	// R493 (долг 12n): стартовое значение тоже не переключает селектор.
-	logAlgorithmIgnoredR493("startup", string(cfg.Balancing.Algorithm))
+	// Balancing defaults.
+	// R493 (долг 12n, решение владельца — удалить): поля algorithm больше нет,
+	// стартового значения и предупреждения о нём тоже.
 	if cfg.Balancing.HealthCheckInterval == 0 {
 		cfg.Balancing.HealthCheckInterval = 10
 	}
@@ -225,14 +222,14 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		response := map[string]interface{}{
-			"algorithm":           s.config.Balancing.Algorithm,
-			"effectiveAlgorithm":           effectiveSelectionAlgorithmR493, // R493 (12n): что реально работает
-			"modelAffinity":       s.config.Balancing.ModelAffinity,
-			"sessionStickiness":   s.config.Balancing.SessionStickiness,
-			"queueMaxSize":        s.config.Balancing.QueueMaxSize,
-			"queueTimeout":        s.config.Balancing.QueueTimeout,
-			"requestTimeout":      s.config.Balancing.RequestTimeout,
-			"useEnhancedScoring":  s.config.Balancing.UseEnhancedScoring,
+
+			"effectiveAlgorithm": effectiveSelectionAlgorithmR493, // R493 (12n): что реально работает
+			"modelAffinity":      s.config.Balancing.ModelAffinity,
+			"sessionStickiness":  s.config.Balancing.SessionStickiness,
+			"queueMaxSize":       s.config.Balancing.QueueMaxSize,
+			"queueTimeout":       s.config.Balancing.QueueTimeout,
+			"requestTimeout":     s.config.Balancing.RequestTimeout,
+			"useEnhancedScoring": s.config.Balancing.UseEnhancedScoring,
 			// R318 (2026-10-30): действующее значение фильтра по прогнозу, а не
 			// константа. Раньше здесь всегда стояло true, а PUT молча игнорировал
 			// поле — тумблер в панели был декоративным.
@@ -379,27 +376,23 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			updatedFields = append(updatedFields, "logLanguage")
 		}
 
-		// Валидация алгоритма
+		// R493 (долг 12n, решение владельца — удалить): поля algorithm больше нет.
+		//
+		// Раньше значение принималось, сохранялось и молча ничего не делало
+		// (селектор один — unified-multistage). Совместимость со старыми
+		// клиентами не нужна, поэтому вместо тихого игнорирования — явный отказ:
+		// «настройка без эффекта» не должна снова стать невидимой.
 		if req.Algorithm != "" {
-			validAlgorithms := map[string]bool{
-				"roundrobin":     true,
-				"leastconn":      true,
-				"resource-aware": true,
-				"model-affinity": true,
-			}
-			if !validAlgorithms[req.Algorithm] {
-				s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-					"success": false,
-					"error":   "Invalid algorithm. Valid: roundrobin, leastconn, resource-aware, model-affinity",
-				})
-				return
-			}
-			s.config.Balancing.Algorithm = types.BalancingAlgorithm(req.Algorithm)
-			// R493 (долг 12n): значение принимаем для совместимости, но выбор
-			// бэкенда оно не переключает — оператор узнаёт это из лога и из
-			// effectiveAlgorithm в ответе, а не из чтения исходников.
-			logAlgorithmIgnoredR493("PUT /api/v1/cluster/config", req.Algorithm)
-			updatedFields = append(updatedFields, "algorithm")
+			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"success":            false,
+				"error":              "algorithm_removed",
+				"message":            "поле algorithm удалено: выбор бэкенда один (unified-multistage) и не переключается. Уберите поле из конфига/скрипта; см. docs/architecture/balancing-guide.md §2.1",
+				"effectiveAlgorithm": effectiveSelectionAlgorithmR493,
+			})
+			// Одно предупреждение на значение: отказ уже объяснён в ответе, но в
+			// логе остаётся след, что именно пытался прислать клиент.
+			warnAlgorithmFieldRemovedR493("PUT /api/v1/cluster/config", req.Algorithm)
+			return
 		}
 
 		if req.ModelAffinity != nil {
@@ -652,8 +645,8 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			"success": true,
 			"updated": updatedFields,
 			"config": map[string]interface{}{
-				"algorithm":           s.config.Balancing.Algorithm,
-				"effectiveAlgorithm":           effectiveSelectionAlgorithmR493, // R493 (12n): что реально работает
+
+				"effectiveAlgorithm":  effectiveSelectionAlgorithmR493, // R493 (12n): что реально работает
 				"modelAffinity":       s.config.Balancing.ModelAffinity,
 				"sessionStickiness":   s.config.Balancing.SessionStickiness,
 				"useEnhancedScoring":  s.config.Balancing.UseEnhancedScoring,
@@ -720,7 +713,6 @@ func (s *Server) configResetHandler(w http.ResponseWriter, r *http.Request) {
 	newCfg.Initialized = false
 
 	logger.Get().Debugw("configResetHandler: defaults applied",
-		"algorithm", newCfg.Balancing.Algorithm,
 		"operatingMode", newCfg.Balancing.OperatingMode,
 		"backendEngine", newCfg.BackendEngine,
 		"initialized", newCfg.Initialized,
@@ -762,8 +754,8 @@ func (s *Server) configResetHandler(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
 		"success": true,
 		"config": map[string]interface{}{
-			"algorithm":          s.config.Balancing.Algorithm,
-			"effectiveAlgorithm":          effectiveSelectionAlgorithmR493, // R493 (12n): что реально работает
+
+			"effectiveAlgorithm": effectiveSelectionAlgorithmR493, // R493 (12n): что реально работает
 			"modelAffinity":      s.config.Balancing.ModelAffinity,
 			"sessionStickiness":  s.config.Balancing.SessionStickiness,
 			"useEnhancedScoring": s.config.Balancing.UseEnhancedScoring,

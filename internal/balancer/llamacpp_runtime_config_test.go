@@ -188,7 +188,6 @@ func TestR118_16_RuntimeConfigHandlerPublishesExactPlan(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:            types.AlgorithmResourceAware,
 			HealthCheckInterval:  60,
 			MetricsInterval:      60,
 			StreamingIdleTimeout: 30,
@@ -301,7 +300,7 @@ func TestR134_RuntimeConfigKeepsLoadedLoadParams(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, HealthCheckInterval: 60, MetricsInterval: 60,
+			HealthCheckInterval: 60, MetricsInterval: 60,
 			StreamingIdleTimeout: 30,
 		},
 		API:  types.APISettings{RateLimit: 100, RateBurst: 200},
@@ -402,7 +401,7 @@ func TestR118_16_RuntimeConfigFallsBackToEstimate(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, HealthCheckInterval: 60,
+			HealthCheckInterval: 60,
 			MetricsInterval: 60, StreamingIdleTimeout: 30,
 		},
 		API:  types.APISettings{RateLimit: 100, RateBurst: 200},

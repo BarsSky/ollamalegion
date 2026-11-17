@@ -32,7 +32,6 @@ func setupMixedCluster(t *testing.T) *balancer.Proxy {
 		},
 		BackendEngine: types.EngineAuto,
 		Balancing: types.BalancingSettings{
-			Algorithm:          types.AlgorithmResourceAware,
 			ModelAffinity:      true,
 			SessionStickiness:  true,
 			UseEnhancedScoring: true,
@@ -744,7 +743,6 @@ func TestSelectBackend_StandardMode_LlamaCppBackendsIncluded(t *testing.T) {
 		},
 		BackendEngine: types.EngineLlamaCPP,
 		Balancing: types.BalancingSettings{
-			Algorithm:          types.AlgorithmResourceAware,
 			ModelAffinity:      true,
 			SessionStickiness:  true,
 			UseEnhancedScoring: true,

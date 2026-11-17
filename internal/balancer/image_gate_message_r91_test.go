@@ -69,7 +69,7 @@ func TestTextNeighbourIDs_GPUUUIDMatchesAcrossHostNames(t *testing.T) {
 				Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy, MaxConcurrentReqs: 4},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, RequestTimeout: 10,
+			RequestTimeout: 10,
 			QueueTimeout: 5, QueueMaxSize: 50, QueueWorkers: 2, OperatingMode: "standard",
 		},
 	}
@@ -127,7 +127,7 @@ func TestImageGate_DenialWithoutTextNeighbourStaysShort(t *testing.T) {
 			Status: types.StatusHealthy, MaxConcurrentReqs: 2,
 		}},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, RequestTimeout: 10,
+			RequestTimeout: 10,
 			QueueTimeout: 5, QueueMaxSize: 50, QueueWorkers: 2, OperatingMode: "standard",
 		},
 	}

@@ -47,7 +47,6 @@ func createTestHealthChecker(t *testing.T) (*HealthChecker, *Proxy) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
 			RequestTimeout:      30,
@@ -319,7 +318,6 @@ func TestHealthChecker_Threshold(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			HealthCheckInterval: 1,
 			MetricsInterval:     5,
 			RequestTimeout:      30,

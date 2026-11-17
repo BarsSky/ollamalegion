@@ -63,7 +63,8 @@ var diagFlagWhitelistR476 = []string{
 	"LB_OPENAI_PORT",
 	// режим
 	"LB_OPERATING_MODE",
-	"LB_ALGORITHM",
+	// R493 (12n): LB_ALGORITHM удалена — упоминание в дампе создавало бы
+	// ощущение действующей настройки.
 }
 
 // diagFlagsSnapshotR476 — значения заданных флагов + список незаданных.

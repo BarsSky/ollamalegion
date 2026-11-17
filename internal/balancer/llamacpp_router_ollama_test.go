@@ -100,7 +100,6 @@ func makeTestLlamaProxy(t *testing.T, upstreamURL string) (*Proxy, *LlamaCppRout
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:            types.AlgorithmResourceAware,
 			HealthCheckInterval:  60,
 			MetricsInterval:      60,
 			StreamingIdleTimeout: 30,
@@ -291,7 +290,6 @@ func TestHandleChat_503WhenNoBackends(t *testing.T) {
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 8080, APIPort: 8081},
 		Backends:     []types.Backend{}, // пустой список
 		Balancing: types.BalancingSettings{
-			Algorithm:            types.AlgorithmResourceAware,
 			StreamingIdleTimeout: 30,
 		},
 		API:  types.APISettings{RateLimit: 100, RateBurst: 200},

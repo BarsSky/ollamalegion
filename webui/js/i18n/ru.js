@@ -318,13 +318,6 @@ window.I18N_RU = {
 
   // Settings
   "settings.title": "Настройки",
-  "settings.balancing_mode": "Режим балансировки",
-  "settings.balancing_mode_desc": "Выберите алгоритм распределения запросов между бэкендами",
-  "settings.balancing_resource_aware": "С учетом ресурсов (Resource-Aware)",
-  "settings.balancing_round_robin": "Круговой (Round-Robin)",
-  "settings.balancing_least_conn": "Наименее загруженный (Least Connections)",
-  "settings.balancing_weighted": "Взвешенный (Weighted)",
-  "settings.balancing_model_affinity": "По аффинити моделей (Model Affinity)",
   "settings.max_parallel": "Максимальное число параллельных запросов",
   "settings.session_timeout": "Таймаут сессии (сек)",
   "settings.health_interval": "Интервал проверки здоровья (сек)",
@@ -510,7 +503,6 @@ window.I18N_RU = {
   "wizard.tooltip.virtual_coord_mode": "Sequential — слайсы выполняются по цепочке. Parallel — параллельно. Tree — иерархически (parent → children).",
   "wizard.tooltip.virtual_timeout": "Таймаут на запрос к виртуальной модели (мс). Больше = стабильнее на длинных pipeline.",
   "wizard.tooltip.dist_grpc_port": "Порт gRPC сервера для custom распределённого инференса. Требует свой proxy/coord код.",
-  "wizard.tooltip.balancing_algorithm": "Resource-Aware учитывает GPU/CPU/VRAM. Least Connections — минимум активных запросов. Round Robin — по очереди. Weighted — по весам. Model Affinity — старается отправить на бэкенд с уже загруженной моделью.",
   "wizard.tooltip.gpu_max": "Максимальная загрузка GPU (%) перед тем как балансер отправит запрос на другой бэкенд. 100 = полная нагрузка ОК.",
   "wizard.tooltip.vram_max": "Максимальное использование VRAM (%) перед тем как балансер отправит запрос на другой бэкенд. Оставь запас 5-10% на KV cache.",
   "wizard.tooltip.cpu_max": "Максимальная загрузка CPU (%) перед отправкой на другой бэкенд.",
@@ -567,7 +559,9 @@ window.I18N_RU = {
   "config.import_choose_file": "Выберите JSON-файл",
 
   // ===== Settings Sections (NEW) =====
-  "settings.section.general": "Основные настройки",
+      "settings.selection_title": "Выбор бэкенда",
+    "settings.selection_single": "unified-multistage — единый многоступенчатый выбор: загруженные → прогревающиеся → свободные → fallback, с учётом окна и нагрузки",
+    "settings.selection_hint": "Переключателя нет: алгоритм один. Поле algorithm и переменная LB_ALGORITHM удалены; план будущей реализации порядка выбора — docs/plans/2026-11-17-selection-order-plan.md",    "settings.section.general": "Основные настройки",
   "settings.section.limits": "Лимиты ресурсов",
   "settings.section.security": "Безопасность",
     "settings.section.log_language": "Язык логов и ошибок",

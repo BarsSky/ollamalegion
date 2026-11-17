@@ -153,7 +153,6 @@ func newImageTestProxy(t *testing.T, imagePort int) *Proxy {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      types.AlgorithmResourceAware,
 			RequestTimeout: 10,
 			QueueTimeout:   5,
 			QueueMaxSize:   50,

@@ -43,7 +43,6 @@ func TestReplication_Scenario_GroupRegistered(t *testing.T) {
 			{ID: "o2", Name: "o2", Host: "127.0.0.1", OllamaPort: 11435, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin,
 			ModelReplication: types.ModelReplicationConfig{
 				Enabled:             true,
 				DefaultMinInstances: 1,
@@ -152,7 +151,6 @@ func TestAutoPull_Scenario_ProxyInitializesWithAutoPull(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: "127.0.0.1", OllamaPort: 11434, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin,
 			AutoPull:  types.AutoPullConfig{Enabled: true},
 		},
 		Resources: types.ResourceLimits{
@@ -177,7 +175,6 @@ func TestAutoPull_Scenario_RemainingModels_Listed(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin,
 			AutoPull:  types.AutoPullConfig{Enabled: true},
 		},
 		Resources: types.ResourceLimits{
@@ -209,7 +206,7 @@ func TestReplication_Scenario_LiveRequestReplicated(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 			{ID: "o2", Name: "o2", Host: o2.host, OllamaPort: o2.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
@@ -250,7 +247,7 @@ func TestReplication_Scenario_OneBackendDown_StillWorks(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 			{ID: "o2", Name: "o2", Host: o2.host, OllamaPort: o2.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
@@ -513,7 +510,7 @@ func TestReplication_Scenario_ConcurrentRequests_Replicated(t *testing.T) {
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 			{ID: "o2", Name: "o2", Host: o2.host, OllamaPort: o2.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},
@@ -570,7 +567,7 @@ func TestReplication_Scenario_BackendRecovery(t *testing.T) {
 		Backends: []types.Backend{
 			{ID: "o1", Name: "o1", Host: o1.host, OllamaPort: o1.port, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmRoundRobin},
+		Balancing: types.BalancingSettings{},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90},
 		},

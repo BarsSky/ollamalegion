@@ -32,16 +32,23 @@ const (
 )
 
 // BalancingSettings - настройки балансировки
+//
+// R493 (долг 12n, решение владельца — удалить): поля Algorithm здесь БОЛЬШЕ НЕТ.
+// Оно принималось, сохранялось и отдавалось API, но выбор бэкенда не
+// переключало: селектор один (`unified-multistage`), поэтому настройка была
+// «пустышкой». Совместимость со старыми конфигами не поддерживается осознанно:
+// ключ `algorithm` в config.json теперь просто игнорируется при разборе (Go не
+// ругается на неизвестные поля), а `PUT /api/v1/cluster/config` с ним получает
+// 400 `algorithm_removed`.
 type BalancingSettings struct {
-	Algorithm            BalancingAlgorithm `json:"algorithm"`
-	ModelAffinity        bool               `json:"modelAffinity"`
-	SessionStickiness    bool               `json:"sessionStickiness"`
-	HealthCheckInterval  int                `json:"healthCheckInterval"`  // секунды
-	MetricsInterval      int                `json:"metricsInterval"`      // секунды
-	RequestTimeout       int                `json:"requestTimeout"`       // секунды
-	FirstByteTimeout     int                `json:"firstByteTimeout"`     // таймаут первого байта streaming (сек, 0=дефолт 30)
-	StreamingIdleTimeout int                `json:"streamingIdleTimeout"` // таймаут простоя между чанками streaming (сек, 0=дефолт 120)
-	StreamTimeout        int                `json:"streamTimeout"`        // общий таймаут streaming запроса (сек, 0=дефолт 600)
+	ModelAffinity        bool `json:"modelAffinity"`
+	SessionStickiness    bool `json:"sessionStickiness"`
+	HealthCheckInterval  int  `json:"healthCheckInterval"`  // секунды
+	MetricsInterval      int  `json:"metricsInterval"`      // секунды
+	RequestTimeout       int  `json:"requestTimeout"`       // секунды
+	FirstByteTimeout     int  `json:"firstByteTimeout"`     // таймаут первого байта streaming (сек, 0=дефолт 30)
+	StreamingIdleTimeout int  `json:"streamingIdleTimeout"` // таймаут простоя между чанками streaming (сек, 0=дефолт 120)
+	StreamTimeout        int  `json:"streamTimeout"`        // общий таймаут streaming запроса (сек, 0=дефолт 600)
 	// R54.2 (2026-08-24): AutoTune master switch. Если true (default), balancer
 	// auto-detects sub-optimal state (q4_0 KV cache on small model, over-allocated
 	// n_ctx) и рекомендует fix. R54.4 добавит авто-применение. Manual override:

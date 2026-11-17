@@ -34,7 +34,6 @@ func TestInitialSetup_LlamaCppBackendEngine(t *testing.T) {
 		},
 		BackendEngine: types.EngineLlamaCPP,
 		Balancing: types.BalancingSettings{
-			Algorithm:          types.AlgorithmResourceAware,
 			ModelAffinity:      true,
 			SessionStickiness:  true,
 			UseEnhancedScoring: true,
@@ -123,7 +122,6 @@ func TestInitialSetup_LlamaCppDefaultsFromEnv(t *testing.T) {
 		},
 		BackendEngine: types.BackendEngine(getEnvOrDefault("LB_BACKEND_ENGINE", "llama_cpp")),
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			OperatingMode:     getEnvOrDefault("LB_OPERATING_MODE", "virtual_router"),
@@ -214,7 +212,6 @@ func TestInitialSetup_LlamaCppPortIsolation(t *testing.T) {
 		},
 		BackendEngine: types.EngineLlamaCPP,
 		Balancing: types.BalancingSettings{
-			Algorithm:          types.AlgorithmResourceAware,
 			ModelAffinity:      true,
 			SessionStickiness:  true,
 			UseEnhancedScoring: true,

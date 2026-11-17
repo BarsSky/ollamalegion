@@ -29,7 +29,6 @@ func TestOperatingModePropagation(t *testing.T) {
 			RateBurst: 20000,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmResourceAware,
 			OperatingMode: "standard",
 			QueueMaxSize:  100,
 			QueueTimeout:  300,
@@ -186,7 +185,6 @@ func TestOperatingModeValidation(t *testing.T) {
 			RateBurst: 20000,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmResourceAware,
 			OperatingMode: "standard",
 		},
 		Resources: types.ResourceLimits{
@@ -226,7 +224,6 @@ func TestOperatingModeInClusterState(t *testing.T) {
 			RateBurst: 20000,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmResourceAware,
 			OperatingMode: "standard",
 		},
 		Resources: types.ResourceLimits{
@@ -313,7 +310,6 @@ func TestWebUIConfigSyncHardRule(t *testing.T) {
 			RateBurst: 20000,
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmResourceAware,
 			OperatingMode: "standard",
 		},
 		Resources: types.ResourceLimits{

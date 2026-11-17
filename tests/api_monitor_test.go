@@ -405,7 +405,6 @@ func TestMonitorAPI_AuthRequired(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware,
 			HealthCheckInterval: 10, MetricsInterval: 5,
 			RequestTimeout: 30, QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
 		},

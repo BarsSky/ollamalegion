@@ -1,4 +1,4 @@
-﻿/**
+/**
  * setup-wizard.js — Initial Server Setup Wizard (6 steps + import)
  * OllamaLegion WebUI
  *
@@ -21,7 +21,6 @@
     var wizardState = {
         backendType: 'llama_cpp',      // R195: выбор типа удалён — стек обслуживает оба типа одновременно
         // настройки общего характера (шаг 4)
-        algorithm: 'resource-aware',
         gpuMaxUsage: 90,
         vramMaxUsage: 85,
         cpuMaxUsage: 80,
@@ -86,7 +85,6 @@
 
         wizardState = {
             backendType: 'llama_cpp',       // R195: тип больше не выбирается (стек обслуживает оба)
-            algorithm: 'resource-aware',
             gpuMaxUsage: 90,
             vramMaxUsage: 85,
             cpuMaxUsage: 80,
@@ -104,7 +102,6 @@
             if (currentServerConfig) {
                 // R107: operatingMode из сервера больше не читаем — режим не
                 // выбирается в мастере, раскладку задаёт политика размещения.
-                if (currentServerConfig.algorithm) wizardState.algorithm = currentServerConfig.algorithm;
                 if (currentServerConfig.gpuMaxUsage) wizardState.gpuMaxUsage = currentServerConfig.gpuMaxUsage;
                 if (currentServerConfig.vramMaxUsage) wizardState.vramMaxUsage = currentServerConfig.vramMaxUsage;
                 if (currentServerConfig.cpuMaxUsage) wizardState.cpuMaxUsage = currentServerConfig.cpuMaxUsage;
@@ -270,7 +267,6 @@
 
 
     function applyWizardStateToGeneralFields() {
-        setFieldValue('balancingAlgorithm', wizardState.algorithm);
         setFieldValue('gpuMaxUsage', wizardState.gpuMaxUsage);
         setFieldValue('vramMaxUsage', wizardState.vramMaxUsage);
         setFieldValue('cpuMaxUsage', wizardState.cpuMaxUsage);
@@ -278,7 +274,6 @@
     }
 
     function readGeneralFieldsIntoState() {
-        wizardState.algorithm = getFieldValue('balancingAlgorithm', 'resource-aware');
         wizardState.gpuMaxUsage = parseFloat(getFieldValue('gpuMaxUsage', 90));
         wizardState.vramMaxUsage = parseFloat(getFieldValue('vramMaxUsage', 85));
         wizardState.cpuMaxUsage = parseFloat(getFieldValue('cpuMaxUsage', 80));
@@ -357,15 +352,6 @@
             presetOptions +
             '</select></div>' +
             '<div id="wiz-hardwarePresetHint" class="hardware-preset-hint" style="display:none;"></div>' +
-            '<div class="form-group">' +
-            '<label>' + t_label('settings.balancing_mode', 'Balancing Algorithm', 'wizard.tooltip.balancing_algorithm', 'Algorithm for routing requests to backends.') + '</label>' +
-            '<select id="wiz-balancingAlgorithm" class="form-control">' +
-            '<option value="resource-aware"' + (sc.algorithm === 'resource-aware' ? ' selected' : '') + '>Resource-Aware</option>' +
-            '<option value="least-connections"' + (sc.algorithm === 'least-connections' ? ' selected' : '') + '>Least Connections</option>' +
-            '<option value="round-robin"' + (sc.algorithm === 'round-robin' ? ' selected' : '') + '>Round Robin</option>' +
-            '<option value="weighted"' + (sc.algorithm === 'weighted' ? ' selected' : '') + '>Weighted</option>' +
-            '<option value="model-affinity"' + (sc.algorithm === 'model-affinity' ? ' selected' : '') + '>Model Affinity</option>' +
-            '</select></div>' +
             '<div class="form-row">' +
             '<div class="form-group"><label>' + t_label('wizard.gpu_max_label', 'GPU Max %', 'wizard.tooltip.gpu_max', 'Max GPU% before routing elsewhere.') + '</label>' +
             '<input type="number" id="wiz-gpuMaxUsage" class="form-control" value="' + sc.gpuMaxUsage + '" min="50" max="100"></div>' +
@@ -399,7 +385,6 @@
             '</span></div>';
 
         html += '<div class="wizard-summary-divider"></div>';
-        html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Algorithm:</span><span class="wizard-summary-value">' + wizardState.algorithm + '</span></div>';
         html += '<div class="wizard-summary-row"><span class="wizard-summary-label">GPU Max:</span><span class="wizard-summary-value">' + wizardState.gpuMaxUsage + '%</span></div>';
         html += '<div class="wizard-summary-row"><span class="wizard-summary-label">VRAM Max:</span><span class="wizard-summary-value">' + wizardState.vramMaxUsage + '%</span></div>';
         html += '</div></div>';
@@ -600,7 +585,6 @@
         // Раскладка задаётся политикой размещения (balancing.placement).
         if (data.settings) {
             var s = data.settings;
-            if (s.algorithm) wizardState.algorithm = s.algorithm;
             if (s.gpuMaxUsage) wizardState.gpuMaxUsage = s.gpuMaxUsage;
             if (s.vramMaxUsage) wizardState.vramMaxUsage = s.vramMaxUsage;
             if (s.cpuMaxUsage) wizardState.cpuMaxUsage = s.cpuMaxUsage;
@@ -687,7 +671,6 @@
             backendEngine: wizardState.backendType === 'llama_cpp'
                 ? 'llama_cpp'
                 : (wizardState.backendType === 'auto' || wizardState.backendType === 'all' ? 'auto' : 'ollama_api'),
-            algorithm: wizardState.algorithm,
             gpuMaxUsage: wizardState.gpuMaxUsage,
             vramMaxUsage: wizardState.vramMaxUsage,
             cpuMaxUsage: wizardState.cpuMaxUsage,

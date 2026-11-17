@@ -87,7 +87,6 @@ func TestExecuteAutoTuneReload_AppliesPlan(t *testing.T) {
 			MaxConcurrentReqs: 4,
 		}},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmResourceAware,
 			OperatingMode: "llama_cpp",
 		},
 	}

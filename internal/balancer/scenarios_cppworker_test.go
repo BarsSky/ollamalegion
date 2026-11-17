@@ -173,7 +173,6 @@ func TestVirtualRouter_HeavyModel_70B_Across3Backends(t *testing.T) {
 			{ID: "w3", Name: "w3", Host: w3.host, OllamaPort: w3.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeVirtualRouter),
 			VirtualModels: types.VirtualModelsConfig{Enabled: true},
 		},
@@ -246,7 +245,6 @@ func TestVirtualRouter_HeavyModel_LeastLoaded_RespectsLoad(t *testing.T) {
 			{ID: "w2", Name: "w2", Host: w2.host, OllamaPort: w2.port, Status: types.StatusHealthy, MaxConcurrentReqs: 100, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeVirtualRouter),
 			VirtualModels: types.VirtualModelsConfig{Enabled: true},
 		},
@@ -367,7 +365,6 @@ func TestRpcCoordinator_70B_Across2Backends(t *testing.T) {
 			{ID: "w2", Name: "w2", Host: w2.host, OllamaPort: w2.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeRpcCoordinator),
 			RpcCoordinator: types.RpcCoordinatorConfig{
 				Enabled:  true,
@@ -441,7 +438,6 @@ func TestRpcCoordinator_Streaming_ChunkedResponse(t *testing.T) {
 			{ID: "w1", Name: "w1", Host: w1.host, OllamaPort: w1.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      types.AlgorithmRoundRobin,
 			OperatingMode:  string(types.OperatingModeRpcCoordinator),
 			RpcCoordinator: types.RpcCoordinatorConfig{Enabled: true, Embedded: true},
 		},
@@ -497,7 +493,6 @@ func TestToolCall_OllamaFormat_RealCppworker(t *testing.T) {
 			{ID: "w1", Name: "w1", Host: w.host, OllamaPort: w.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeVirtualRouter),
 			VirtualModels: types.VirtualModelsConfig{Enabled: true},
 		},
@@ -565,7 +560,6 @@ func TestToolCall_HermesQwenXML_RealCppworker(t *testing.T) {
 			{ID: "w1", Name: "w1", Host: w.host, OllamaPort: w.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeVirtualRouter),
 			VirtualModels: types.VirtualModelsConfig{Enabled: true},
 		},
@@ -626,7 +620,6 @@ func TestToolCall_OpenAIFormat_SSE(t *testing.T) {
 			{ID: "w1", Name: "w1", Host: w.host, OllamaPort: w.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeVirtualRouter),
 			VirtualModels: types.VirtualModelsConfig{Enabled: true},
 		},
@@ -682,7 +675,6 @@ func TestCPPWorker_Failure_NetworkDrop(t *testing.T) {
 			{ID: "w1", Name: "w1", Host: w.host, OllamaPort: w.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeStandard),
 		},
 		Resources: types.ResourceLimits{
@@ -721,7 +713,6 @@ func TestCPPWorker_Failure_SlowBackend_Timeout(t *testing.T) {
 			{ID: "w1", Name: "w1", Host: w.host, OllamaPort: w.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeStandard),
 		},
 		Resources: types.ResourceLimits{
@@ -826,7 +817,6 @@ func TestCPPWorker_Streaming_NDJSON_RealChunks(t *testing.T) {
 			{ID: "w1", Name: "w1", Host: w.host, OllamaPort: w.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeStandard),
 		},
 		Resources: types.ResourceLimits{
@@ -871,7 +861,6 @@ func TestCPPWorker_Streaming_SSE_OpenAI(t *testing.T) {
 			{ID: "w1", Name: "w1", Host: w.host, OllamaPort: w.port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeStandard),
 		},
 		Resources: types.ResourceLimits{
@@ -924,7 +913,6 @@ func TestCPPWorker_Stress_ConcurrentHeavyLoad(t *testing.T) {
 			{ID: "w3", Name: "w3", Host: backends[2].host, OllamaPort: backends[2].port, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: string(types.OperatingModeVirtualRouter),
 			VirtualModels: types.VirtualModelsConfig{Enabled: true},
 		},

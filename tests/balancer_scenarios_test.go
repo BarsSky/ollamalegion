@@ -29,7 +29,6 @@ func mustParsePort(urlStr string) int {
 func newTestConfig(backends []types.Backend) *types.LoadBalancerConfig {
 	return &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
-			Algorithm:            "resource-aware",
 			SessionStickiness:    true,
 			SessionTTL:           900,
 			RequestTimeout:       30,

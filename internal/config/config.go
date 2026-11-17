@@ -141,7 +141,7 @@ func LoadOrFail(path string) (*Config, error) {
 // LoadFromEnv - загрузка конфигурации из переменных окружения
 func LoadFromEnv() (*Config, error) {
 	config := &types.LoadBalancerConfig{}
-	
+
 	// LoadBalancer settings
 	config.LoadBalancer.Host = env.Get("LB_HOST", "0.0.0.0")
 	config.LoadBalancer.Port = env.GetInt("LB_PORT", 18080)
@@ -153,25 +153,28 @@ func LoadFromEnv() (*Config, error) {
 	config.LoadBalancer.TLSHost = env.Get("LB_TLS_HOST", "")
 	config.LoadBalancer.TLSPort = env.GetInt("LB_TLS_PORT", 8443)
 	config.LoadBalancer.StatePath = env.Get("LB_STATE_PATH", "data/state.json")
-	
+
 	// TLS settings
 	config.TLS.Enabled = env.GetBool("TLS_ENABLED", false)
 	config.TLS.CertFile = env.Get("TLS_CERT_FILE", "certs/server.crt")
 	config.TLS.KeyFile = env.Get("TLS_KEY_FILE", "certs/server.key")
 	config.TLS.MinVersion = env.Get("TLS_MIN_VERSION", "TLS12")
 	config.TLS.AutoCert = env.GetBool("TLS_AUTO_CERT", false)
-	
+
 	// Auth settings
 	config.Auth.Enabled = env.GetBool("AUTH_ENABLED", false)
 	config.Auth.Tokens = parseAuthTokensFromEnv()
 	config.Auth.HeaderName = env.Get("AUTH_HEADER_NAME", "X-API-Token")
-	
+
 	// API Rate Limiting settings
 	config.API.RateLimit = env.GetFloat("API_RATE_LIMIT", 100)
 	config.API.RateBurst = env.GetFloat("API_RATE_BURST", 200)
-	
-	// Balancing settings
-	config.Balancing.Algorithm = types.BalancingAlgorithm(env.Get("LB_ALGORITHM", "resource-aware"))
+
+	// Balancing settings.
+	// R493 (долг 12n, решение владельца — удалить): поля algorithm больше нет,
+	// поэтому LB_ALGORITHM здесь не читается. Остаток переменной в окружении
+	// оператора не ломает запуск; cmd/balancer пишет про него одно
+	// предупреждение при старте (чтобы «настройка» не выглядела действующей).
 	config.Balancing.ModelAffinity = env.GetBool("LB_MODEL_AFFINITY", true)
 	config.Balancing.SessionStickiness = env.GetBool("LB_SESSION_STICKINESS", true)
 	config.Balancing.HealthCheckInterval = env.GetInt("LB_HEALTH_CHECK_INTERVAL", 10)
@@ -180,16 +183,16 @@ func LoadFromEnv() (*Config, error) {
 	config.Balancing.QueueTimeout = env.GetInt("LB_QUEUE_TIMEOUT", 300)
 	config.Balancing.QueueMaxSize = env.GetInt("LB_QUEUE_MAX_SIZE", 100)
 	config.Balancing.QueueWorkers = env.GetInt("LB_QUEUE_WORKERS", 4)
-	
+
 	// Resource limits
 	config.Resources.GPU.MaxUsagePercent = env.GetFloat("LB_GPU_MAX_USAGE", 90.0)
 	config.Resources.GPU.MaxVRAMUsagePercent = env.GetFloat("LB_GPU_MAX_VRAM", 85.0)
 	config.Resources.GPU.MaxTemperature = env.GetInt("LB_GPU_MAX_TEMP", 85)
-	
+
 	config.Resources.CPU.MaxUsagePercent = env.GetFloat("LB_CPU_MAX_USAGE", 80.0)
-	
+
 	config.Resources.Memory.MaxUsagePercent = env.GetFloat("LB_MEMORY_MAX_USAGE", 85.0)
-	
+
 	config.Resources.Disk.MinFreeMB = uint64(env.GetInt("LB_DISK_MIN_FREE_MB", 10240))
 
 	// Round 38 (2026-08-18): Resource reservation headroom.
@@ -201,11 +204,11 @@ func LoadFromEnv() (*Config, error) {
 	// LB_RAM_HEADROOM_PERCENT: same for RAM (10% default).
 	config.Balancing.ResourceReservation.GPUHeadroomPercent = env.GetFloat("LB_GPU_HEADROOM_PERCENT", 5.0)
 	config.Balancing.ResourceReservation.RAMHeadroomPercent = env.GetFloat("LB_RAM_HEADROOM_PERCENT", 10.0)
-	
+
 	// Logging
 	config.Logging.Level = env.Get("LB_LOG_LEVEL", "info")
 	config.Logging.Format = env.Get("LB_LOG_FORMAT", "json")
-	
+
 	// --- RPC Model Distribution Module settings (from env) ---
 	// Вариант A: Model Replication
 	config.Balancing.ModelReplication.Enabled = env.GetBool("LB_MODEL_REPLICATION_ENABLED", false)
@@ -251,9 +254,9 @@ func LoadFromEnv() (*Config, error) {
 	if len(backends) > 0 {
 		config.Backends = backends
 	}
-	
+
 	setDefaults(config)
-	
+
 	return &Config{
 		path: "env",
 		data: config,
@@ -296,16 +299,16 @@ func (c *Config) Save() error {
 	if c.path == "env" {
 		return fmt.Errorf("cannot save config loaded from environment")
 	}
-	
+
 	data, err := json.MarshalIndent(c.data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-	
+
 	if err := os.WriteFile(c.path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -349,7 +352,7 @@ func setDefaults(config *types.LoadBalancerConfig) {
 	if config.LoadBalancer.StatePath == "" {
 		config.LoadBalancer.StatePath = "data/state.json"
 	}
-	
+
 	// TLS defaults
 	if config.TLS.MinVersion == "" {
 		config.TLS.MinVersion = "TLS12"
@@ -360,12 +363,12 @@ func setDefaults(config *types.LoadBalancerConfig) {
 	if config.TLS.KeyFile == "" {
 		config.TLS.KeyFile = "certs/server.key"
 	}
-	
+
 	// Auth defaults
 	if config.Auth.HeaderName == "" {
 		config.Auth.HeaderName = "X-API-Token"
 	}
-	
+
 	// API Rate Limiting defaults
 	if config.API.RateLimit == 0 {
 		config.API.RateLimit = 100 // 100 запросов в секунду
@@ -373,11 +376,8 @@ func setDefaults(config *types.LoadBalancerConfig) {
 	if config.API.RateBurst == 0 {
 		config.API.RateBurst = 200 // burst capacity
 	}
-	
+
 	// Balancing defaults
-	if config.Balancing.Algorithm == "" {
-		config.Balancing.Algorithm = types.AlgorithmResourceAware
-	}
 	if config.Balancing.HealthCheckInterval == 0 {
 		config.Balancing.HealthCheckInterval = 10
 	}
@@ -396,7 +396,7 @@ func setDefaults(config *types.LoadBalancerConfig) {
 	if config.Balancing.QueueWorkers == 0 {
 		config.Balancing.QueueWorkers = 4
 	}
-	
+
 	// Resource limits defaults
 	if config.Resources.GPU.MaxUsagePercent == 0 {
 		config.Resources.GPU.MaxUsagePercent = 90.0
@@ -428,7 +428,7 @@ func setDefaults(config *types.LoadBalancerConfig) {
 	if config.Balancing.ResourceReservation.RAMHeadroomPercent == 0 {
 		config.Balancing.ResourceReservation.RAMHeadroomPercent = 10.0
 	}
-	
+
 	// Logging defaults
 	if config.Logging.Level == "" {
 		config.Logging.Level = "info"
@@ -436,7 +436,7 @@ func setDefaults(config *types.LoadBalancerConfig) {
 	if config.Logging.Format == "" {
 		config.Logging.Format = "json"
 	}
-	
+
 	// Model Replication defaults (Вариант A)
 	mr := &config.Balancing.ModelReplication
 	if mr.DefaultMinInstances == 0 {
@@ -595,30 +595,30 @@ func deriveOperatingMode(config *types.LoadBalancerConfig) string {
 // parseBackendsFromEnv - парсинг бэкендов из переменных окружения
 func parseBackendsFromEnv() []types.Backend {
 	var backends []types.Backend
-	
+
 	// Ожидаем формат: BACKEND_0_ID, BACKEND_0_HOST, BACKEND_0_PORT, etc.
 	for i := 0; i < 100; i++ {
 		id := os.Getenv(fmt.Sprintf("BACKEND_%d_ID", i))
 		if id == "" {
 			continue
 		}
-		
+
 		host := os.Getenv(fmt.Sprintf("BACKEND_%d_HOST", i))
 		if host == "" {
 			host = "localhost"
 		}
-		
+
 		port := env.GetInt(fmt.Sprintf("BACKEND_%d_PORT", i), 11434)
 		agentPort := env.GetInt(fmt.Sprintf("BACKEND_%d_AGENT_PORT", i), 18032)
 		weight := env.GetInt(fmt.Sprintf("BACKEND_%d_WEIGHT", i), 1)
 		maxReqs := env.GetInt(fmt.Sprintf("BACKEND_%d_MAX_REQS", i), 10)
 		requestTimeout := env.GetInt(fmt.Sprintf("BACKEND_%d_REQUEST_TIMEOUT", i), 0)
-		
+
 		name := os.Getenv(fmt.Sprintf("BACKEND_%d_NAME", i))
 		if name == "" {
 			name = fmt.Sprintf("Backend %d", i)
 		}
-		
+
 		backends = append(backends, types.Backend{
 			ID:                id,
 			Name:              name,
@@ -631,7 +631,7 @@ func parseBackendsFromEnv() []types.Backend {
 			Status:            types.StatusStarting,
 		})
 	}
-	
+
 	return backends
 }
 
@@ -641,7 +641,7 @@ func parseAuthTokensFromEnv() []string {
 	if tokensStr == "" {
 		return []string{}
 	}
-	
+
 	// Разделение по запятой
 	parts := strings.Split(tokensStr, ",")
 	tokens := make([]string, 0, len(parts))
@@ -653,4 +653,3 @@ func parseAuthTokensFromEnv() []string {
 	}
 	return tokens
 }
-

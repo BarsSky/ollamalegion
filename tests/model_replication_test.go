@@ -69,7 +69,6 @@ func configForReplication() *types.LoadBalancerConfig {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			ModelAffinity:       true,
 			SessionStickiness:   false,
 			HealthCheckInterval: 10,

@@ -187,7 +187,6 @@ func createImageTestServer(t *testing.T, workerURL string) (*httptest.Server, *S
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
 			RequestTimeout:      30,

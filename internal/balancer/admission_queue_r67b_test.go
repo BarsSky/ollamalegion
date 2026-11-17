@@ -129,7 +129,6 @@ func admissionTestProxy(t *testing.T, maxReqs int) *Proxy {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			HealthCheckInterval: 60,
 			MetricsInterval:     60,
 		},

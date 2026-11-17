@@ -159,7 +159,6 @@ func setupImageEditsSmoke(t *testing.T) (*httptest.Server, *imageEditsWorkerMock
 		},
 		BackendEngine: types.EngineAuto,
 		Balancing: types.BalancingSettings{
-			Algorithm:          types.AlgorithmResourceAware,
 			ModelAffinity:      false,
 			SessionStickiness:  false,
 			UseEnhancedScoring: false,

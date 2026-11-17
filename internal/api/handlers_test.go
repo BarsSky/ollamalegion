@@ -49,7 +49,6 @@ func createTestServer(t *testing.T) (*httptest.Server, *Server, *balancer.Proxy)
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			ModelAffinity:       true,
 			SessionStickiness:   true,
 			HealthCheckInterval: 10,
@@ -640,7 +639,6 @@ func TestHandlersWithAuthentication(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			ModelAffinity:       true,
 			SessionStickiness:   true,
 			HealthCheckInterval: 10,
@@ -761,7 +759,6 @@ func TestClusterHandler_EmptyState(t *testing.T) {
 		},
 		Backends: []types.Backend{}, // Пустой список бэкендов
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
 			RequestTimeout:      30,

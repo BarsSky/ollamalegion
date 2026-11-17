@@ -253,7 +253,11 @@ func (p *Proxy) pickLoadableFreeBackendR493(model string, allowedTypes []types.B
 
 	var bestID string
 	bestScore := -1.0
-	for _, backendID := range p.orderCandidatesByVramFit(candidates, model) {
+	// R493 (12n, «на будущее»): порядок обхода — через шов selection_order_r493.go.
+	// По умолчанию это прежний fit по VRAM; `LB_SELECTION_ORDER=leastconn`
+	// переставляет уже допущенных кандидатов так, что первым идёт менее занятый
+	// узел. Фильтры (слот, image-gate, каталог, fit) остаются ниже и не меняются.
+	for _, backendID := range p.orderCandidatesForSelectionR493(candidates, model) {
 		if !p.hasFreeSlotNowR493(backendID) {
 			continue
 		}

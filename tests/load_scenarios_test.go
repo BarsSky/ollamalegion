@@ -897,7 +897,7 @@ func TestLoadScenario_ErrorHandling(t *testing.T) {
 					Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 			},
 			Balancing: types.BalancingSettings{
-				Algorithm: types.AlgorithmResourceAware, RequestTimeout: 30,
+				RequestTimeout: 30,
 				QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
 			},
 			Resources: types.ResourceLimits{

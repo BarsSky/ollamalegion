@@ -275,8 +275,10 @@ func TestOperatingMode_EmptyMode_NoChange(t *testing.T) {
 	resp.Body.Close()
 
 	// Теперь отправляем запрос без operatingMode, но с валидным алгоритмом
+	// R493 (12n): поле algorithm удалено; цель шага — «operatingMode не пришёл»,
+	// поэтому отправляем другой валидный параметр.
 	payload2 := map[string]interface{}{
-		"algorithm": "roundrobin",
+		"gpuMaxUsage": 90.0,
 	}
 	body2, _ := json.Marshal(payload2)
 	req2, _ := http.NewRequest("PUT", baseURL+"/api/v1/cluster/config", bytes.NewReader(body2))

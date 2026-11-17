@@ -325,7 +325,7 @@ func TestStreaming_SlowClientWriteError(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, RequestTimeout: 5,
+			RequestTimeout: 5,
 			QueueTimeout: 10, QueueMaxSize: 10, QueueWorkers: 1,
 		},
 		Resources: types.ResourceLimits{
@@ -1065,7 +1065,6 @@ func TestQueueing_StreamingQueueTimeout(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:      types.AlgorithmResourceAware,
 			RequestTimeout: 30,
 			QueueTimeout:   2, // 2 секунды общий, streaming — 1 секунда
 			QueueMaxSize:   5,

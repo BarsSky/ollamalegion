@@ -46,7 +46,7 @@ func newWindowProxyT3(t *testing.T, candidateWindow int, candidatePollAge time.D
 			{ID: t3Cand, Name: t3Cand, Host: "127.0.0.1", OllamaPort: 2, Type: types.BackendTypeLlamaCpp,
 				Status: types.StatusHealthy, MaxConcurrentReqs: 1, Weight: 1},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmResourceAware, MetricsInterval: 60},
+		Balancing: types.BalancingSettings{MetricsInterval: 60},
 	}
 	p := newProxyWithCleanup(t, conf)
 

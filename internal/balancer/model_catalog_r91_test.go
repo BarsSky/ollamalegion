@@ -98,7 +98,7 @@ func newCatalogProxy(t *testing.T, a, b *catalogStub) *Proxy {
 				Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy, MaxConcurrentReqs: 1},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, RequestTimeout: 10,
+			RequestTimeout: 10,
 			QueueTimeout: 5, QueueMaxSize: 50, QueueWorkers: 2, OperatingMode: "standard",
 		},
 	})

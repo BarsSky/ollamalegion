@@ -331,13 +331,6 @@ window.I18N_EN = {
 
   // Settings
   "settings.title": "Settings",
-  "settings.balancing_mode": "Balancing Mode",
-  "settings.balancing_mode_desc": "Select the algorithm for distributing requests across backends",
-  "settings.balancing_resource_aware": "Resource-Aware",
-  "settings.balancing_round_robin": "Round-Robin",
-  "settings.balancing_least_conn": "Least Connections",
-  "settings.balancing_weighted": "Weighted",
-  "settings.balancing_model_affinity": "Model Affinity",
   "settings.max_parallel": "Max Parallel Requests",
   "settings.session_timeout": "Session Timeout (sec)",
   "settings.health_interval": "Health Check Interval (sec)",
@@ -1251,7 +1244,6 @@ window.I18N_EN = {
   "wizard.tooltip.virtual_coord_mode": "Sequential — slices run in chain. Parallel — concurrently. Tree — hierarchically (parent → children).",
   "wizard.tooltip.virtual_timeout": "Timeout for virtual model request (ms). Higher = more stable on long pipelines.",
   "wizard.tooltip.dist_grpc_port": "gRPC server port for custom distributed inference. Requires your own proxy/coord code.",
-  "wizard.tooltip.balancing_algorithm": "Resource-Aware considers GPU/CPU/VRAM. Least Connections — minimum active requests. Round Robin — in turn. Weighted — by weights. Model Affinity — tries to route to backend with already-loaded model.",
   "wizard.tooltip.gpu_max": "Maximum GPU utilization (%) before balancer routes to another backend. 100 = full load OK.",
   "wizard.tooltip.vram_max": "Maximum VRAM usage (%) before balancer routes to another backend. Leave 5-10% margin for KV cache.",
   "wizard.tooltip.cpu_max": "Maximum CPU utilization (%) before routing to another backend.",
@@ -1308,7 +1300,9 @@ window.I18N_EN = {
   "config.import_choose_file": "Choose JSON file",
 
   // ===== Settings Sections (NEW) =====
-  "settings.section.general": "General Settings",
+      "settings.selection_title": "Backend selection",
+    "settings.selection_single": "unified-multistage — single multi-stage selection: loaded → warming → free → fallback, considering window and load",
+    "settings.selection_hint": "There is no switch: the algorithm is single. The algorithm field and LB_ALGORITHM were removed; the plan for a future selection-order implementation is docs/plans/2026-11-17-selection-order-plan.md",    "settings.section.general": "General Settings",
   "settings.section.limits": "Resource Limits",
   "settings.section.agent": "Agent Settings",
   "settings.section.security": "Security",

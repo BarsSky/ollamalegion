@@ -615,7 +615,6 @@ func newLlamaOnlyProxy(t *testing.T) (*Proxy, *imgResStub) {
 			MaxConcurrentReqs: 4,
 		}},
 		Balancing: types.BalancingSettings{
-			Algorithm:      types.AlgorithmResourceAware,
 			RequestTimeout: 10,
 			QueueTimeout:   5,
 			QueueMaxSize:   50,

@@ -16,7 +16,6 @@ func createTestConfig(backends []types.Backend) *types.LoadBalancerConfig {
 	return &types.LoadBalancerConfig{
 		Backends: backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: false,
 			QueueMaxSize:      10,

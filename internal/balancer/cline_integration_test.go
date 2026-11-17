@@ -135,7 +135,6 @@ func TestHandleOpenAIChatCompletions_Cline_NormalizesContent(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:            types.AlgorithmResourceAware,
 			ModelAffinity:        false,
 			HealthCheckInterval:  60,
 			MetricsInterval:      60,
@@ -261,8 +260,7 @@ func TestHandleOpenAIChatCompletions_Cline_NoNormalizationRegression(t *testing.
 				AgentPort: 9090, CppWorkerPort: extractPort(upstream.URL),
 				Type: types.BackendTypeLlamaCpp, Weight: 1, Status: types.StatusHealthy},
 		},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmResourceAware,
-			StreamingIdleTimeout: 30,
+		Balancing: types.BalancingSettings{StreamingIdleTimeout: 30,
 			AdvancedTiming:       types.AdvancedTimingConfig{HeartbeatIntervalSec: 5}},
 		API:  types.APISettings{RateLimit: 100, RateBurst: 200},
 		Auth: types.AuthConfig{Enabled: false},

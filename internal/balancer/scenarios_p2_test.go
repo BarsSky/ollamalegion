@@ -54,7 +54,6 @@ func newVRTestRig(t *testing.T) *vrTestRig {
 			{ID: "o2", Name: "o2", Host: r.o2.host, OllamaPort: r.o2.port, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmRoundRobin,
 			HealthCheckInterval: 60,
 			RequestTimeout:      30,
 			OperatingMode:       string(types.OperatingModeVirtualRouter),

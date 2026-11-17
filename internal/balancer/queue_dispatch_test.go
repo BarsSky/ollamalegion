@@ -75,7 +75,6 @@ func TestModelManagerGetLoadTimeout(t *testing.T) {
 func TestCanAcceptRequest(t *testing.T) {
 	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
-			Algorithm:           "resource-aware",
 			ModelAffinity:       true,
 			Prewarm:             types.PrewarmConfig{TriggerLoadThreshold: 0.80},
 			SyncModelLoad:       types.SyncModelLoadConfig{Enabled: true, Timeout: "30s"},

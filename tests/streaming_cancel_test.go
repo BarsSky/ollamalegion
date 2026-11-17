@@ -71,7 +71,6 @@ func TestStreaming_ClientCancel(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmRoundRobin,
 			SessionStickiness: true,
 			SessionTTL:        900,
 			SessionIdleTTL:    300,

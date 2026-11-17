@@ -167,7 +167,7 @@ func TestProxyEmbed_ModelNotFoundThenAutoPull(t *testing.T) {
 				Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, RequestTimeout: 5,
+			RequestTimeout: 5,
 			QueueTimeout: 10, QueueMaxSize: 10, QueueWorkers: 1,
 			SessionStickiness: false,
 		},
@@ -225,7 +225,6 @@ func TestProxyEmbed_MultiBackend(t *testing.T) {
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 0, APIPort: 0},
 		Backends:     make([]types.Backend, 0, 2),
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,
@@ -386,7 +385,7 @@ func TestProxyGenerate_FirstRequestWarmup_Success(t *testing.T) {
 				Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true,
+			ModelAffinity: true,
 			SessionStickiness: true, RequestTimeout: 30, QueueTimeout: 60,
 			QueueMaxSize: 100, QueueWorkers: 4,
 			SyncModelLoad: types.SyncModelLoadConfig{
@@ -769,7 +768,7 @@ func TestIntegration_BackendFailover(t *testing.T) {
 				Weight: 100, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmRoundRobin, SessionStickiness: false,
+			SessionStickiness: false,
 			RequestTimeout: 5, QueueTimeout: 10, QueueMaxSize: 10, QueueWorkers: 1,
 		},
 		Resources: types.ResourceLimits{
@@ -1084,7 +1083,7 @@ func TestResponseIntegrity_TimeoutHandling(t *testing.T) {
 				Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, RequestTimeout: 1, // 1 секунда таймаут
+			RequestTimeout: 1, // 1 секунда таймаут
 			QueueTimeout: 2, QueueMaxSize: 10, QueueWorkers: 1,
 		},
 		Resources: types.ResourceLimits{

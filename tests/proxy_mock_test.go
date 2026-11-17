@@ -511,7 +511,6 @@ func setupProxyWithMockOllama(t *testing.T, mock *mockOllamaServer) (*httptest.S
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,

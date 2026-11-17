@@ -41,7 +41,6 @@ func newAuthRig(t *testing.T, authTokens []string) *authRig {
 			{ID: "b1", Name: "b1", Host: "127.0.0.1", OllamaPort: 11434, Weight: 1, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmRoundRobin,
 			HealthCheckInterval: 60,
 			RequestTimeout:      30,
 			OperatingMode:       string(types.OperatingModeStandard),

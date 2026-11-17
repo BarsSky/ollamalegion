@@ -36,7 +36,8 @@
 |---------|------|---------|-----------------|---------------------|-------|
 | `LB_API_TOKEN` | string | — | `conf.Auth.Tokens` (full replacement) | Highest | If set, replaces the whole config token list + `auth.Enabled=true`. Auth bypass. |
 | `LB_AUTH_TOKENS` | CSV | — | `conf.Auth.Tokens` | Highest | Used ONLY if `LB_API_TOKEN` is empty. |
-| `LB_ALGORITHM` | string | `resource-aware` | `conf.Balancing.Algorithm` | Highest | Validated against a whitelist. Invalid → warn + ignore. **No effect on selection (checked 2026-11-15):** the selector is single, multi-stage (`backend_selector.go`); the value is stored and reported by the API. See `debts.ru.md` 12n. |
+| ~~`LB_ALGORITHM`~~ | — | — | — | — | **Removed (R493, 12n):** there is no algorithm switch. If left in the environment, the balancer logs one warning `LB_ALGORITHM is removed and has no effect`. Selection order is controlled by `LB_SELECTION_ORDER`. |
+| `LB_SELECTION_ORDER` | string | `unified` | — | Highest | Order in which already-allowed candidates are considered: `unified` (VRAM fit, default) or `leastconn` (fewer active requests first; ties keep the VRAM-fit order). Unknown value → `unified` + one warning. Applies only to ordering, never to admission filters. See `docs/plans/2026-11-17-selection-order-plan.md`. |
 | `LB_DATA_DIR` | path | `/app/data` | `dataDir` | Highest | Volume mount path. |
 | `LOG_LEVEL` | string | — | `conf.Logging.Level` | Only if `--log-level` flag is NOT set | |
 | `LB_STREAMING_NEVER_TIMEOUT` | bool | `false` | All streaming timeouts = 0 | **HIGHEST** (above env and config) | `1/true/yes` → disable. For OpenWebUI multi-turn. |

@@ -72,7 +72,7 @@ func newCatalogAPIServer(t *testing.T, stub *catalogFileStub) *Server {
 			Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy, MaxConcurrentReqs: 1,
 		}},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, HealthCheckInterval: 10,
+			HealthCheckInterval: 10,
 			MetricsInterval: 5, RequestTimeout: 30, QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
 		},
 		API:  types.APISettings{RateLimit: 500, RateBurst: 1000},

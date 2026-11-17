@@ -697,7 +697,6 @@ func TestProxyOllama_RetryOnBackendFailure(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			SessionStickiness: false,
 			RequestTimeout:    5,
 			QueueTimeout:      10,

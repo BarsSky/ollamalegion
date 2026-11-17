@@ -937,7 +937,6 @@ func SetupExpandedProxy(t testing.TB, mock *ExpandedMockServer, extraCfg ...func
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,
@@ -1001,7 +1000,6 @@ func SetupMultiBackendProxy(t testing.TB, mocks []*ExpandedMockServer, extraCfg 
 		},
 		Backends: make([]types.Backend, 0, len(mocks)),
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,

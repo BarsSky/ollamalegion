@@ -329,7 +329,6 @@ func newImgResProxyOpts(
 		},
 		Backends: backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:      types.AlgorithmResourceAware,
 			RequestTimeout: 10,
 			QueueTimeout:   5,
 			QueueMaxSize:   50,

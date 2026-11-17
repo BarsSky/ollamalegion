@@ -229,7 +229,6 @@ func setupImageSmoke(t *testing.T, withImage bool) (*httptest.Server, *imageWork
 		},
 		BackendEngine: types.EngineAuto,
 		Balancing: types.BalancingSettings{
-			Algorithm:          types.AlgorithmResourceAware,
 			ModelAffinity:      false,
 			SessionStickiness:  false,
 			UseEnhancedScoring: false,

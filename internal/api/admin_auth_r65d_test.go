@@ -43,7 +43,6 @@ func authEnabledServer(t *testing.T, backends ...types.Backend) *Server {
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 8080, APIPort: 8081},
 		Backends:     backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:           types.AlgorithmResourceAware,
 			ModelAffinity:       true,
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,

@@ -766,7 +766,7 @@ const ui = (function () {
         });
 
         // Auto-save on settings form changes
-        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'virtualModelsCoordMode', 'distInferenceGrpcPort', 'agentCollectInterval', 'agentHeartbeatInterval', 'agentMaxConcurrent', 'agentMaxModels', 'gpuLayers', 'ctxSize', 'batchSize', 'flashAttnType', 'nThreads', 'gpuStrategy', 'tensorSplit', 'splitMode', 'mainGpu', 'rpcBackend', 'noMemoryMap', 'kvCacheType', 'noKvOffload', 'ropeFreqBase', 'ropeFreqScale', 'ropeScalingType', 'ropeScalingFactor', 'yarnExtFactor', 'yarnAttnFactor', 'yarnBetaFast', 'yarnBetaSlow', 'rmsNormEps', 'idleUnloadMinutes', 'enableMetrics', 'metricsRetention', 'autoGpuDistribution', 'flashAttn', 'numa', 'useMmap', 'useMlock', 'enableReasoning', 'reasoningBudget'];
+        var settingsFields = ['useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'virtualModelsCoordMode', 'distInferenceGrpcPort', 'agentCollectInterval', 'agentHeartbeatInterval', 'agentMaxConcurrent', 'agentMaxModels', 'gpuLayers', 'ctxSize', 'batchSize', 'flashAttnType', 'nThreads', 'gpuStrategy', 'tensorSplit', 'splitMode', 'mainGpu', 'rpcBackend', 'noMemoryMap', 'kvCacheType', 'noKvOffload', 'ropeFreqBase', 'ropeFreqScale', 'ropeScalingType', 'ropeScalingFactor', 'yarnExtFactor', 'yarnAttnFactor', 'yarnBetaFast', 'yarnBetaSlow', 'rmsNormEps', 'idleUnloadMinutes', 'enableMetrics', 'metricsRetention', 'autoGpuDistribution', 'flashAttn', 'numa', 'useMmap', 'useMlock', 'enableReasoning', 'reasoningBudget'];
         settingsFields.forEach(function (id) {
             var el = document.getElementById(id);
             if (el) {
@@ -1297,8 +1297,6 @@ const ui = (function () {
         // ЗАЩИТА: не перезаписываем UI если wizard активен
         if (document.getElementById('setupWizardModal')) return;
 
-        var algEl = document.getElementById('balancingAlgorithm');
-        if (algEl && serverConfig.algorithm) algEl.value = serverConfig.algorithm;
         var maEl = document.getElementById('modelAffinity');
         if (maEl) maEl.checked = serverConfig.modelAffinity !== false;
         var ssEl = document.getElementById('sessionStickiness');
@@ -1539,8 +1537,6 @@ const ui = (function () {
 
     function applyLocalConfig(config) {
         if (!config) return;
-        var algEl = document.getElementById('balancingAlgorithm');
-        if (algEl && config.algorithm) algEl.value = config.algorithm;
         var maEl = document.getElementById('modelAffinity');
         if (maEl) maEl.checked = config.modelAffinity !== false;
         var ssEl = document.getElementById('sessionStickiness');
@@ -1588,7 +1584,6 @@ const ui = (function () {
     }
 
     function saveSettings(silent) {
-        var algorithm = (document.getElementById('balancingAlgorithm') && document.getElementById('balancingAlgorithm').value) || 'resource-aware';
         var useEnhancedScoring = (document.getElementById('useEnhancedScoring') && document.getElementById('useEnhancedScoring').checked) !== false;
         var modelAffinity = (document.getElementById('modelAffinity') && document.getElementById('modelAffinity').checked) !== false;
         var sessionStickiness = (document.getElementById('sessionStickiness') && document.getElementById('sessionStickiness').checked) !== false;
@@ -1750,7 +1745,6 @@ const ui = (function () {
             // оператор видел «Settings saved» при неизменившихся значениях.
             // Тайминги агента задаются в окружении agent-контейнера
             // (AGENT_COLLECT_INTERVAL и т.п.).
-            algorithm: algorithm,
             useEnhancedScoring: useEnhancedScoring,
             modelAffinity: modelAffinity,
             sessionStickiness: sessionStickiness,
@@ -1860,9 +1854,6 @@ const ui = (function () {
             applyServerConfig(serverConfig);
 
             var mismatches = [];
-            if (expectedConfig.algorithm && serverConfig.algorithm !== expectedConfig.algorithm) {
-                mismatches.push('algorithm: expected ' + expectedConfig.algorithm + ', got ' + serverConfig.algorithm);
-            }
             if (expectedConfig.operatingMode && serverConfig.operatingMode !== expectedConfig.operatingMode) {
                 mismatches.push('operatingMode: expected ' + expectedConfig.operatingMode + ', got ' + serverConfig.operatingMode);
             }

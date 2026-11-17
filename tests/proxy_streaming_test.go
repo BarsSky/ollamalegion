@@ -391,7 +391,7 @@ func TestTransferEncoding_BackendConnectionReset(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true,
+			ModelAffinity: true,
 			SessionStickiness: true, RequestTimeout: 30,
 			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
 		},
@@ -599,7 +599,7 @@ func TestTransferEncoding_Backend503ThenStream(t *testing.T) {
 				AgentPort: 9090, Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true,
+			ModelAffinity: true,
 			SessionStickiness: true, RequestTimeout: 30, QueueTimeout: 60,
 			QueueMaxSize: 100, QueueWorkers: 4,
 		},
@@ -742,7 +742,7 @@ func TestTransferEncoding_RealOllamaNdjson(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true,
+			ModelAffinity: true,
 			SessionStickiness: true, RequestTimeout: 30,
 			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
 		},
@@ -1284,7 +1284,6 @@ func TestTransferEncoding_HealthAndMetricsEndpoints(t *testing.T) {
 		},
 		Backends: []types.Backend{},
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,

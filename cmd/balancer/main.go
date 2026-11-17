@@ -24,7 +24,6 @@ import (
 	"ollama-loadbalancer/internal/runtimeoverrides"
 	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
-	"ollama-loadbalancer/pkg/types"
 	"ollama-loadbalancer/pkg/version"
 )
 
@@ -146,20 +145,15 @@ func main() {
 	logger.SetBroker(logBroker)
 	defer logBroker.Stop()
 
-	// Применение переопределений из environment (приоритет выше config.json)
+	// R493 (долг 12n, решение владельца — удалить): LB_ALGORITHM больше ничего
+	// не настраивает. Вместо тихого игнорирования говорим об этом один раз: иначе
+	// оператор продолжит считать переменную действующей и искать «почему не
+	// переключается».
 	if algo := os.Getenv("LB_ALGORITHM"); algo != "" {
-		validAlgorithms := map[string]bool{
-			"roundrobin":     true,
-			"leastconn":      true,
-			"resource-aware": true,
-			"model-affinity": true,
-		}
-		if validAlgorithms[algo] {
-			conf.Balancing.Algorithm = types.BalancingAlgorithm(algo)
-			logger.Get().Infow("algorithm overridden from environment", "algorithm", algo)
-		} else {
-			logger.Get().Warnw("invalid LB_ALGORITHM environment value, ignoring", "value", algo)
-		}
+		logger.Get().Warnw("LB_ALGORITHM is removed and has no effect: the selector is single (unified-multistage)",
+			"value", algo,
+			"effective_selection", "unified-multistage",
+			"hint", "удалите переменную из deployments/.env; поле algorithm убрано из API и WebUI")
 	}
 	if os.Getenv("LB_MODEL_AFFINITY") != "" {
 		conf.Balancing.ModelAffinity = os.Getenv("LB_MODEL_AFFINITY") == "true"
@@ -197,7 +191,8 @@ func main() {
 	if conf.TLS.Enabled {
 		bannerRow("TLS Port", strconv.Itoa(conf.LoadBalancer.TLSPort))
 	}
-	bannerRow("Algorithm", string(conf.Balancing.Algorithm))
+	// R493 (12n): «алгоритм» больше не настройка — показываем ФАКТ выбора.
+	bannerRow("Selection", "unified-multistage (single pipeline)")
 	bannerRow("Backends", strconv.Itoa(len(conf.Backends)))
 	// R83 (2026-09-28): откуда взят токен авторизации. Оператор меняет токен в
 	// config.json и не понимает, почему он «не работает»: при заданном

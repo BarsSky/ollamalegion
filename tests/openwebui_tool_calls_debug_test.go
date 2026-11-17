@@ -250,7 +250,6 @@ func setupLlamaCppProxy(t *testing.T, backendSrvURL string) (*httptest.Server, *
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:         types.AlgorithmResourceAware,
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,
@@ -433,7 +432,7 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioB_OllamaDirect(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true,
+			ModelAffinity: true,
 			SessionStickiness: true, RequestTimeout: 30,
 			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
 		},
@@ -555,7 +554,7 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioC_ExpandedMockStyle(t *testing.T) {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true,
+			ModelAffinity: true,
 			SessionStickiness: true, RequestTimeout: 30,
 			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
 		},

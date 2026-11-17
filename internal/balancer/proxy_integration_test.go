@@ -59,7 +59,7 @@ func TestFirstByteTimeout_RetryOnHungStream(t *testing.T) {
 			{ID: "b", Host: hostB, OllamaPort: portB, Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true, SessionStickiness: true,
+			ModelAffinity: true, SessionStickiness: true,
 			FirstByteTimeout: 2, StreamingIdleTimeout: 60, RequestTimeout: 30,
 			QueueTimeout: 300, QueueMaxSize: 100, QueueWorkers: 4, SessionTTL: 900,
 		},
@@ -114,7 +114,7 @@ func TestTwoClientsSameIP_DifferentSessions(t *testing.T) {
 		LoadBalancer: types.LoadBalancerSettings{Host: "0.0.0.0", Port: 18080, APIPort: 18081},
 		Backends:     []types.Backend{{ID: "a", Host: h, OllamaPort: p, Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy}},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true, SessionStickiness: true,
+			ModelAffinity: true, SessionStickiness: true,
 			FirstByteTimeout: 30, StreamingIdleTimeout: 120, RequestTimeout: 30,
 			QueueTimeout: 300, QueueMaxSize: 100, QueueWorkers: 4, SessionTTL: 900,
 		},
@@ -224,7 +224,7 @@ func TestLoadBalancing_MultipleClients(t *testing.T) {
 			{ID: "b", Host: hB, OllamaPort: pB, Weight: 1, MaxConcurrentReqs: 3, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm: types.AlgorithmResourceAware, ModelAffinity: true, SessionStickiness: true,
+			ModelAffinity: true, SessionStickiness: true,
 			FirstByteTimeout: 30, StreamingIdleTimeout: 120, RequestTimeout: 30,
 			QueueTimeout: 30, QueueMaxSize: 100, QueueWorkers: 6, SessionTTL: 900,
 		},
@@ -433,7 +433,6 @@ func TestLoadBalancing_SameClientQueueFIFO(t *testing.T) {
 			{ID: "b1", Host: h, OllamaPort: p, Weight: 1, MaxConcurrentReqs: maxConcurrent, Status: types.StatusHealthy},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:            types.AlgorithmResourceAware,
 			ModelAffinity:        true,
 			SessionStickiness:    true,
 			FirstByteTimeout:     5,

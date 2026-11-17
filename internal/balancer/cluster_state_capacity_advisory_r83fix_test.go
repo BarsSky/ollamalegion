@@ -32,7 +32,7 @@ func TestClusterState_CapacityAdvisoryFields_R83fix(t *testing.T) {
 			// Факт от воркера: модель загружена с двумя слотами.
 			RuntimeModelSlots: 2,
 		}},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmResourceAware, OperatingMode: "standard"},
+		Balancing: types.BalancingSettings{OperatingMode: "standard"},
 	})
 
 	b := clusterBackend(t, p, "bk-adv")

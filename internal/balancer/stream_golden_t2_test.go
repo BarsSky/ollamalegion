@@ -98,7 +98,7 @@ func t2Proxy(t *testing.T, srv *httptest.Server, modelLoaded bool) *Proxy {
 			Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy,
 			MaxConcurrentReqs: 1, Weight: 1,
 		}},
-		Balancing: types.BalancingSettings{Algorithm: types.AlgorithmResourceAware, ModelAffinity: true},
+		Balancing: types.BalancingSettings{ModelAffinity: true},
 	}
 	p := newProxyWithCleanup(t, conf)
 	if modelLoaded {

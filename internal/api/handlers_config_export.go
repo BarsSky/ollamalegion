@@ -169,7 +169,7 @@ func buildConfigExport(cfg *types.LoadBalancerConfig) map[string]interface{} {
 		"backendEngine": string(cfg.BackendEngine),
 		"initialized":   cfg.Initialized,
 		"balancing": map[string]interface{}{
-			"algorithm":            string(cfg.Balancing.Algorithm),
+			// R493 (12n): поля algorithm в экспорте нет — его нет и в конфиге.
 			"modelAffinity":        cfg.Balancing.ModelAffinity,
 			"sessionStickiness":    cfg.Balancing.SessionStickiness,
 			"useEnhancedScoring":   cfg.Balancing.UseEnhancedScoring,
@@ -272,11 +272,9 @@ func mergeConfig(current *types.LoadBalancerConfig, imported *types.LoadBalancer
 	if imported.BackendEngine != "" {
 		current.BackendEngine = imported.BackendEngine
 	}
-	if imported.Balancing.Algorithm != "" {
-		current.Balancing.Algorithm = imported.Balancing.Algorithm
-		// R493 (долг 12n): импорт не должен создавать иллюзию смены алгоритма.
-		logAlgorithmIgnoredR493("config import", string(imported.Balancing.Algorithm))
-	}
+	// R493 (12n): поля algorithm больше нет — импорт его не применяет. Если во
+	// входном JSON ключ остался, Go его игнорирует (неизвестное поле), то есть
+	// иллюзии «импорт переключил алгоритм» больше не возникает.
 	if imported.Balancing.OperatingMode != "" {
 		current.Balancing.OperatingMode = imported.Balancing.OperatingMode
 	}

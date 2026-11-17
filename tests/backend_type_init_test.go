@@ -32,7 +32,6 @@ func setupBackendTypeTestServer(t *testing.T, engine types.BackendEngine) (*http
 		Backends:      []types.Backend{},
 		BackendEngine: engine,
 		Balancing: types.BalancingSettings{
-			Algorithm:          types.AlgorithmResourceAware,
 			ModelAffinity:      true,
 			SessionStickiness:  true,
 			UseEnhancedScoring: true,
@@ -142,7 +141,6 @@ func TestBackendTypeInit_InvalidEngine(t *testing.T) {
 		},
 		BackendEngine: "unknown_engine",
 		Balancing: types.BalancingSettings{
-			Algorithm:     types.AlgorithmRoundRobin,
 			OperatingMode: "standard",
 		},
 		Backends: []types.Backend{},

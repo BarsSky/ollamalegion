@@ -17,7 +17,11 @@
 //     24GB) и снова советует q4_0/-2. Бюджет = free + usage модели, ≤ total.
 package balancer
 
-import "strings"
+import (
+	"strings"
+
+	"ollama-loadbalancer/internal/memfit"
+)
 
 const (
 	bytesPerMB                = 1024 * 1024
@@ -104,8 +108,17 @@ func normalizeKVType(kvType string) string {
 }
 
 // kvCacheBytesForContext — размер KV cache в байтах для n_ctx при типе kvType.
-// Формула: 2 (K+V) * NLayers * NKvHeads * HeadDimK * bytesPerElement, где
-// f16 = 2 байта, q8_0 = 1 байт, q4_0 = 0.5 байта (block-quantized).
+//
+// R498 / аудит N-5 (2026-11-19): ОДНА формула KV на весь стек — memfit.
+//
+// БЫЛО (четвёртая копия формулы): f16 = 2 байта на элемент «как есть»,
+// q8_0 — ровно вдвое меньше, q4_0 — вчетверо. В llama.cpp квантованный KV — это
+// значение ПЛЮС масштаб на блок: q8_0 = 34/32 байта на элемент, q4_0 = 18/32,
+// то есть не /2 и /4, а /1.88 и /3.56. Из-за этого AutoTune считал KV по q8_0
+// меньше реального и советовал «урезать окно» там, где окно помещалось.
+//
+// Константы берутся из memfit.KVBytesPerElement — тот же источник, что у
+// C-моста и memfit, поэтому правка в одном месте меняет все.
 // Возвращает 0, если данных/контекста нет (тогда KV не резервируем).
 func kvCacheBytesForContext(p *ModelProfileInfo, kvType string, nCtx int) uint64 {
 	if p == nil || nCtx <= 0 || p.NLayers <= 0 || p.NKvHeads <= 0 || p.HeadDimK <= 0 {
@@ -115,15 +128,25 @@ func kvCacheBytesForContext(p *ModelProfileInfo, kvType string, nCtx int) uint64
 	if typ == "" {
 		return 0
 	}
-	perTokenF16 := mulSat(4, mulSat(uint64(p.NLayers), mulSat(uint64(p.NKvHeads), uint64(p.HeadDimK))))
-	var perToken uint64
-	switch typ {
-	case "f16":
-		perToken = perTokenF16
-	case "q4_0":
-		perToken = perTokenF16 / 4
-	default: // q8_0 и прочие 8-битные
-		perToken = perTokenF16 / 2
+	// 2 (K и V) × слоёв с KV × голов KV × head_dim = элементов на токен.
+	elements := mulSat(2, mulSat(uint64(p.NLayers), mulSat(uint64(p.NKvHeads), uint64(p.HeadDimK))))
+	num, den := memfitKVElemBytesR498(typ)
+	if num <= 0 || den <= 0 {
+		return 0
 	}
+	perToken := mulSat(elements, uint64(num)) / uint64(den)
 	return mulSat(perToken, uint64(nCtx))
+}
+
+// memfitKVElemBytesR498 — байты на элемент KV из memfit: f16 2/1, q8_0 34/32,
+// q4_0 18/32. Возвращает (num, den), чтобы не терять точность на делении.
+func memfitKVElemBytesR498(typ string) (int64, int64) {
+	switch typ {
+	case "q8_0":
+		return memfit.KVBytesPerElement(memfit.KVQ8)
+	case "q4_0":
+		return memfit.KVBytesPerElement(memfit.KVQ4)
+	default:
+		return memfit.KVBytesPerElement(memfit.KVF16)
+	}
 }

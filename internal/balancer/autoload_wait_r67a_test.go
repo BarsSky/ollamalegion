@@ -43,8 +43,14 @@ func TestAutoLoadWaitTimeout_EnvParsing_R67a(t *testing.T) {
 		t.Errorf("0 (прежнее поведение) → %s", got)
 	}
 	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "-1")
-	if got := AutoLoadWaitTimeout(); got != 30*time.Minute {
-		t.Errorf("отрицательное («ждать сколько нужно») → %s", got)
+	// R498 / аудит T-3 (2026-11-19): у `-1` ОДИН смысл на обоих путях — потолок
+	// БЕЗДЕЙСТВИЯ (24 ч), а не 30 минут здесь и 24 часа в
+	// autoLoadWaitTimeoutForModel. Потолок не обрывает живую загрузку: продление
+	// идёт по растущему elapsedMs, ограничение — против «зависшего» ожидания без
+	// единого признака прогресса.
+	if got := AutoLoadWaitTimeout(); got != autoLoadBudgetCeiling {
+		t.Errorf("отрицательное («ждать сколько нужно») → %s, ожидалось %s "+
+			"(тот же потолок, что у пути с именем модели, аудит T-3)", got, autoLoadBudgetCeiling)
 	}
 	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "abc")
 	if got := AutoLoadWaitTimeout(); got != autoLoadWaitDefaultSec*time.Second {

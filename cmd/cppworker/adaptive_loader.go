@@ -27,6 +27,7 @@ import (
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/internal/i18n"
+	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -367,11 +368,22 @@ func init() {
 	}
 }
 
-// bytesPerKVCacheType ? ????????? ??? ??????? ????.
-var bytesPerKVCacheType = map[string]int64{
-	"f16":  4,
-	"q8_0": 2,
-	"q4_0": 1,
+// isKnownKVCacheTypeR498 — известен ли тип KV-кэша.
+//
+// R498 / аудит N-3, N-5 (2026-11-19): таблица `bytesPerKVCacheType` УДАЛЕНА.
+//
+// В ней f16 = 4 «байта на элемент» уже включали K+V, но в расчётах рядом стоял
+// ещё множитель 2 — KV завышался вдвое, maxViableNCtx выходил вдвое меньше, окно
+// молча урезалось (аудит N-3). Для q8_0/q4_0 значения были 2 и 1, тогда как
+// llama.cpp держит 34/32 и 18/32 — значение плюс масштаб на блок (аудит N-5).
+// Теперь байты на элемент берутся ТОЛЬКО из memfit.KVBytesPerElement; здесь
+// осталась лишь проверка «тип известен».
+func isKnownKVCacheTypeR498(t string) bool {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "f16", "q8_0", "q4_0":
+		return true
+	}
+	return false
 }
 
 // SelectStrategy ? ?????? ???????? ????????? ????????.
@@ -404,7 +416,7 @@ func SelectStrategy(
 // рекомендует собственный warning cppworker'а). С хинтом перебор начинается с
 // рабочего типа, а остальные остаются как fallback.
 func kvCacheOrderWithHint(preferred string) []string {
-	if _, ok := bytesPerKVCacheType[preferred]; !ok {
+	if !isKnownKVCacheTypeR498(preferred) {
 		return KVCacheTypeOrder
 	}
 	order := make([]string, 0, len(KVCacheTypeOrder)+1)
@@ -518,7 +530,7 @@ func SelectStrategyWithKV(
 			kvDefault = defaults.DefaultKVCacheType
 		}
 		kvType := kvDefault
-		if _, hinted := bytesPerKVCacheType[preferredKV]; hinted {
+		if isKnownKVCacheTypeR498(preferredKV) {
 			// R70: хинт от балансера (профиль модели / фактический тип KV-cache
 			// загруженной модели) важнее авто-выбора.
 			kvType = preferredKV
@@ -529,14 +541,13 @@ func SelectStrategyWithKV(
 				overheadBytes = env.OverheadBytes
 			}
 			for _, candidate := range []string{"q4_0", "q8_0", "f16"} {
-				bytesPerToken := bytesPerKVCacheType[candidate]
-				if bytesPerToken <= 0 {
-					bytesPerToken = 4
-				}
+				// R498 / аудит N-3: одна формула KV на весь cppworker —
+				// kvBytesPerTokenR498 (внутри memfit.KVBytesPerElement: f16 2/1,
+				// q8_0 34/32, q4_0 18/32).
 				// R83: реальные оценки модели вместо хардкода «42 слоя, 2 kv-heads,
 				// head_dim=128» (см. блок оценок в начале ветки).
-				kvBytes := int64(2) * int64(numLayers) * int64(nKvHeads) * headDim *
-					int64(requestedNCtx) * bytesPerToken
+				kvBytes := kvBytesPerTokenR498(int(numLayers), int(nKvHeads), int(headDim), candidate) *
+					int64(requestedNCtx)
 				totalNeeded := modelBytes + kvBytes + overheadBytes
 				if totalNeeded <= int64(env.FreeVRAM) {
 					kvType = candidate
@@ -577,14 +588,16 @@ func SelectStrategyWithKV(
 			freeForKV = int64(env.FreeVRAM) - modelBytes - overheadBytes
 		}
 
-		// KV-cache per token: 2 (K+V) * N layers * N kv_heads * head_dim * bytes/elem.
-		// R83: nKvHeads и headDim посчитаны в начале ветки (nKvHeads — из GGUF,
-		// если он его отдал, иначе оценка по размеру; headDim — из NEmbd/NHeads).
-		bytesPerToken := bytesPerKVCacheType[kvType]
-		if bytesPerToken <= 0 {
-			bytesPerToken = 4
-		}
-		kvPerToken := int64(2) * int64(numLayers) * int64(nKvHeads) * headDim * bytesPerToken
+		// R498 / аудит N-3 (2026-11-19): ОДНА формула KV — memfit, а не четвёртая
+		// копия с двойным счётом.
+		//
+		// БЫЛО: bytesPerKVCacheType[f16] = 4 (два байта K + два V — это уже K+V) и
+		// рядом ещё множитель 2 → KV завышался ровно вдвое, а maxViableNCtx,
+		// наоборот, вдвое меньше реального: окно молча урезалось без причины.
+		// memfit.KVBytesPerElement даёт байт на элемент (f16 2/1, q8_0 34/32,
+		// q4_0 18/32), а 2*layers*heads*headDim — элементы K и V на токен.
+		// Тот же класс описан в auto_offload.go:62-64.
+		kvPerToken := kvBytesPerTokenR498(int(numLayers), int(nKvHeads), int(headDim), kvType)
 		maxViableNCtx := 512
 		if kvPerToken > 0 && freeForKV > 0 {
 			maxViableNCtx = int(freeForKV / kvPerToken)
@@ -644,10 +657,9 @@ func SelectStrategyWithKV(
 	// ??????? ?????? kvCacheType ?? ??????? ? ???????
 	// R70: при наличии хинта начинаем с него (см. kvCacheOrderWithHint).
 	for _, kvType := range kvCacheOrderWithHint(preferredKV) {
-		bytesPerToken := int64(4) // f16 default
-		if b, ok := bytesPerKVCacheType[kvType]; ok {
-			bytesPerToken = b
-		}
+		// R498: здесь больше нет отдельной копии «байт на элемент» — KV считается
+		// через estimateKVCacheBytesForLayers (та же формула, что в memfit).
+		// Переменная bytesPerToken в этой ветке не использовалась вообще.
 
 		// KV-cache для requestedNCtx.
 		//
@@ -778,7 +790,22 @@ func SelectStrategyWithKV(
 		if !isMOE || kvType == "q4_0" {
 			// ??? MoE cpu-only ?? ???? ???????????? ? ???????? ??? ? RAM
 			// ??????? max n_ctx ??? cpu-only
-			kvPerToken := int64(meta.NLayers) * int64(meta.NKvHeads) * (int64(meta.NEmbd) / int64(meta.NHeads)) * bytesPerToken
+			// R498 / аудит N-4 (2026-11-19): та же каноническая формула, что выше.
+			//
+			// БЫЛО: слои × kv_heads × (n_embd/n_heads) — без множителя 2 (K+V) и с
+			// head_dim, посчитанным как n_embd/n_heads (213 у Qwen3.8), тогда как
+			// llama.cpp держит KV по key_length (256). Ошибки частично гасили друг
+			// друга, но не сходились: оценка KV расходилась с memfit до 3.13×.
+			kvPerToken := int64(memfit.KVBytesPerToken(memfit.ModelSpec{
+				Name:      modelName,
+				SizeBytes: memfit.Bytes(meta.SizeBytes),
+				NLayers:   meta.NLayers,
+				KVLayers:  kvLayers,
+				NHeads:    meta.NHeads,
+				NKvHeads:  meta.NKvHeads,
+				NEmbd:     meta.NEmbd,
+				KVHeadDim: kvHeadDim,
+			}, cppbackend.MemfitKVType(kvType)))
 			if kvPerToken <= 0 {
 				kvPerToken = 4096
 			}

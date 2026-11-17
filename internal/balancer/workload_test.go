@@ -189,14 +189,21 @@ func TestComputeOptimalKVCacheTypeWithWorkload(t *testing.T) {
 
 	// R230: workload-override больше не выдаёт физически неисполнимую
 	// рекомендацию. Для этого профиля (2.5GB весов, бюджет 6GB, n_ctx=65536)
-	// доступно под KV = 6.0 - 0.4 (резерв) - 2.5 = 3.1GB:
-	//   f16 KV = 92160 B/токен * 65536 ≈ 6.0GB  — не влезает
-	//   q8_0 KV ≈ 3.0GB                        — влезает
-	t.Run("workload light: p95=4096, loaded=65536 → лучший влезающий тип (q8_0)", func(t *testing.T) {
+	// доступно под KV = 6.0 - 0.4 (резерв) - 2.5 = 3.1GB.
+	//
+	// R498 / аудит N-5 (2026-11-19): числа пересчитаны по memfit, а не по
+	// прежней копии формулы. Элементов на токен: 2*36*8*80 = 46080;
+	//   f16  = 46080 * 2/1  = 92160 B/токен * 65536 ≈ 6.04 GB — не влезает;
+	//   q8_0 = 46080 * 34/32 = 48960 B/токен * 65536 ≈ 3.21 GB — ТОЖЕ не влезает
+	//          в 3.1 GB (старая формула давала 3.02 GB и ошибочно «влезал»);
+	//   q4_0 = 46080 * 18/32 = 25920 B/токен * 65536 ≈ 1.70 GB — влезает.
+	// Поэтому верный ответ на этом бюджете — q4_0: правило выбора не менялось,
+	// менялась оценка размера.
+	t.Run("workload light: p95=4096, loaded=65536 → лучший влезающий тип (q4_0)", func(t *testing.T) {
 		workload := WorkloadStats{SampleCount: 10, P95NumCtx: 4096}
 		rec, reasoning := computeOptimalKVCacheTypeWithWorkload(p, workload, 5)
-		if rec != "q8_0" {
-			t.Errorf("expected q8_0 (f16 KV 6GB не влезает в 3.1GB), got %s (reasoning: %s)", rec, reasoning)
+		if rec != "q4_0" {
+			t.Errorf("expected q4_0 (f16 6.04GB и q8_0 3.21GB не влезают в 3.1GB), got %s (reasoning: %s)", rec, reasoning)
 		}
 	})
 
@@ -219,22 +226,25 @@ func TestComputeOptimalKVCacheTypeWithWorkload(t *testing.T) {
 		}
 	})
 
-	t.Run("workload medium: p95=20000, loaded=65536 → fit-aware (q8_0)", func(t *testing.T) {
+	t.Run("workload medium: p95=20000, loaded=65536 → fit-aware (q4_0)", func(t *testing.T) {
 		workload := WorkloadStats{SampleCount: 10, P95NumCtx: 20000}
 		rec, reasoning := computeOptimalKVCacheTypeWithWorkload(p, workload, 5)
 		// 25% of 65536 = 16384 → 20000 > 16384 → not light
 		// 75% of 65536 = 49152 → 20000 not > 49152 → not heavy
-		// → R230 fit-aware: f16 (6.0GB) не влезает в 3.1GB, q8_0 (3.0GB) влезает.
-		if rec != "q8_0" {
-			t.Errorf("expected q8_0 (f16 KV не влезает), got %s (reasoning: %s)", rec, reasoning)
+		// → R230 fit-aware: f16 (6.04GB) и q8_0 (3.21GB) не влезают в 3.1GB,
+		// q4_0 (1.70GB) влезает (числа memfit, R498).
+		if rec != "q4_0" {
+			t.Errorf("expected q4_0 (f16 и q8_0 не влезают), got %s (reasoning: %s)", rec, reasoning)
 		}
 	})
 
-	t.Run("insufficient samples → fit-aware (q8_0)", func(t *testing.T) {
+	// R498 / аудит N-5: при нехватке семплов правило уходит в fit-aware, и на этом
+	// бюджете (3.1GB) влезает только q4_0 — q8_0 по memfit занимает 3.21GB.
+	t.Run("insufficient samples → fit-aware (q4_0)", func(t *testing.T) {
 		workload := WorkloadStats{SampleCount: 2, P95NumCtx: 4096} // would be "light" but too few samples
 		rec, reasoning := computeOptimalKVCacheTypeWithWorkload(p, workload, 5)
-		if rec != "q8_0" {
-			t.Errorf("expected q8_0 (f16 KV не влезает в 3.1GB), got %s (reasoning: %s)", rec, reasoning)
+		if rec != "q4_0" {
+			t.Errorf("expected q4_0 (f16 6.04GB и q8_0 3.21GB не влезают в 3.1GB), got %s (reasoning: %s)", rec, reasoning)
 		}
 	})
 }

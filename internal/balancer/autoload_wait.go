@@ -70,7 +70,14 @@ func AutoLoadWaitTimeout() time.Duration {
 	case autoLoadWaitDisabled:
 		return 0
 	case autoLoadWaitUnlimited:
-		return 30 * time.Minute
+		// R498 / аудит T-3 (2026-11-19): у -1 ОДИН смысл — «ждать, пока есть
+		// прогресс, до потолка бездействия». Здесь стояло 30 минут, а в
+		// autoLoadWaitTimeoutForModel для того же -1 — autoLoadBudgetCeiling
+		// (24 ч): один и тот же env давал разное поведение в зависимости от того,
+		// знает ли вызывающий имя модели. Теперь оба пути возвращают потолок
+		// бездействия (24 ч) — и он не обрывает живую загрузку, см. комментарий
+		// выше: продление идёт по растущему elapsedMs.
+		return autoLoadBudgetCeiling
 	case autoLoadWaitExplicit:
 		return time.Duration(n) * time.Second
 	default:
@@ -531,4 +538,3 @@ func ctxOrBackground(ctx context.Context) context.Context {
 // ключ очереди и ключ маршрутизации строятся из одного списка источников
 // идентичности. Здесь функция больше не живёт, чтобы новый заголовок
 // идентичности нельзя было добавить только в один из ключей.
-

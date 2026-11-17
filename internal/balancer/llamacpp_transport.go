@@ -380,11 +380,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		// значение по умолчанию (180 с, LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC),
 		// чтобы «нет данных» превращалось в понятную ошибку, а не в тишину до
 		// таймаута клиента. 0 отключает границу.
-		if firstByte <= 0 && !defaultFirstByteDisabled() {
-			firstByte = defaultFirstByteTimeout()
-		}
-		if firstByte > 0 {
-			clientForReq = p.newStreamingClientWithResponseHeaderTimeout(firstByte)
+		if firstByte <= 0 {
+			// R498 / аудит T-1: дефолт считается ПО РАЗМЕРУ МОДЕЛИ (эстиматор), а не
+			// плоскими 180 с: холодная загрузка 16–27B идёт 140–485 с, и граница
+			// обрывала её. Явная настройка (в т.ч. 0 = выключено) сильнее оценки.
+			firstByte = p.defaultFirstByteTimeoutForModelR498(modelFromCtx)
 		}
 		if firstByte > 0 {
 			clientForReq = p.newStreamingClientWithResponseHeaderTimeout(firstByte)

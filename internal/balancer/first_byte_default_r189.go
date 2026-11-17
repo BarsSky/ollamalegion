@@ -44,3 +44,32 @@ func defaultFirstByteTimeout() time.Duration {
 func defaultFirstByteDisabled() bool {
 	return defaultFirstByteTimeout() == 0
 }
+
+// defaultFirstByteTimeoutForModelR498 — граница на первый байт для конкретной
+// модели: явная настройка → оценка по размеру весов → безопасный дефолт.
+//
+// R498 / аудит T-1 (2026-11-19). ЖИВОЙ ДЕФЕКТ: действующий дефолт был ровно
+// 180 с ПЛОСКО, независимо от модели, а холодная загрузка 16–27B на этом же
+// стенде занимает 140–485 с (autoload_wait_r325_1.go:15,
+// llamacpp_transport_nonstream.go:130). Воркер отдаёт заголовки только ПОСЛЕ
+// ленивой загрузки, поэтому таймаут фактически считал загрузку и обрывал её на
+// 180-й секунде — «модель не загрузилась», хотя загрузка шла.
+//
+// ПОЧЕМУ ЭСТИМАТОР, А НЕ «0 = выключено». Полностью выключать границу нельзя:
+// именно её отсутствие дало живой разбор R189 (клиент молча ждал 300 с и дольше).
+// Эстиматор `EstimateFirstByteTimeoutFromModelSize` уже был написан для этого и
+// не использовался НИГДЕ — теперь это единственный источник дефолта: 2 ГБ → 300 с,
+// 5 ГБ → 600 с, 12 ГБ → 1200 с, 24 ГБ → 1800 с, неизвестный размер → 900 с.
+//
+// Явная настройка (LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC, в т.ч. 0 = выключено)
+// по-прежнему сильнее оценки: оператор всегда может задать своё.
+func (p *Proxy) defaultFirstByteTimeoutForModelR498(model string) time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC")); raw != "" {
+		return defaultFirstByteTimeout() // явное значение (0 = граница выключена)
+	}
+	var size int64
+	if p != nil && model != "" {
+		size = p.getModelSizeBytes(model)
+	}
+	return EstimateFirstByteTimeoutFromModelSize(size)
+}

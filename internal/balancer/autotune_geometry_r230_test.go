@@ -73,18 +73,33 @@ func TestR230_ReloadBudgetBytes(t *testing.T) {
 }
 
 // TestR230_KVBytes — размер KV cache для загруженного n_ctx и типа.
+//
+// R498 / аудит N-5 (2026-11-19): ожидания приведены к ОДНОЙ формуле KV (memfit).
+//
+// БЫЛО: q8_0 проверялся как f16/2, q4_0 — как f16/4. Это закрепляло неверную
+// модель «квантованный KV = ровно доля от f16», тогда как в llama.cpp значение
+// идёт ПЛЮС масштаб на блок: q8_0 = 34/32 байта на элемент (то есть 0.53125 от
+// f16, а не 0.5), q4_0 = 18/32 (0.28125, а не 0.25). Тест был зелёным именно
+// потому, что и код, и ожидание содержали одну и ту же ошибку — урок §4.2 плана
+// (тест, повторяющий формулу, ничего не доказывает).
 func TestR230_KVBytes(t *testing.T) {
 	p := r230Type("m", 5*r230GiB, 48, 8, 128)
 	p.CurrentContextLength = 131072
-	// 2*2(K+V) * 48 * 8 * 128 = 196608 байт/токен для f16
+	// 2 (K и V) * 48 * 8 * 128 = 98304 элемента на токен; f16 — 2 байта на элемент.
 	f16 := kvCacheBytesForContext(p, "f16", p.CurrentContextLength)
 	q8 := kvCacheBytesForContext(p, "q8_0", p.CurrentContextLength)
 	q4 := kvCacheBytesForContext(p, "q4_0", p.CurrentContextLength)
 	if f16 != 196608*131072 {
 		t.Fatalf("f16 KV=%d, want %d", f16, uint64(196608*131072))
 	}
-	if q8 != f16/2 || q4 != f16/4 {
-		t.Fatalf("q8=%d (want f16/2=%d), q4=%d (want f16/4=%d)", q8, f16/2, q4, f16/4)
+	// Точные доли memfit: 34/32 и 18/32 байта на элемент против 2 у f16.
+	wantQ8 := uint64(98304) * 34 / 32 * 131072
+	wantQ4 := uint64(98304) * 18 / 32 * 131072
+	if q8 != wantQ8 {
+		t.Fatalf("q8 KV=%d, want %d (34/32 байта на элемент, memfit)", q8, wantQ8)
+	}
+	if q4 != wantQ4 {
+		t.Fatalf("q4 KV=%d, want %d (18/32 байта на элемент, memfit)", q4, wantQ4)
 	}
 	if kvCacheBytesForContext(p, "q8_0", 0) != 0 {
 		t.Fatal("без n_ctx KV не резервируется")
@@ -227,7 +242,7 @@ func TestR230_ConfigMatrix(t *testing.T) {
 						total := vramGB * r230GiB
 						p := r230Type(m.name, m.size, m.nLayers, m.nKv, m.headDim)
 						p.CurrentContextLength = ctx
-						p.FreeVRAMBytes = total                          // reload-бюджет: модель будет выгружена
+						p.FreeVRAMBytes = total // reload-бюджет: модель будет выгружена
 						p.TotalVRAMBytes = total
 						p.FreeRAMBytes = ramGB * r230GiB
 						p.CurrentNumGPULayers = 16
@@ -314,17 +329,17 @@ func TestR230_AnalyzeBackend_AddsModelUsageToBudget(t *testing.T) {
 	total := 24 * r230GiB
 	free := 2 * r230GiB // модель уже заняла ~22GiB
 	model := types.LlamaCppModel{
-		Name:            "qwen3-14b-q4",
-		State:           "loaded",
-		Size:            9 * r230GiB,
-		NLayers:         48,
-		NKvHeads:        8,
-		HeadDimK:        128,
-		ContextLength:   131072,
-		KvCacheType:     "q8_0",
-		NumGPULayers:    16,
-		VRAMUsage:       20000, // MB — как отдаёт cppworker
-		RAMUsage:        4000,  // MB
+		Name:          "qwen3-14b-q4",
+		State:         "loaded",
+		Size:          9 * r230GiB,
+		NLayers:       48,
+		NKvHeads:      8,
+		HeadDimK:      128,
+		ContextLength: 131072,
+		KvCacheType:   "q8_0",
+		NumGPULayers:  16,
+		VRAMUsage:     20000, // MB — как отдаёт cppworker
+		RAMUsage:      4000,  // MB
 	}
 
 	report := AnalyzeBackend(nil, "b1", "llama_cpp", []types.LlamaCppModel{model}, free, 16*r230GiB, total)

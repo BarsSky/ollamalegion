@@ -212,16 +212,12 @@ func (s *Server) buildPlanFromReport(proxy *balancer.Proxy, backendID, modelName
 		return nil
 	}
 
-	// Get hardware info
+	// Get hardware info (единицы измерения — в autoTuneHardwareBytesR498).
 	clusterState := proxy.GetClusterState()
 	var freeVRAM, freeRAM, totalVRAM uint64
 	for _, b := range clusterState.Backends {
 		if b.ID == backendID {
-			totalVRAM = b.GPU.MemoryTotal
-			if b.GPU.MemoryFree > 0 {
-				freeVRAM = b.GPU.MemoryFree
-			}
-			freeRAM = b.System.MemoryFree
+			freeVRAM, freeRAM, totalVRAM = autoTuneHardwareBytesR498(b.GPU, b.System)
 			break
 		}
 	}

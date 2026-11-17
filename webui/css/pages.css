@@ -1704,3 +1704,348 @@
     margin-bottom: var(--space-3);
     border: 1px dashed var(--glass-border);
 }
+
+/* ------------------------------------------------------------------ */
+/* R493 (2026-11-17): страница «Справка и шаблоны» (reference-page.js) */
+/*                                                                    */
+/* Здесь только раскладка и статусы. Цвета берутся из переменных темы, */
+/* поэтому новая страница работает во всех темах без отдельного CSS.   */
+/* ------------------------------------------------------------------ */
+
+.reference-hint {
+    margin: 0 0 var(--space-4);
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+}
+
+.reference-tabs {
+    display: flex;
+    gap: var(--space-2);
+    margin-bottom: var(--space-4);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: var(--space-2);
+}
+
+.reference-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-3);
+}
+
+.reference-toolbar .form-control {
+    max-width: 420px;
+}
+
+.reference-filter-label {
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    margin-left: var(--space-2);
+}
+
+.reference-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+
+.reference-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    padding: var(--space-3) var(--space-4);
+}
+
+.reference-card.is-expanded {
+    border-color: var(--accent);
+}
+
+.reference-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+}
+
+.reference-card-title {
+    margin: 0 0 var(--space-1);
+    font-size: var(--font-size-md);
+    font-weight: 600;
+}
+
+.reference-card-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    align-items: center;
+}
+
+.reference-id {
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+}
+
+.reference-chip {
+    background: var(--glass-soft-2);
+    color: var(--text-secondary);
+}
+
+.reference-chip-general {
+    border-style: dashed;
+}
+
+.reference-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+}
+
+.reference-card-comment {
+    margin: var(--space-2) 0;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+.reference-params {
+    margin: var(--space-2) 0;
+}
+
+.reference-param-label {
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+}
+
+.reference-card-foot {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: var(--space-2);
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+}
+
+.reference-sources,
+.reference-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    align-items: center;
+}
+
+.reference-muted {
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+}
+
+.reference-empty {
+    padding: var(--space-4);
+    text-align: center;
+    color: var(--text-secondary);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.reference-status {
+    margin-bottom: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    white-space: pre-wrap;
+}
+
+.reference-status-ok {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.reference-status-error {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.reference-error-title {
+    font-weight: 600;
+}
+
+.reference-error-hint,
+.reference-error-details {
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+}
+
+.reference-error-details {
+    margin: var(--space-1) 0 0;
+    padding-left: var(--space-4);
+    font-family: var(--font-family-mono);
+}
+
+/* --- деталь шаблона: модель, бэкенд, режим, предпросмотр --- */
+
+.reference-tpl-detail {
+    margin-top: var(--space-3);
+    padding-top: var(--space-3);
+    border-top: 1px dashed var(--border);
+}
+
+.reference-tpl-controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+}
+
+.reference-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+}
+
+.reference-field-wide {
+    margin: var(--space-3) 0;
+}
+
+.reference-tpl-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-3);
+}
+
+.reference-apply-hint {
+    color: var(--warning);
+    font-size: var(--font-size-xs);
+}
+
+.reference-preview {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-3);
+    background: var(--glass-soft-2);
+}
+
+.reference-preview-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+}
+
+.reference-preview-section {
+    margin-bottom: var(--space-2);
+}
+
+.reference-preview-label {
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    margin-right: var(--space-1);
+}
+
+.reference-diff,
+.reference-violations,
+.reference-warnings,
+.reference-targets {
+    margin: var(--space-1) 0;
+    padding-left: var(--space-4);
+    font-size: var(--font-size-sm);
+}
+
+.reference-diff li.is-changed {
+    font-weight: 600;
+}
+
+.reference-violations li {
+    color: var(--danger);
+}
+
+.reference-warnings li {
+    color: var(--warning);
+}
+
+.reference-memory {
+    font-size: var(--font-size-sm);
+}
+
+.reference-memory-ok {
+    color: var(--success);
+}
+
+.reference-memory-bad {
+    color: var(--danger);
+}
+
+.reference-memory-unknown {
+    color: var(--warning);
+}
+
+/* --- редактор записи --- */
+
+.reference-editor-card {
+    margin-top: var(--space-4);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    padding: var(--space-3) var(--space-4);
+    background: var(--bg-card);
+}
+
+.reference-editor-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin-bottom: var(--space-3);
+}
+
+.reference-editor-head h4 {
+    margin: 0;
+    font-size: var(--font-size-md);
+}
+
+.reference-editor-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-3);
+}
+
+.reference-editor-fieldset {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3) var(--space-3);
+    margin: var(--space-3) 0;
+}
+
+.reference-editor-fieldset legend {
+    padding: 0 var(--space-1);
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+}
+
+.reference-edit-params {
+    margin-bottom: var(--space-2);
+}
+
+.reference-edit-params .form-control {
+    min-width: 120px;
+}
+
+.reference-source-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr auto;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+}
+
+.reference-editor-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+}

@@ -127,6 +127,15 @@
                 </a>                <a href="health.html" target="_blank" rel="noopener" class="nav-item" data-page="health">
                     <span class="nav-icon-wrap"><i class="fas fa-heartbeat fa-fw"></i></span> <span data-i18n="nav.health">Здоровье</span>
                 </a>
+                <!-- R493 (2026-11-17): страница «Справка и шаблоны» — записи-справка
+                     с обоснованием и шаблоны параметров, применяемые на конкретный
+                     бэкенд. Своей кнопки «Обновить» НЕ имеет: единственная кнопка
+                     обновления приложения — #refreshBtn в шапке, а источники этой
+                     страницы зарегистрированы провайдером 'reference'
+                     (js/modules/reference-page.js). -->
+                <a href="#reference" class="nav-item" data-page="reference">
+                    <span class="nav-icon-wrap"><i class="fas fa-book-open fa-fw"></i></span> <span data-i18n="nav.reference">Справка и шаблоны</span>
+                </a>
                 <a href="#settings" class="nav-item" data-page="settings">
                     <span class="nav-icon-wrap"><i class="fas fa-gear fa-fw"></i></span> <span data-i18n="nav.settings">Настройки</span>
                 </a>
@@ -1289,6 +1298,43 @@
                     </div>
                     <div class="diag-body" id="diagFailures"></div>
                 </div>            </div>
+            <!-- R493 (2026-11-17): страница «Справка и шаблоны».
+                 КАРКАС СТАТИЧЕСКИЙ, содержимое рисует js/modules/reference-page.js.
+                 Причина: тик авто-обновления вызывает refreshPage('reference') каждые
+                 REFRESH_INTERVAL. Если бы страница собиралась из JS целиком, этот
+                 тик пересобирал бы DOM и терял введённый фильтр/выбор бэкенда —
+                 ровно дефект, закрытый для GGUF (см. app.js → case 'gguf').
+                 Своей кнопки обновления здесь НЕТ и быть не должно. -->
+            <div class="page" id="reference-page">
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-book-open section-icon-i"></i> <span data-i18n="reference.title">Справка и шаблоны</span></h3>
+                        <div class="card-actions">
+                            <button type="button" class="btn btn-primary" id="referenceNewRecBtn" data-admin-only data-ref-action="new-rec" data-i18n="reference.rec.new">Новая запись</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <p class="reference-hint" data-i18n="reference.hint">Записи-рекомендации — это справка со значениями и обоснованием; шаблоны — наборы параметров, которые применяются на тот бэкенд, где загружена модель.</p>
+                        <div class="reference-tabs" role="tablist">
+                            <button type="button" class="filter-btn active" data-ref-tab="recommendations" data-i18n="reference.tab.recommendations">Рекомендации</button>
+                            <button type="button" class="filter-btn" data-ref-tab="templates" data-i18n="reference.tab.templates">Шаблоны</button>
+                        </div>
+                        <div class="reference-status" id="referenceStatus" hidden></div>
+                        <div class="reference-pane" id="referenceRecPane">
+                            <div class="reference-toolbar">
+                                <input type="text" class="form-control" id="referenceSearch" data-i18n-placeholder="reference.filter.search_placeholder" placeholder="Поиск по заголовку, обоснованию и параметрам">
+                                <label class="reference-filter-label" for="referenceModelFilter" data-i18n="reference.filter.model">Применимо к модели</label>
+                                <select class="form-control" id="referenceModelFilter"></select>
+                            </div>
+                            <div class="reference-list" id="referenceRecList"></div>
+                        </div>
+                        <div class="reference-pane" id="referenceTplPane" hidden>
+                            <div class="reference-list" id="referenceTplList"></div>
+                        </div>
+                        <div class="reference-editor" id="referenceEditor" hidden></div>
+                    </div>
+                </div>
+            </div>
             <!-- Settings Page -->
             <div class="page" id="settings-page">
                 <div class="card">
@@ -2820,6 +2866,13 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script defer src="js/modules/logs-stream.js?v=R425"></script>
     <!-- R476: страница диагностики (сводка + архив для разбора). -->
     <script defer src="js/modules/diagnostics.js?v=R476"></script>
+    <!-- R493 (2026-11-17): страница «Справка и шаблоны».
+         Грузится ПОСЛЕ api.js (нужны Api.reference + Api.clusterModels),
+         data-refresh.js (регистрация провайдера 'reference'), gguf-renderer-*js
+         (MODEL_PARAM_SPECS — единственный источник метаданных полей профиля) и
+         cppworker-params.js (существующая модалка прогресса применения), но ДО
+         app.js: его refreshPage('reference') монтирует страницу. -->
+    <script defer src="js/modules/reference-page.js?v=R493"></script>
     <!-- R57.2 (2026-09-03): app-core.js provides theme/density/i18n/AutoTune/showToast
          via window.App namespace. MUST be loaded BEFORE app.js (app.js init() calls App.*). -->
     <script defer src="js/app-core.js?v=R425"></script>

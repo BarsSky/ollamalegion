@@ -46,7 +46,21 @@ const ui = (function () {
         } else {
             App.context = {
                 data: data,
-                currentPage: currentPage,
+                // R493 (2026-11-17): currentPage — ЖИВОЕ значение, а не снимок.
+                //
+                // Живой дефект (диагностика WebUI, замер на стенде): здесь лежала
+                // копия `currentPage` на момент инициализации, то есть навсегда
+                // 'dashboard'. app-listeners.js:171,186 проверяет
+                // `ctx.currentPage === 'dashboard'` перед перерисовкой — условие
+                // было истинно на КАЖДОЙ странице, и скрытый дашборд
+                // перерисовывался каждым тиком (88 мутаций DOM за 20 с при
+                // активной странице «Бэкенды»), а активная страница не
+                // перерисовывалась вовсе (0 мутаций за 30 с).
+                //
+                // Геттер сохраняет все существующие чтения и убирает класс
+                // «снимок вместо значения»: подставить сюда вторую копию снова
+                // нельзя — свойство без сеттера.
+                get currentPage() { return currentPage; },
                 dashboardRenderTimer: dashboardRenderTimer,
                 addLog: addLog,
                 addProxyLog: addProxyLog,
@@ -101,8 +115,10 @@ const ui = (function () {
                     stopPeriodicRefresh();
                     stopOpsAutoRefresh();
                 }
-                // Метрики монитора живут в iframe со своими таймерами.
-                postMonitorPause(!on);
+                // Метрики монитора живут в iframe со своими таймерами: состояние
+                // паузы считается по тому же правилу, что и для страницы
+                // (R493: пауза, скрытая вкладка и «монитор не открыт»).
+                syncMonitorIframePause();
             });
         }
         setupVisibilityRefresh();
@@ -188,12 +204,23 @@ const ui = (function () {
         if (targetNav) targetNav.classList.add('active');
 
         currentPage = page;
+        // R493 (2026-11-17): App.state.currentPage — ВТОРАЯ копия страницы (её
+        // читает app-core.js:165 при смене языка для заголовка). Она никогда не
+        // обновлялась: заголовок при смене языка брался от 'dashboard'. Держим
+        // обе копии в одном месте, чтобы они не разъезжались.
+        if (window.App && window.App.state) window.App.state.currentPage = page;
         var titleKey = 'header.' + page;
         var h1 = document.getElementById('pageTitle');
         if (h1 && window.I18N) h1.textContent = I18N.t(titleKey);
         else Utils.setText('pageTitle', getPageTitle(page));
 
         refreshPage(page);
+        // R493 (2026-11-17): монитор метрик живёт в iframe со своим 2-секундным
+        // циклом. Он нужен только когда страница «Монитор» открыта: замер на
+        // стенде — 76 % фоновых запросов WebUI (78 из 103 за 15 с) шло из
+        // невидимого iframe. Уходя со страницы, останавливаем его цикл; возвращаясь
+        // — возобновляем (если авто-обновление не на паузе и вкладка видима).
+        syncMonitorIframePause();
 
         if (page === 'backends' || page === 'models' || page === 'image') {
             fetchClusterState();
@@ -208,7 +235,7 @@ const ui = (function () {
     // Значение проверяем по списку известных страниц, чтобы мусор в URL не
     // приводил к пустому экрану.
     function pageFromURL() {
-        var known = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'logs', 'diagnostics', 'settings', 'help'];
+        var known = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'logs', 'diagnostics', 'reference', 'settings', 'help'];
         var candidate = '';
         try {
             var qs = new URLSearchParams(window.location.search || '');
@@ -232,6 +259,10 @@ const ui = (function () {
             image: 'Image models',
             logs: 'System Logs',
             diagnostics: 'Diagnostics',
+            // R493 (2026-11-17): страница «Справка и шаблоны». Заголовок в шапке
+            // берётся из i18n по ключу header.reference; это только fallback,
+            // если пакет переводов не поднялся.
+            reference: 'Reference & Templates',
             settings: 'Settings',
             agents: 'Agents'
         };
@@ -345,11 +376,23 @@ const ui = (function () {
                 if (window.GgufRenderer) {
                     var container = document.getElementById('ggufContainer');
                     if (container) {
-                        GgufRenderer.render(container);
-                        // R83 (2026-09-29): render() пересобирает DOM и вызывает
-                        // refreshBackends() (REST-запрос к /api/v1/gguf/backends),
-                        // то есть страница GGUF получает свежие данные и при
-                        // переключении на неё, и при кнопке «Обновить».
+                        // R493 (2026-11-17): render() — это МОНТИРОВАНИЕ страницы
+                        // (container.innerHTML = buildPageHtml() + refreshBackends()),
+                        // а не перерисовка из готовых данных. Пока refreshPage
+                        // вызывался только при переходе на страницу, это было
+                        // безвредно. Теперь его вызывает и тик авто-обновления,
+                        // и оказалось, что каждые 5 секунд страница GGUF
+                        // пересобиралась целиком: пары запросов
+                        // GET /api/v1/gguf/backends за тик (провайдер + render),
+                        // сброс введённых значений и потеря позиции.
+                        //
+                        // Правило: монтируем ОДИН раз (пока разметки страницы нет
+                        // в DOM), дальше DOM обновляют провайдеры страницы —
+                        // refreshBackends / refreshDetail / refreshActiveDownloads.
+                        var mounted = container.querySelector('.gguf-master-layout');
+                        if (!mounted) {
+                            GgufRenderer.render(container);
+                        }
                     }
                 }
                 break;
@@ -373,6 +416,20 @@ const ui = (function () {
                     window.ImageBackendsPage.mount();
                     window.ImageBackendsPage.render(data.backends);
                     window.ImageBackendsPage.syncVisibility(data.backends);
+                }
+                break;
+            case 'reference':
+                // R493 (2026-11-17): страница «Справка и шаблоны».
+                //
+                // Только МОНТИРОВАНИЕ, ровно как у case 'gguf' выше: refreshPage
+                // вызывается и при переходе на страницу, и каждым тиком
+                // авто-обновления. Если бы здесь стояла полная отрисовка, тик
+                // пересобирал бы DOM и стирал введённый фильтр и выбранный
+                // бэкенд. Данные обновляет провайдер 'reference' в реестре
+                // DataRefresh (js/modules/reference-page.js), а mount()
+                // идемпотентен — второй и последующие вызовы ничего не делают.
+                if (window.ReferencePage && typeof window.ReferencePage.mount === 'function') {
+                    window.ReferencePage.mount();
                 }
                 break;
             case 'settings':
@@ -420,6 +477,35 @@ const ui = (function () {
             refreshInterval: 2000,
             lang: localStorage.getItem('ollamalegion_lang') || 'ru'
         }, '*');
+        // R493 (2026-11-17): вместе с конфигом сообщаем текущее состояние паузы.
+        //
+        // Живой дефект (замер: при СОХРАНЁННОЙ паузе iframe дал 67 запросов за
+        // 12 с): состояние паузы отправлялось только по событию (клик по паузе,
+        // скрытие вкладки). Iframe загружается позже и о сохранённой паузе не
+        // узнавал никогда — его собственный 2-секундный цикл работал всегда и
+        // давал 76 % фоновых запросов WebUI (78 из 103 за 15 с), в том числе на
+        // страницах, где монитор не виден.
+        syncMonitorIframePause();
+    }
+
+    /**
+     * monitorIframeMustPause — должен ли монитор в iframe молчать прямо сейчас.
+     *
+     * Правило одно и то же для трёх поводов (страница, пауза, скрытая вкладка):
+     * метрики монитора нужны только когда оператор их видит.
+     */
+    function monitorIframeMustPause() {
+        if (currentPage !== 'monitor') return true;
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return true;
+        if (window.DataRefresh && typeof window.DataRefresh.isAuto === 'function') {
+            return !window.DataRefresh.isAuto();
+        }
+        return false;
+    }
+
+    /** syncMonitorIframePause — отправить текущее состояние паузы в iframe. */
+    function syncMonitorIframePause() {
+        postMonitorPause(monitorIframeMustPause());
     }
 
     /**
@@ -1962,11 +2048,11 @@ const ui = (function () {
         document.addEventListener('visibilitychange', function () {
             if (document.visibilityState === 'hidden') {
                 stopPeriodicRefresh();
-                postMonitorPause(true);
+                syncMonitorIframePause();
                 if (window.DataRefresh && window.DataRefresh.isAuto()) stopOpsAutoRefresh();
                 return;
             }
-            postMonitorPause(false);
+            syncMonitorIframePause();
             if (window.DataRefresh && window.DataRefresh.isAuto()) startOpsAutoRefresh();
             startPeriodicRefresh();
             if (window.DataRefresh && !window.DataRefresh.isAuto()) return;

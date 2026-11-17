@@ -77,6 +77,43 @@ check('у data-refresh.js есть hasProvider (иначе решение тай
     assert.ok(/hasProvider: hasProvider/.test(dr), 'hasProvider не экспортирован — app.js его не увидит');
 });
 
+// --- три дефекта, найденные живым замером на стенде (R493, 2026-11-17) -------
+
+check('App.context.currentPage — живое значение, а не снимок', function () {
+    // Замер: `App.context.currentPage` был равен 'dashboard' на ВСЕХ страницах
+    // (копия на момент инициализации). Из-за этого скрытый дашборд
+    // перерисовывался каждым тиком (88 мутаций DOM за 20 с), а активная
+    // страница — ни разу (0 мутаций за 30 с).
+    assert.ok(/get currentPage\(\)\s*\{\s*return currentPage;/.test(appJs),
+        'App.context.currentPage должен быть геттером: снимок снова заморозит перерисовку на dashboard');
+    assert.ok(!/currentPage:\s*currentPage,/.test(appJs),
+        'в App.context вернулся снимок currentPage');
+});
+
+check('пауза авто-обновления доходит до iframe монитора', function () {
+    // Замер: при СОХРАНЁННОЙ паузе iframe давал 67 запросов за 12 с — состояние
+    // паузы отправлялось только по событию и никогда при загрузке.
+    assert.ok(/function monitorIframeMustPause\(\)/.test(appJs),
+        'нет правила «когда монитору молчать»');
+    assert.ok(/currentPage !== 'monitor'/.test(appJs),
+        'монитор не останавливается, когда его страница не открыта (76 % фоновых запросов)');
+    assert.ok(/function syncMonitorIframePause\(\)/.test(appJs), 'нет отправки состояния паузы');
+    const config = appJs.slice(appJs.indexOf('function sendMonitorConfig()'), appJs.indexOf('function monitorIframeMustPause()'));
+    assert.ok(/syncMonitorIframePause\(\)/.test(config),
+        'sendMonitorConfig не сообщает состояние паузы: iframe стартует с опросом при сохранённой паузе');
+});
+
+check('страница GGUF монтируется один раз, а не пересобирается каждым тиком', function () {
+    // Замер: пары запросов GET /api/v1/gguf/backends за тик (провайдер + render),
+    // потому что refreshPage → GgufRenderer.render() пересобирает DOM и сам
+    // дёргает refreshBackends(). Плюс потеря введённых значений каждые 5 с.
+    const start = appJs.indexOf("case 'gguf':");
+    assert.ok(start !== -1, "в refreshPage нет case 'gguf'");
+    const body = appJs.slice(start, start + 1400);
+    assert.ok(/gguf-master-layout/.test(body),
+        'render() вызывается без проверки «страница уже смонтирована» — GGUF будет пересобираться на каждом тике');
+});
+
 console.log('\n' + (failures.length ? 'FAILED: ' + failures.length : 'ИТОГ: все проверки пройдены (' + passed + ')'));
 if (failures.length) {
     failures.forEach(function (f) { console.error(' - ' + f); });

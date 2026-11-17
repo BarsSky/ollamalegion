@@ -363,15 +363,22 @@ const Diagnostics = (function () {
         }
     }
 
+    var mounted = false;
+
     function mount() {
         // R493 (2026-11-17): кнопки #diagRefresh в разметке больше нет — одна
         // кнопка обновления живёт в шапке приложения, а страница отдаёт своё
         // действие провайдеру. Раньше на этой странице было ДВЕ кнопки
         // «Обновить» (страничная и шапка), причём страничная тянула только
         // /api/v1/diag/summary, а шапка — ещё и кластер.
-        if (window.DataRefresh && typeof window.DataRefresh.register === 'function') {
-            window.DataRefresh.register('diagnostics', function () { return load(); });
-        }
+        //
+        // mount вызывает refreshPage('diagnostics'), а его теперь дёргает КАЖДЫЙ
+        // тик авто-обновления. Раньше mount звал load() и регистрировал
+        // провайдера — без этого флага каждый тик добавлял ещё одного провайдера
+        // и делал ещё один запрос /diag/summary (замер: 6 запросов за 12 с при
+        // ожидаемых 2–3; счётчик — в verify-webui-refresh-r493.js).
+        if (mounted) return;
+        mounted = true;
         var copyAll = document.getElementById('diagCopyAll');
         if (copyAll && !copyAll.dataset.bound) {
             copyAll.dataset.bound = '1';
@@ -403,14 +410,49 @@ const Diagnostics = (function () {
         load();
     }
 
+
+    // R493 (2026-11-17): регистрация провайдера — ОДИН раз на модуль, и ОБЯЗАТЕЛЬНО
+    // внутри IIFE: снаружи `load` не виден, и провайдер падал с
+    // `ReferenceError: load is not defined` при первом же вызове (страница
+    // выглядела «без обновления», а статический тест искал только строку и молчал).
+    registerProvider();
+
     return {
         mount: mount,
         load: load,
         downloadBundle: downloadBundle,
         // Для тестов/отладки: отрендерить конкретную сводку без сети.
         _renderWith: function (summary) { lastSummary = summary; lastError = ''; render(); },
-        _sectionText: function (name) { return sectionText(name, lastSummary); }
+        _sectionText: function (name) { return sectionText(name, lastSummary); },
+        // Для тестов: зарегистрирован ли провайдер (ровно один на модуль).
+        _providerRegistered: function () { return providerRegistered; }
     };
+
+    var providerRegistered = false;
+    var retryScheduled = false;
+
+    /**
+     * registerProvider — идемпотентная регистрация провайдера страницы.
+     *
+     * ЗАЧЕМ НЕ В mount(): mount вызывается на каждый показ страницы и на каждый
+     * тик авто-обновления — регистрация внутри него плодила дубликаты провайдеров,
+     * и каждый дубликат делал свой запрос /diag/summary (замер: 6 запросов за 12 с
+     * при ожидаемых 2–3).
+     */
+    function registerProvider() {
+        if (providerRegistered) return false;
+        if (!window.DataRefresh || typeof window.DataRefresh.register !== 'function') {
+            // Реестр появится позже (динамическая подгрузка модуля) — ждём один раз.
+            if (!retryScheduled && typeof document !== 'undefined' && document.addEventListener) {
+                retryScheduled = true;
+                document.addEventListener('DOMContentLoaded', registerProvider);
+            }
+            return false;
+        }
+        providerRegistered = true;
+        window.DataRefresh.register('diagnostics', function () { return load(); });
+        return true;
+    }
 })();
 
 if (typeof window !== 'undefined') {

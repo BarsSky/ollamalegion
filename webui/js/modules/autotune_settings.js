@@ -159,12 +159,17 @@
             saveBtn.dataset.bound = '1';
             saveBtn.addEventListener('click', saveConfig);
         }
-        // Провайдер страницы настроек: общая кнопка в шапке перечитывает и
-        // AutoTune-конфиг (раньше это делала только своя кнопка, и «Обновить» в
-        // шапке не обновляла список моделей AutoTune).
-        if (window.DataRefresh && typeof window.DataRefresh.register === 'function') {
-            window.DataRefresh.register('settings', function () { return render(); });
-        }
+        // Провайдер страницы настроек регистрируется ВНЕ setupHandlers (ниже, при
+        // загрузке модуля): setupHandlers зовётся из init, а init — на каждый
+        // показ страницы, поэтому регистрация здесь плодила дубликаты, и тик
+        // авто-обновления дёргал render() несколько раз.
+    }
+
+    // R493 (2026-11-17): общая кнопка в шапке перечитывает и AutoTune-конфиг
+    // (раньше это делала только своя кнопка, и «Обновить» в шапке не обновляла
+    // список моделей AutoTune). Один раз на модуль — см. комментарий выше.
+    if (window.DataRefresh && typeof window.DataRefresh.register === 'function') {
+        window.DataRefresh.register('settings', function () { return render(); });
     }
 
     window.AutoTuneSettings = {

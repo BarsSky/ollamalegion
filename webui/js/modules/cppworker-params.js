@@ -1128,8 +1128,21 @@
     // ----- Apply with progress modal (Round 26 v0.5.13) -----
     // Async path: detect busy → 202 + SSE progress → terminal state.
     // Sync path: 200 + final backends list → close modal.
-
-    async function applyProfileWithProgress(modelName, backendID) {
+    //
+    // R493 (2026-11-17): третий аргумент `applier` — ТОЧКА ПОДКЛЮЧЕНИЯ для
+    // страницы «Справка и шаблоны» (reference-page.js). Применение шаблона на
+    // сервере — это тот же путь профилей (мерж + validateModelProfile + reload
+    // через существующий apply, design §3.4), но HTTP-ручка у него своя:
+    // POST /api/v1/reference/templates/{id}/apply. Чтобы не заводить второй
+    // механизм прогресса/SSE (это прямо запрещено, design §7 п.11), модалка
+    // принимает функцию применения и работает с её ответом как обычно:
+    // 200 — синхронный финал, 202 + applyId — существующий SSE/polling.
+    // Без аргумента поведение прежнее (PROFILES.apply) — остальные вызовы не
+    // затронуты.
+    async function applyProfileWithProgress(modelName, backendID, applier) {
+        const applyFn = (typeof applier === 'function')
+            ? applier
+            : function () { return PROFILES.apply(modelName, undefined, backendID); };
         // Создаём modal
         const overlay = document.createElement('div');
         overlay.className = 'mode-wizard-overlay';
@@ -1204,7 +1217,11 @@
             setStep('save', 'running');
             fillEl.style.width = '20%';
 
-            const resp = await PROFILES.apply(modelName, undefined, backendID);
+            const resp = await applyFn();
+            // R493: имя для progress/status берём из ОТВЕТА, если сервер его
+            // вернул — он нормализован на границе API профилей (снят `.gguf`,
+            // NormalizeModelProfileKey). Иначе остаёмся на переданном имени.
+            const progressModel = (resp && resp.model) ? resp.model : modelName;
 
             setStep('save', 'done');
 
@@ -1224,7 +1241,7 @@
                 // Попробуем EventSource (SSE), fallback на polling
                 const useSSE = typeof EventSource !== 'undefined';
                 if (useSSE) {
-                    const es = APPLY_PROGRESS.streamProgress(modelName, resp.applyId, {
+                    const es = APPLY_PROGRESS.streamProgress(progressModel, resp.applyId, {
                         onProgress: (data) => {
                             if (data.state === 'reloading') {
                                 setStep('busy', 'done');
@@ -1280,14 +1297,14 @@
                         },
                         onError: () => {
                             // SSE упал — fallback на polling
-                            pollUntilDone(modelName, resp.applyId, overlay, setStep, fillEl, renderBackendResults, closeBtn);
+                            pollUntilDone(progressModel, resp.applyId, overlay, setStep, fillEl, renderBackendResults, closeBtn);
                         }
                     });
                     // Cleanup: close EventSource when overlay closed
                     closeBtn.addEventListener('click', () => { try { es.close(); } catch (_) {} overlay.remove(); });
                 } else {
                     // Polling fallback
-                    pollUntilDone(modelName, resp.applyId, overlay, setStep, fillEl, renderBackendResults, closeBtn);
+                    pollUntilDone(progressModel, resp.applyId, overlay, setStep, fillEl, renderBackendResults, closeBtn);
                     closeBtn.addEventListener('click', () => overlay.remove());
                 }
                 return; // async path, close button enabled by callbacks

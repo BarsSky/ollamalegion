@@ -131,6 +131,34 @@ const Api = (function () {
         return response.json();
     }
 
+    /**
+     * referencePath — путь к записи справочника (R493).
+     *
+     * Внутренний помощник объекта `Api.reference`: обе сущности (рекомендации и
+     * шаблоны) живут на одном префиксе `/api/v1/reference/`, поэтому путь
+     * собирается в одном месте, а не в семи методах. Неизвестный вид записей —
+     * ошибка вызывающего кода, а не молчаливый запрос в пустоту.
+     */
+    function referencePath(kind, id, action) {
+        const raw = String(kind == null ? '' : kind).trim().toLowerCase();
+        let segment;
+        if (raw === 'recommendations' || raw === 'recommendation') {
+            segment = 'recommendations';
+        } else if (raw === 'templates' || raw === 'template') {
+            segment = 'templates';
+        } else {
+            throw new Error('Api.reference: неизвестный вид записей "' + kind + '" (ожидались recommendations|templates)');
+        }
+        let path = '/api/v1/reference/' + segment;
+        if (id !== undefined && id !== null && String(id) !== '') {
+            path += '/' + encodeURIComponent(String(id));
+        }
+        if (action) {
+            path += '/' + action;
+        }
+        return path;
+    }
+
     return {
         // Health check
         async health() {
@@ -571,6 +599,121 @@ const Api = (function () {
                 const response = await request(url, options);
                 const data = await response.json();
                 // Attach status to result so caller can distinguish sync (200) vs async (202)
+                data._status = response.status;
+                return data;
+            }
+        },
+
+        // ===== Справка/рекомендации и шаблоны параметров (R493, 2026-11-17) =====
+        //
+        // Сервер: `internal/reference` (хранилище `model-reference.json`) +
+        // `internal/api/handlers_reference*.go`. Контракт — docs/plans/
+        // 2026-11-17-reference-templates-design.md §3, фактическая реализация —
+        // docs/plans/2026-11-17-reference-api-implementation.md §2.3.
+        //
+        // ПОЧЕМУ ОДНА ОБЁРТКА НА ДВЕ СУЩНОСТИ. Маршруты рекомендаций и шаблонов
+        // отличаются только сегментом пути (recommendations|templates), а
+        // коды ошибок (503 store_unavailable, 409 revision_conflict,
+        // 422 profile_does_not_fit_memory) у них общие. Второй объект дал бы
+        // вторую копию обработки этих кодов в UI — ровно то, от чего
+        // предупреждает заголовок этого файла («не собирай заголовки руками»).
+        //
+        // Заголовки (X-API-Token, X-CSRF-Token) и таймауты берутся из общего
+        // `request()`: GET ограничен по времени, мутации — без таймаута
+        // (применение шаблона перезагружает модель, обрывать его нельзя).
+        reference: {
+            /**
+             * GET /api/v1/reference/{kind} — список записей.
+             * @param {string} kind — 'recommendations' | 'templates'.
+             * @returns {Promise<{items: Array, total: number, schemaVersion: number}>}
+             */
+            async list(kind) {
+                return getJson(referencePath(kind));
+            },
+
+            /**
+             * GET /api/v1/reference/{kind}/{id} — одна запись.
+             * Для рекомендации ответ `{recommendation, relatedTemplates}`,
+             * для шаблона — `{template, usage:{usedByProfiles}}`.
+             * @throws Error со status=404, если записи нет.
+             */
+            async get(kind, id) {
+                return getJson(referencePath(kind, id));
+            },
+
+            /**
+             * PUT /api/v1/reference/{kind}/{id} — создать или обновить (upsert).
+             * @param {Object} body — запись; `revision` в теле — необязательная
+             *   оптимистичная блокировка (не совпала → 409 revision_conflict).
+             * @returns {Promise<{status: string, recommendation?: Object, template?: Object, warning?: string}>}
+             */
+            async upsert(kind, id, body) {
+                const response = await request(`${API_BASE}${referencePath(kind, id)}`, {
+                    method: 'PUT',
+                    body: JSON.stringify(body || {})
+                });
+                return response.json();
+            },
+
+            /**
+             * DELETE /api/v1/reference/{kind}/{id}.
+             * @returns {Promise<{status: string, id: string, warning?: string}>}
+             */
+            async remove(kind, id) {
+                const response = await request(`${API_BASE}${referencePath(kind, id)}`, {
+                    method: 'DELETE'
+                });
+                return response.json();
+            },
+
+            /**
+             * POST /api/v1/reference/recommendations/{id}/to-template —
+             * превратить запись-справку в шаблон (params[] → плоский объект).
+             * @param {Object} [body] — {templateId?, name?}; по умолчанию id записи.
+             * @returns {Promise<{status: string, template: Object}>} — 201.
+             */
+            async toTemplate(recommendationId, body) {
+                const path = referencePath('recommendations', recommendationId, 'to-template');
+                const response = await request(`${API_BASE}${path}`, {
+                    method: 'POST',
+                    body: JSON.stringify(body || {})
+                });
+                return response.json();
+            },
+
+            /**
+             * POST /api/v1/reference/templates/{id}/preview — сухой прогон.
+             * Ничего не сохраняет и reload не запускает.
+             * @param {Object} body — {model, backendId?}.
+             * @returns {Promise<{ok, model, templateId, templateVersion, profile,
+             *   valid:{ok,violations}, diff:Array, targets:Array, memory, warnings}>}
+             */
+            async preview(templateId, body) {
+                const path = referencePath('templates', templateId, 'preview');
+                const response = await request(`${API_BASE}${path}`, {
+                    method: 'POST',
+                    body: JSON.stringify(body || {})
+                });
+                return response.json();
+            },
+
+            /**
+             * POST /api/v1/reference/templates/{id}/apply — применить шаблон.
+             * 200 — синхронный ответ `{status:'applied', model, templateId,
+             * templateVersion, mode, profile, backends}`; 202 (занятый бэкенд) —
+             * существующий async-путь профилей как есть (applyId/progressUrl).
+             * @param {Object} body — {model, backendId, mode:'profile-only'|'profile+reload',
+             *   confirmNonFeasible?, revision?}.
+             */
+            async apply(templateId, body) {
+                const path = referencePath('templates', templateId, 'apply');
+                const response = await request(`${API_BASE}${path}`, {
+                    method: 'POST',
+                    body: JSON.stringify(body || {})
+                });
+                const data = await response.json();
+                // 202 не считается ошибкой (request пропускает любой 2xx), но
+                // вызывающему нужно отличить синхронный путь от async-прогресса.
                 data._status = response.status;
                 return data;
             }

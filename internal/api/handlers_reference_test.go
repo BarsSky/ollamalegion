@@ -566,19 +566,26 @@ func TestReference_ApplyProfileOnlyDoesNotReload(t *testing.T) {
 // механизма прогресса не заводим).
 func TestReference_ApplyBusyBackendForwardsAsync(t *testing.T) {
 	const backendID = "fake-busy"
-	var activeCalls int64
+	// R493 (2026-11-17): «занят» держится, пока не НАЧАЛАСЬ перезагрузка, а не
+	// «ровно на первом вызове active-queries».
+	//
+	// Живой флейк (CI 44100630001, шаг «Generate coverage (race + atomic)»):
+	// тест упал как HTTP 200, ожидали 202 — busy-сигнал достался ДРУГОМУ
+	// вызову того же endpoint (ватчдог/поллер/повтор busy-проверки), apply увидел
+	// «свободен» и ушёл синхронным путём. Привязка к факту «перезагрузка
+	// началась» убирает зависимость от количества и порядка вызовов.
+	var reloadStarted int32
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/api/models/active-queries"):
-			// Первый вызов — «занят» (в него попадает busy-проверка apply),
-			// дальше — «свободен», чтобы фоновая задача не висела 5 минут.
-			if atomic.AddInt64(&activeCalls, 1) == 1 {
+			if atomic.LoadInt32(&reloadStarted) == 0 {
 				_, _ = w.Write([]byte(`{"activeQueries":2}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"activeQueries":0}`))
 		case strings.HasSuffix(r.URL.Path, "/api/models/reload"):
+			atomic.StoreInt32(&reloadStarted, 1)
 			_, _ = w.Write([]byte(`{"status":"reloaded"}`))
 		default:
 			_, _ = w.Write([]byte(`{}`))

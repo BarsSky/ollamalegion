@@ -1097,7 +1097,6 @@ func makeWindowTooBigReject(
 	}
 }
 
-
 // nctxPreflightWaitDefaultSec — исторический дефолт 240 c (R68). Оставлен как
 // документация: R83/v67 убрал его из поведения — ждать нужно терминального
 // состояния reload, а не 240 секунд по часам.
@@ -1317,6 +1316,23 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 				"slots", state.effectiveSlots(),
 				"reason", why,
 				"action", i18n.T("balancer.preflight_nctx.growth_skipped_action"))
+			return &PreflightResult{Decision: PreflightNoOp, TargetNCtx: state.CurrentNCtx}, nil
+		}
+
+		// R493 (2026-11-17): ПОСЛЕДНЯЯ ПРОВЕРКА ПЕРЕД СТАРТОМ. Решатели уже
+		// смотрели занятость, но между решением и фактическим unload+load
+		// проходит время, и новый ход клиента успевает начаться. Живой факт
+		// второго стенда: перезагрузки в 06:24:53 и 06:25:43 при идущих ходах.
+		// Проверка стоит ПОСЛЕ гейтов «рост бесполезен» и «окно не уменьшаем»,
+		// чтобы не откладывать то, что всё равно не стало бы делать.
+		if allow, busyReason := c.reloadAllowed(backendID, gateModelName); !allow {
+			logger.Get().Warnw("preflight: reload skipped — backend busy, not preempting a live turn (R493)",
+				"backend_id", backendID,
+				"model", gateModelName,
+				"current_n_ctx", state.CurrentNCtx,
+				"target_n_ctx", plan.NewNCtx,
+				"reason", busyReason,
+				"action", "no_op: перезагрузка оборвала бы чужой ответ; клиент повторит позже")
 			return &PreflightResult{Decision: PreflightNoOp, TargetNCtx: state.CurrentNCtx}, nil
 		}
 

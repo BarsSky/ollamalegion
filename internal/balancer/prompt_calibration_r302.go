@@ -595,28 +595,35 @@ func (p *Proxy) extractRequestMeta(body []byte, path string) *RequestMeta {
 // applyPromptCalibration — переписать EstimatedPromptTokens на калиброванную
 // оценку, сохранив сырую в EstimatedPromptTokensRaw, и запомнить её для
 // обучения на фактическом числе токенов.
+//
+// R493 (2026-11-17): точный подсчёт больше НЕ зависит от наличия калибровки.
+// Живой дефект: здесь стоял `if raw <= 0 || p == nil || p.promptCalib == nil {
+// return }`, и при отсутствии хранилища калибровки (юнит-тесты, лёгкая сборка,
+// прокси без state-файла) НИ ОДИН запрос не получал точное число токенов —
+// решения об окне считались по оценке ×1.9–2.0, хотя токенизатор был доступен.
+// Калибровка и точный подсчёт — разные вещи: первая учит коэффициент на оценке,
+// второй спрашивает у самой модели.
 func (p *Proxy) applyPromptCalibration(meta *RequestMeta) {
-	if meta == nil {
+	if meta == nil || p == nil {
 		return
 	}
 	raw := meta.EstimatedPromptTokens
 	meta.EstimatedPromptTokensRaw = raw
-	if raw <= 0 || p == nil || p.promptCalib == nil {
-		return
-	}
-	calibrated, source := p.promptCalib.calibrate(meta.ModelName, raw, meta.PromptNonASCIIShare)
-	// Сырую оценку запоминаем ДО того, как воркер вернёт факт: fact приходит
-	// позже (recordTokenUsage) и относится именно к этому промпту.
-	p.promptCalib.note(meta.ModelName, raw, time.Now())
-	meta.EstimatedPromptTokens = calibrated
+	if raw > 0 && p.promptCalib != nil {
+		calibrated, source := p.promptCalib.calibrate(meta.ModelName, raw, meta.PromptNonASCIIShare)
+		// Сырую оценку запоминаем ДО того, как воркер вернёт факт: fact приходит
+		// позже (recordTokenUsage) и относится именно к этому промпту.
+		p.promptCalib.note(meta.ModelName, raw, time.Now())
+		meta.EstimatedPromptTokens = calibrated
 
-	logger.Get().Debugw("prompt estimate",
-		"model", meta.ModelName,
-		"bytes", meta.PromptBytes,
-		"nonascii", roundFloat(meta.PromptNonASCIIShare, 3),
-		"estimated", raw,
-		"calibrated", calibrated,
-		"source", source)
+		logger.Get().Debugw("prompt estimate",
+			"model", meta.ModelName,
+			"bytes", meta.PromptBytes,
+			"nonascii", roundFloat(meta.PromptNonASCIIShare, 3),
+			"estimated", raw,
+			"calibrated", calibrated,
+			"source", source)
+	}
 
 	// R473 (2026-11-06): если токенизатор модели доступен — заменяем оценку
 	// ФАКТОМ. Живое завышение эвристики (49731 против 9816; 36601 против ~20.7k)

@@ -713,6 +713,16 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// рабочий kvCacheType (профиль/загруженная модель), чтобы адаптивная
 	// стратегия cppworker считала по реальному типу, а не по f16.
 	p.nctxReload.SetReloadHintsProvider(p.reloadHintsFor)
+	// R493 (2026-11-17): перезагрузка не начинается, пока на бэкенде идёт стрим.
+	// Решатели проверяют занятость ДО решения, но между решением и unload+load
+	// клиент успевает начать новый ход (живой факт второго стенда: reload в
+	// 06:24:53 и 06:25:43 при идущих ходах Cline).
+	p.nctxReload.SetBeforeReloadGuard(func(backendID, model string) (bool, string) {
+		if active := p.ActiveStreamsOnBackend(backendID); active > 0 {
+			return false, fmt.Sprintf("на бэкенде идёт %d стрим(ов)", active)
+		}
+		return true, ""
+	})
 	logger.Get().Infow("nctx reload coordinator initialized",
 		"auto_reload", p.nctxReload.Config().AutoReloadNCtx)
 

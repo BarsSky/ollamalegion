@@ -346,6 +346,9 @@ type NCtxReloadCoordinator struct {
 	// R70 (2026-09-24): поставщик «хинтов» для reload'а (тип KV-cache и т.п.).
 	// Ставится Proxy'ем после создания координатора; см. ReloadHints.
 	reloadHints func(backendID, modelName string) ReloadHints
+	// R493 (2026-11-17): последняя проверка перед стартом перезагрузки
+	// (занятость бэкенда). Ставится Proxy'ем; см. SetBeforeReloadGuard.
+	beforeReload func(backendID, modelName string) (bool, string)
 
 	metricsByBackend sync.Map
 
@@ -451,6 +454,43 @@ func (c *NCtxReloadCoordinator) ReloadHintsFor(backendID, modelName string) Relo
 	c.mu.RUnlock()
 	if fn == nil {
 		return ReloadHints{}
+	}
+	return fn(backendID, modelName)
+}
+
+// SetBeforeReloadGuard — R493 (2026-11-17): последняя проверка ПЕРЕД тем, как
+// перезагрузка реально начнётся.
+//
+// ЗАЧЕМ ОТДЕЛЬНЫЙ ХУК, ЕСЛИ ПРОВЕРКИ ЗАНЯТОСТИ УЖЕ ЕСТЬ. Проверки в решателях
+// (`growthDeferR299`, `contextGrowthBlocker`, `decideWindowR493`) стоят ДО
+// решения, а между решением и фактическим unload+load проходит время: клиент
+// успевает начать новый ход, а перезагрузка всё равно стартует и рвёт его.
+// Живой факт (архив второго стенда): 06:24:53 запуск reload на 194296,
+// 06:25:02 узел уже грузится с `partial offload 62/64`, 06:25:43 — следующая
+// перезагрузка; ходы Cline при этом шли.
+//
+// Координатор не знает о стримах (это состояние Proxy), поэтому Proxy ставит
+// сюда функцию: (false, причина) — перезагрузку НЕ начинать, клиент получит
+// «занято, повторите» вместо оборванного чужого ответа.
+func (c *NCtxReloadCoordinator) SetBeforeReloadGuard(fn func(backendID, modelName string) (bool, string)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.beforeReload = fn
+	c.mu.Unlock()
+}
+
+// reloadAllowed — можно ли начинать перезагрузку прямо сейчас (nil-safe).
+func (c *NCtxReloadCoordinator) reloadAllowed(backendID, modelName string) (bool, string) {
+	if c == nil {
+		return true, ""
+	}
+	c.mu.RLock()
+	fn := c.beforeReload
+	c.mu.RUnlock()
+	if fn == nil {
+		return true, ""
 	}
 	return fn(backendID, modelName)
 }

@@ -429,7 +429,46 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 		resp["contextLengthSource"] = profileDefaulted
 		resp["message"] = i18n.T("api.cppworker_profiles.saved_with_defaults", profileDefaulted)
 	}
+	// R493 (2026-11-17): противоречие окна называется ПРИ СОХРАНЕНИИ, а не только
+	// при загрузке.
+	//
+	// ЖИВОЙ ФАКТ (второй стенд, архив 2026-11-16): в профиле лежало
+	// contextLength=194296 при contextLengthMax=131072. R400 осознанно отдаёт
+	// приоритет заявленному окну и пишет WARN в лог загрузки — то есть это не
+	// «ошибка», но и не повод молчать: узлы с меньшим потолком GGUF поднялись с
+	// РАЗНЫМИ окнами для одной модели (194304 и 131072), и запрос, помещавшийся
+	// на одном, на другом получал отказ/перезагрузку. Профиль сохраняем (это
+	// право оператора), но говорим прямо в ответе: числа противоречат друг
+	// другу, выровняйте их.
+	if conflict := contextWindowConflictMessage(incoming.ContextLength, incoming.ContextLengthMax); conflict != "" {
+		log.Warnw("model profile: contextLength exceeds contextLengthMax",
+			"model", modelName,
+			"context_length", incoming.ContextLength,
+			"context_length_max", incoming.ContextLengthMax,
+			"impact", "заявленное окно выигрывает (R400), но узлы с меньшим потолком GGUF "+
+				"поднимутся с другими окнами: одинаковый запрос будет обслуживаться по-разному")
+		resp["warnings"] = []map[string]string{{
+			"code":    "context_length_exceeds_max",
+			"message": conflict,
+		}}
+	}
 	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// contextWindowConflictMessage — текст противоречия «заявленное окно больше
+// потолка» ("" = противоречия нет).
+//
+// Вынесено в функцию, чтобы правило было ОДНО и проверялось тестом без HTTP:
+// R400 в балансере отдаёт приоритет заявленному окну, а здесь это лишь
+// называется вслух. Ноль в любом из полей означает «не задан» — тогда
+// сравнивать нечего.
+func contextWindowConflictMessage(contextLength, contextLengthMax int) string {
+	if contextLength <= 0 || contextLengthMax <= 0 || contextLength <= contextLengthMax {
+		return ""
+	}
+	return fmt.Sprintf("contextLength=%d больше contextLengthMax=%d: балансер обслужит заявленное окно (R400), "+
+		"но узел с меньшим потолком GGUF поднимется с другим окном — выставьте оба значения равными (например, %d и %d)",
+		contextLength, contextLengthMax, contextLengthMax, contextLengthMax)
 }
 
 // defaultContextLengthForNewProfile — какое окно подставить НОВОМУ профилю,

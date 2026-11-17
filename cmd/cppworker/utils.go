@@ -224,22 +224,53 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	}
 }
 
-// writeCppWorkerErrorWithBridgeInfo — структурированный JSON-ответ об ошибке
+// writeCppWorkerErrorWithBridgeInfo — структурированный JSON-ответ об ошибке.
+//
+// R493 (2026-11-17): нули больше не выдаются за факт.
+//
+// ЖИВОЙ ДЕФЕКТ (архив второго стенда): клиент получал
+//
+//	bridge_info: {current_n_ctx: 0, required_n_ctx: 0, max_vram_n_ctx: 443530}
+//
+// при том, что узел в тот же момент показывал `maxVramNCtx=156444` (bundled) и
+// `41472` (A10). Причина: `bridge.GetLastErrorInfo()` отдаёт данные ПОСЛЕДНЕЙ
+// ошибки C-моста, а эта функция вызывается и для ошибок, которые родились ВНЕ
+// моста (llama_decode вернул ненулевой код, отказ по n_ctx на Go-стороне,
+// таймаут). Тогда числа — нули и чужие значения из прошлой ошибки, но в JSON
+// они лежат рядом с настоящим `code` и читаются как измерение: «окно 0».
+//
+// Теперь у блока есть явный `known`: false, когда мост чисел не дал, плюс
+// `note` с объяснением и `bridge_error_seq` — номер той ошибки моста, из
+// которой взяты числа (0 = ни одной). Ключи с числами остаются (совместимость с
+// разбором на стороне балансера), но сопровождаются признаком достоверности.
 func writeCppWorkerErrorWithBridgeInfo(w http.ResponseWriter, status int, prefix string, err error) {
 	info := bridge.GetLastErrorInfo()
+	known := info.CurrentNCtx > 0 || info.RequiredNCtx > 0 || info.ActualTokens > 0 || info.NPredict > 0
+	bridgeInfo := map[string]interface{}{
+		"code":           info.Code,
+		"current_n_ctx":  info.CurrentNCtx,
+		"required_n_ctx": info.RequiredNCtx,
+		"actual_tokens":  info.ActualTokens,
+		"n_predict":      info.NPredict,
+		"n_ctx_override": info.NCtxOverride,
+		"max_vram_n_ctx": info.MaxVRAMNCtx,
+		"message":        info.Message,
+		"known":          known,
+	}
+	if !known {
+		// Числа НЕ измерены: ошибка пришла не из моста (или мост не успел
+		// записать факты). Ноль в current_n_ctx — не «окно 0», а «неизвестно».
+		bridgeInfo["note"] = "числа n_ctx неизвестны: ошибка пришла не из C-моста " +
+			"(llama_decode/таймаут/проверка на стороне Go); смотрите /api/models и лог воркера"
+		logger.Get().Warnw("error without bridge numbers: n_ctx values are unknown, not zero",
+			"prefix", prefix, "error", err.Error(), "code", info.Code,
+			"last_bridge_message", info.Message,
+			"hint", "нули в bridge_info раньше читались как «окно 0» — см. R493")
+	}
 	body := map[string]interface{}{
-		"error": prefix + ": " + err.Error(),
-		"code":  info.Code,
-		"bridge_info": map[string]interface{}{
-			"code":           info.Code,
-			"current_n_ctx":  info.CurrentNCtx,
-			"required_n_ctx": info.RequiredNCtx,
-			"actual_tokens":  info.ActualTokens,
-			"n_predict":      info.NPredict,
-			"n_ctx_override": info.NCtxOverride,
-			"max_vram_n_ctx": info.MaxVRAMNCtx,
-			"message":        info.Message,
-		},
+		"error":       prefix + ": " + err.Error(),
+		"code":        info.Code,
+		"bridge_info": bridgeInfo,
 	}
 	writeJSON(w, status, body)
 }

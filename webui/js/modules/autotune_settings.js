@@ -149,25 +149,21 @@
     }
 
     function setupHandlers() {
-        const refreshBtn = document.getElementById('autotune-refresh-btn');
-        if (refreshBtn) {
-            refreshBtn.addEventListener('click', render);
-        }
-        // Add Save button (we'll create it dynamically if not present)
-        let saveBtn = document.getElementById('autotune-save-btn');
-        if (!saveBtn) {
-            const refBtn = document.getElementById('autotune-refresh-btn');
-            if (refBtn) {
-                saveBtn = document.createElement('button');
-                saveBtn.id = 'autotune-save-btn';
-                saveBtn.className = 'btn btn-primary';
-                saveBtn.textContent = 'Save';
-                saveBtn.style.marginLeft = '8px';
-                refBtn.parentNode.appendChild(saveBtn);
-            }
-        }
-        if (saveBtn) {
+        // R493 (2026-11-17): кнопки #autotune-refresh-btn больше нет (одна кнопка
+        // обновления — в шапке), а «Сохранить» теперь в разметке
+        // (#autotune-save-btn, index.html, data-admin-only). Раньше «Сохранить»
+        // создавалась кодом и вешалась на parentNode кнопки обновления: удали
+        // обновление — и кнопка сохранения исчезла бы вместе с ним.
+        const saveBtn = document.getElementById('autotune-save-btn');
+        if (saveBtn && !saveBtn.dataset.bound) {
+            saveBtn.dataset.bound = '1';
             saveBtn.addEventListener('click', saveConfig);
+        }
+        // Провайдер страницы настроек: общая кнопка в шапке перечитывает и
+        // AutoTune-конфиг (раньше это делала только своя кнопка, и «Обновить» в
+        // шапке не обновляла список моделей AutoTune).
+        if (window.DataRefresh && typeof window.DataRefresh.register === 'function') {
+            window.DataRefresh.register('settings', function () { return render(); });
         }
     }
 

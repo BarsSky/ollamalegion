@@ -1,4 +1,4 @@
-﻿/**
+/**
  * image-page.js — R-Image Phase 9 (2026-10-03): страница «Image-модели».
  *
  * Что делает (табы «Модели на диске», «Загруженные», «Настройки»):
@@ -965,13 +965,14 @@
 
         // R84 (2026-10-03): своя кнопка «Обновить» удалена — страница
         // регистрирует провайдера, его дёргает общая кнопка/индикатор в шапке.
-        // Кнопка у селекта модели остаётся: это отдельный ресурс («перечитать
-        // список моделей выбранного бэкенда»), а не общий refresh страницы.
+        // R493 (2026-11-17): удалена и вторая кнопка у таблицы моделей
+        // (#imgModelsRefreshBtn). Тогда её оставляли как «отдельный ресурс», но
+        // по факту её действие (loadModels) уже входит в refresh() выше:
+        // loadBackends → loadModels. Оператор видел две кнопки «Обновить» на
+        // одной странице, и обе делали одно и то же — одна из них лишняя.
         if (window.DataRefresh && typeof window.DataRefresh.register === 'function') {
             window.DataRefresh.register('image', function () { return refresh(); });
         }
-        var modelsRefreshBtn = el('imgModelsRefreshBtn');
-        if (modelsRefreshBtn) modelsRefreshBtn.addEventListener('click', function () { loadModels(); });
         var backendSel = el('imgBackendSelect');
         if (backendSel) backendSel.addEventListener('change', function () {
             state.selectedBackendId = this.value;

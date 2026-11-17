@@ -1,4 +1,4 @@
-﻿/**
+/**
  * image-models-hf.js — R-Image Phase 9: табы «HuggingFace» и «Загрузки»
  * страницы «Image-модели» (window.ImageModelsHf).
  *
@@ -1401,7 +1401,9 @@
             if (act === 'suggested') { selectBySuggested(); return; }
             if (act === 'clear') { clearSelection(); return; }
             if (act === 'download') { startBundle(); return; }
-            if (act === 'refresh-downloads') { refreshDownloads(); return; }
+            // R493 (2026-11-17): ветки 'refresh-downloads' больше нет — кнопка в
+            // разметке удалена (одна кнопка обновления в шапке). Действие
+            // зарегистрировано провайдером страницы image ниже в этом файле.
             target = target.parentNode;
         }
     }
@@ -1484,6 +1486,14 @@
         renderFamilySelect();
         var tokenInput = el('imgHfToken');
         if (tokenInput && !tokenInput.value) tokenInput.value = hfToken();
+        // R493 (2026-11-17): таб «Загрузки» больше не имеет своей кнопки
+        // «Обновить» — её действие (перечитать /api/hf/downloads) отдаётся
+        // провайдеру страницы image, то есть общей кнопке в шапке. Регистрация
+        // в mount, а не в render: mount идемпотентен (mounted), поэтому
+        // провайдер не задвоится при повторных показах таба.
+        if (window.DataRefresh && typeof window.DataRefresh.register === 'function') {
+            window.DataRefresh.register('image', function () { return refreshDownloads(); });
+        }
     }
 
     /** render(ctx) — вызывается шеллом при показе таба. */

@@ -559,7 +559,13 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
         assert.ok(KNOWN_IDS.has('imTabModels'), 'в index.html нет таба «Модели на диске»');
         assert.ok(KNOWN_IDS.has('imTabLoaded'), 'в index.html нет таба «Загруженные»');
         assert.ok(KNOWN_IDS.has('imTabSettings'), 'в index.html нет таба «Настройки»');
-        ['imgModelsBody', 'imgModelsRefreshBtn',
+        // R493 (2026-11-17): #imgModelsRefreshBtn удалён из разметки и из модуля —
+        // его действие (loadModels) уже входит в провайдера страницы image.
+        // Ищем ПРИВЯЗКУ (el('...')), а не сам литерал: имя осталось в комментарии,
+        // и проверка «подстроки нет» краснела бы от текста, ничего не доказывая.
+        assert.ok(MODULE_SRC.indexOf("el('imgModelsRefreshBtn')") === -1,
+            'модуль всё ещё привязывается к удалённой кнопке #imgModelsRefreshBtn');
+        ['imgModelsBody',
             'imgLoadProgress', 'imgLoadProgressLabel', 'imgLoadProgressBar',
             'imgLoadProgressFill', 'imgNotice', 'imgBackendSelect', 'imgModelSelect']
             .forEach(function (tok) {

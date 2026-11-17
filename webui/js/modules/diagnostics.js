@@ -364,10 +364,13 @@ const Diagnostics = (function () {
     }
 
     function mount() {
-        var refresh = document.getElementById('diagRefresh');
-        if (refresh && !refresh.dataset.bound) {
-            refresh.dataset.bound = '1';
-            refresh.addEventListener('click', function () { load(); });
+        // R493 (2026-11-17): кнопки #diagRefresh в разметке больше нет — одна
+        // кнопка обновления живёт в шапке приложения, а страница отдаёт своё
+        // действие провайдеру. Раньше на этой странице было ДВЕ кнопки
+        // «Обновить» (страничная и шапка), причём страничная тянула только
+        // /api/v1/diag/summary, а шапка — ещё и кластер.
+        if (window.DataRefresh && typeof window.DataRefresh.register === 'function') {
+            window.DataRefresh.register('diagnostics', function () { return load(); });
         }
         var copyAll = document.getElementById('diagCopyAll');
         if (copyAll && !copyAll.dataset.bound) {

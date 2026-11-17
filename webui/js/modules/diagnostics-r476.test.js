@@ -108,11 +108,20 @@ check('R476: значение копируется по клику, блок —
         'нет fallback копирования (http-стенд без secure context)');
 });
 
-check('R476: на странице есть кнопки обновления, копирования и архива', function () {
-    ['diagRefresh', 'diagCopyAll', 'diagDownloadBundle'].forEach(function (id) {
+check('R476: на странице есть кнопки копирования и архива, обновление — в шапке', function () {
+    // R493 (2026-11-17): кнопка #diagRefresh удалена — обновление страницы делает
+    // единственная кнопка в шапке (#refreshBtn), а страница отдаёт своё действие
+    // провайдеру DataRefresh. Проверяем и то, и другое: убрать кнопку и не
+    // зарегистрировать провайдера значило бы «обновление перестало обновлять
+    // диагностику».
+    ['diagCopyAll', 'diagDownloadBundle'].forEach(function (id) {
         assert.ok(indexHtml.indexOf('id="' + id + '"') > 0, 'нет кнопки #' + id);
         assert.ok(diagJs.indexOf(id) > 0, 'модуль не обрабатывает #' + id);
     });
+    assert.strictEqual(indexHtml.indexOf('id="diagRefresh"'), -1,
+        'страничная кнопка обновления вернулась: кнопка обновления должна быть одна — в шапке');
+    assert.ok(diagJs.indexOf("DataRefresh.register('diagnostics'") > 0,
+        'страница не зарегистрировала провайдера — общая кнопка не обновит диагностику');
 });
 
 check('R476: разделы диаграммы данных присутствуют', function () {

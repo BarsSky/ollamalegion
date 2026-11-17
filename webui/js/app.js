@@ -1870,6 +1870,39 @@ const ui = (function () {
             }).catch(function (e) {
                 if (window.DataRefresh) window.DataRefresh.markError(e);
             });
+            // R493 (2026-11-17): ТАЙМЕР ОБЯЗАН ДЕЛАТЬ ТО ЖЕ, ЧТО КНОПКА.
+            //
+            // Живой дефект (жалоба оператора «авто-обновление не работает, а на
+            // странице GGUF загруженные модели видны только после F5»): тик
+            // обновлял общие данные (cluster, очередь, сессии, агенты) и НЕ
+            // дёргал провайдеров активной страницы — их вызывала только кнопка
+            // «Обновить». Собственные источники страниц (GGUF-список и панель
+            // деталей, image-модели и загрузки, диагностика) оставались
+            // замороженными до ручного обновления, хотя индикатор в шапке
+            // показывал «Обновлено только что».
+            //
+            // Правило теперь одно на оба входа: провайдеры страницы + перерисовка
+            // страницы из уже обновлённого состояния.
+            var DR = window.DataRefresh;
+            var pageHasOwnSources = !!(DR && typeof DR.hasProvider === 'function' && DR.hasProvider(currentPage));
+            if (!pageHasOwnSources) {
+                // Страницы без собственных провайдеров (dashboard, backends, help)
+                // живут на общем наборе запросов — как и раньше.
+                fetchAgents();
+                fetchQueue();
+                fetchQueueDetails();
+                fetchQueueHistory();
+                fetchSessions();
+            }
+            if (DR && typeof DR.refresh === 'function') {
+                DR.refresh(currentPage).then(function () {
+                    // Перерисовка: fetch-функции обновляют `data.*`, но не DOM
+                    // страницы. Без этого авто-обновление обновляло данные, а
+                    // оператор видел прежние числа (ровно то, на что жаловались).
+                    refreshPage(currentPage);
+                }).catch(function () { /* ошибку покажет индикатор свежести */ });
+                return;
+            }
             fetchAgents();
             fetchQueue();
             fetchQueueDetails();
@@ -1880,6 +1913,7 @@ const ui = (function () {
             // (refreshPage → loadBackendLimits), и если в тот момент список бэкендов
             // был пуст/недоступен, loadBackendLimits() оставлял строку
             // «Загрузка...» НАВСЕГДА — periodic refresh её не перерисовывал.
+            // R493: при живом DataRefresh это делает провайдер 'settings'.
             if (currentPage === 'settings') {
                 loadBackendLimits();
             }

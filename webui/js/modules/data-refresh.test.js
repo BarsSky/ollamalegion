@@ -275,6 +275,36 @@ check('mount: клик по индикатору = обновить сейчас
     DR.setAuto(true);
 });
 
+// R493 (2026-11-17): hasProvider — не украшение, а вход в решение таймера.
+// Живой дефект: авто-обновление тянуло ОБЩИЕ данные и не дёргало провайдеров
+// активной страницы (их вызывала только кнопка), поэтому собственные источники
+// страниц — GGUF-список, панель деталей, загрузки — стояли до F5. Таймер должен
+// уметь спросить «у этой страницы есть свои источники?» и не дублировать запросы.
+check('hasProvider: различает страницу со своими источниками и без них', function () {
+    DR.register('probe-page', function () { return true; });
+    assert.strictEqual(DR.hasProvider('probe-page'), true, 'страница с провайдером считается «со своими источниками»');
+    // Глобальные провайдеры регистрируют предыдущие проверки — на время этой
+    // нас интересует только страничный реестр.
+    const savedGlobal = DR._providers['*'] || [];
+    DR._providers['*'] = [];
+    try {
+        assert.strictEqual(DR.hasProvider('no-such-page-xyz'), false, 'страница без провайдера — общий набор запросов');
+    } finally {
+        DR._providers['*'] = savedGlobal;
+    }
+});
+
+check('hasProvider: глобальный провайдер делает «своим» любую страницу', function () {
+    DR.registerGlobal(function () { return true; });
+    try {
+        assert.strictEqual(DR.hasProvider('no-such-page-xyz'), true,
+            'глобальный провайдер работает на любой странице, значит общий набор не нужен');
+    } finally {
+        // Убираем глобального провайдера, чтобы не влиять на порядок проверок.
+        DR._providers['*'] = [];
+    }
+});
+
 console.log('\n' + (failures.length ? 'FAILED: ' + failures.length : 'ИТОГ: все проверки пройдены (' + passed + ')'));
 if (failures.length) {
     failures.forEach(function (f) { console.error(' - ' + f); });

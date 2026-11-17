@@ -75,7 +75,8 @@ func injectImageToolOllama(body []byte, target *imageToolTarget) ([]byte, []stri
 // false — цикл не справился с ПЕРВЫМ шагом, и запрос надо обслужить обычным путём
 // (мы ещё ничего не отправили клиенту).
 func (lr *LlamaCppRouter) runImageToolLoopOllama(w http.ResponseWriter, r *http.Request, a imageToolLoopArgsOllama) bool {
-	clientStream := isStreamingFromBody(r.URL.Path, a.bodyBuf)
+	// R493 (этап 1): решение о стриме — из плана запроса (см. streamDecisionR493).
+	clientStream := streamDecisionR493(r, r.URL.Path, a.bodyBuf)
 	cfg := lr.proxy.imageToolSettings()
 
 	// --- turn 1: нестриминговый, чтобы увидеть вызов целиком ---

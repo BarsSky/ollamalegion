@@ -32,7 +32,6 @@ var requestDecisionAllowlistR493 = map[string]int{
 	// База 2026-11-16 (фактический подсчёт, не догадка): 14 прямых решений
 	// в 10 файлах. Уменьшать можно, увеличивать — нельзя.
 	"admission_queue.go":             1,
-	"image_tool_loop_ollama.go":      1,
 	"llamacpp_handlers_inference.go": 3,
 	"llamacpp_translate_req.go":      1,
 	"llamacpp_transport.go":          1,

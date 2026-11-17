@@ -266,6 +266,7 @@ services:
       # путей. 0 — историческое поведение (правила окна в двух местах), 1 — единое
       # решение decideWindowR493, 2 — «тень»: единое считается и расхождения
       # пишутся в лог, поведение остаётся историческим (режим для стенда).
+      - LB_GPU_BOTTLENECK=${LB_GPU_BOTTLENECK:-shadow}
       - LB_WINDOW_UNIFIED=${LB_WINDOW_UNIFIED:-0}
       # R493-12p (2026-11-13, этап 4 «два мозга»): один вход в очередь.
       # 0 — путь обработчиков ждёт появления бэкенда своей очередью
@@ -979,6 +980,7 @@ services:
       #
       # NOTE: AGENT_MAX_CONCURRENT_REQUESTS is NOT needed — cppworker reports its
       # own capacity (effectiveNParallel) to the balancer.
+      - LB_TOOL_GUARD=${LB_TOOL_GUARD:-off}
       - CPPWORKER_N_PARALLEL=${CPPWORKER_N_PARALLEL:-1}
       # R93 (2026-10-09): как часто воркер сам сверяет каталог моделей с диском.
       #

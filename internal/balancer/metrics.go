@@ -149,6 +149,16 @@ func (bm *BalancerMetrics) GetMetrics() map[string]interface{} {
 		result["gpu_diagnosis"] = gpuDiag
 	}
 
+	// ==== R495 (S2): вердикт «во что уперлась карта» ====
+	//
+	// Считаем на сборке метрик — это точка, которую и так дёргает и панель, и
+	// Prometheus-скрейп. В режиме shadow вердикт ни на что не влияет (§4.2 плана),
+	// в off не считается вовсе.
+	bm.proxy.observeBottlenecksR495()
+	if verds := bm.proxy.bottleneckSnapshotR495(); len(verds) > 0 {
+		result["gpu_bottleneck"] = verds
+	}
+
 	if bm.proxy.nctxReload != nil {
 		nctxSnap := bm.proxy.nctxReload.Snapshot()
 		// Копируем поля в плоский top-level (для совместимости с Prometheus exporters

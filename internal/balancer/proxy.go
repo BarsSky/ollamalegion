@@ -36,6 +36,10 @@ type Proxy struct {
 	reqIdxR487   *requestIndexR487
 	reqIdxMuR487 sync.Mutex
 
+	// R495 S2 (2026-11-18): классификатор «во что уперлась карта» (shadow).
+	bottleneckMuR495  sync.Mutex
+	bottleneckTracker *bottleneckTrackerR495
+
 	config   *types.LoadBalancerConfig
 	backends map[string]*BackendState
 

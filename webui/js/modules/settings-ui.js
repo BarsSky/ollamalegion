@@ -234,12 +234,37 @@
         // отображает gguf models страницу»). Эти страницы не зависят от режима
         // (standard/replication/virtual_router/...), их видимость решает
         // BackendTypeFilter по СОСТАВУ кластера (есть ли текстовые/image бэкенды).
+        // R497 (2026-11-19): список режимных страниц ОДИН, а не пять копий.
+        //
+        // ЖИВОЙ ДЕФЕКТ (аудит 2026-11-19 §4.1, наблюдение владельца «страницы
+        // появляются на миг и пропадают»). Ниже цикл прячет ЛЮБОЙ nav-item,
+        // которого нет в `allowed`. В пяти копиях списка не было 'diagnostics',
+        // 'reference', 'health' и 'virtual-models' — то есть после первого же
+        // рендера режима (страница «Настройки» или мастер) из сайдбара исчезали
+        // «Диагностика» и «Справка и шаблоны» (плюс два пункта, ведущих на
+        // отдельные html-страницы). Обратно их не показывал никто: applyChrome()
+        // backend-type-filter.js восстанавливает только gguf/image.
+        //
+        // ПОЧЕМУ РАЗДЕЛЕНИЕ, А НЕ «дописать четыре строки в каждую копию»: именно
+        // копирование списка и было причиной — при добавлении страницы забыли
+        // четыре копии из пяти. Режимные страницы (standard/…) перечислены в
+        // navModeDependent, режимно-независимые — в navModeIndependent, и оба
+        // набора склеиваются один раз.
+        //
+        // R94 (2026-10-09): gguf и image уже проходили этот же урок («страница
+        // исчезала из сайдбара и возвращалась только выбором типа бэкенда»),
+        // поэтому их видимость дополнительно решает BackendTypeFilter по СОСТАВУ
+        // кластера.
+        var navModeIndependent = ['diagnostics', 'reference', 'health', 'virtual-models'];
+        var navModeDependent = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue',
+            'gguf', 'image', 'agents', 'logs', 'settings'];
+        var navAll = navModeDependent.concat(navModeIndependent);
         var navMap = {
-            standard: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'settings'] },
-            replication: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'settings'] },
-            rpc_coordinator: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'settings'] },
-            virtual_router: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'settings'] },
-            distributed_inference: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'settings'] }
+            standard: { show: navAll },
+            replication: { show: navAll },
+            rpc_coordinator: { show: navAll },
+            virtual_router: { show: navAll },
+            distributed_inference: { show: navAll }
         };
 
         var allowed = navMap[mode] ? navMap[mode].show : navMap.standard.show;
@@ -665,6 +690,16 @@
         setupModeSelector: setupModeSelector,
         getCurrentMode: getCurrentMode,
         showModeFields: showModeFields,
+        // R497 (2026-11-19): updateModeCards ДОЛЖЕН быть экспортирован.
+        //
+        // ЖИВОЙ ДЕФЕКТ (аудит 2026-11-19 §4.4): функция определена в этом файле и
+        // вызывается СНАРУЖИ (app.js:1565, config-io.js:329, mode-wizard.js:397),
+        // но в объект экспорта не попала → TypeError. В applyServerConfig после
+        // этой строки не выполнялись showModeFields и весь блок агента, то есть
+        // часть настроек после применения конфига не обновлялась ВООБЩЕ.
+        // Внутренние вызовы (syncModeFromServer/setupModeSelector) шли через
+        // локальную функцию, поэтому дефект был виден только снаружи.
+        updateModeCards: updateModeCards,
         syncModeFromServer: syncModeFromServer,
         collectModeConfig: collectModeConfig,
         applyModeConfig: applyModeConfig,

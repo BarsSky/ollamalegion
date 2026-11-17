@@ -2161,6 +2161,9 @@ type parsedRequest struct {
 	// TooLarge — тело превысило LB_MAX_REQUEST_BODY_MB: ServeHTTP отвечает 413
 	// и НЕ отправляет запрос бэкенду (R479).
 	TooLarge bool
+	// Plan — единое решение о запросе (R493, этап 1). Собирается здесь же, где
+	// тело разобрано один раз; потребители берут его через requestPlanOfR493.
+	Plan *requestPlanR493
 	// NumCtx — окно, которое запросил клиент (0 = не задавал).
 	//
 	// R118.5 (2026-10-14): нужно ДО выбора бэкенда: при нескольких загруженных
@@ -2227,6 +2230,23 @@ func (p *Proxy) parseRequestBody(r *http.Request) *parsedRequest {
 	// R118.5: окно клиента (options.num_ctx у Ollama, num_ctx/context_length у
 	// OpenAI-совместимых тел) — тем же извлекателем, что и в preflight.
 	result.NumCtx = ExtractNumCtxFromBody(body)
+
+	// R493 (этап 1): единое решение о запросе — в одной точке, где тело уже
+	// разобрано. Пока НИ ОДИН потребитель не переключён на план (поведение не
+	// меняется), поэтому сборка безопасна и проверяется тестами.
+	// Источник решения о стриме различаем по ФАКТУ поля в теле: streamFlagFromBodyR484
+	// сообщает «решение получено», а не «поле было» (поле может отсутствовать, и
+	// тогда действует дефолт поверхности).
+	streamSource := streamSourceDefaultR493
+	if _, isBool := req["stream"].(bool); isBool {
+		streamSource = streamSourceClientR493
+	}
+	outputLimit, outputLimitSource := outputLimitFromBodyR493(body)
+	result.Plan = buildRequestPlanR493(
+		requestSurfaceOf(r), result.Model, result.Stream, streamSource,
+		result.NumCtx, outputLimit, outputLimitSource,
+	)
+	logRequestPlanR493(result.Plan)
 
 	return result
 }

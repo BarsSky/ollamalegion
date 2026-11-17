@@ -43,18 +43,13 @@ const wsLogsReadDeadline = 120 * time.Second
 //   - Live entry: <JSON-encoded LogEntry>
 //   - Ping (keep-alive): {"type":"ping"}
 func (s *Server) wsLogsHandler(w http.ResponseWriter, r *http.Request) {
-	// Auth до Upgrade — стандартная проверка через query token (EventSource/WS не поддерживают custom headers).
-	if s.authenticator != nil && s.authenticator.IsEnabled() {
-		token := r.URL.Query().Get("token")
-		if token == "" {
-			http.Error(w, "Unauthorized: token is required", http.StatusUnauthorized)
-			return
-		}
-		valid, _ := s.authenticator.Authenticate(r)
-		if !valid {
-			http.Error(w, "Unauthorized: invalid token", http.StatusUnauthorized)
-			return
-		}
+	// Auth до Upgrade. R493f (2026-11-17): сессия WebUI — такой же законный
+	// доступ, как токен. Раньше здесь требовался ТОЛЬКО `?token=`, и вошедший
+	// оператор получал 401 на каждую попытку: страница «Логи» жила в цикле
+	// «Ошибка WebSocket → Переподключение… (N/10)».
+	if err := s.authenticator.AuthorizeWS(r); err != nil {
+		http.Error(w, "Unauthorized: session or token required", http.StatusUnauthorized)
+		return
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)

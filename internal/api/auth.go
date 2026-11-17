@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -175,6 +176,44 @@ func GenerateToken(length int) (string, error) {
 	}
 
 	return hex.EncodeToString(bytes), nil
+}
+
+// ErrWSUnauthorized — отказ доступа к WebSocket (R493f).
+var ErrWSUnauthorized = errors.New("ws: unauthorized")
+
+// AuthorizeWS — проверка доступа к WebSocket ДО Upgrade (R493f, 2026-11-17).
+//
+// ЗАЧЕМ. Оба WS-обработчика (/ws/logs, /ws/metrics) требовали `?token=` и сессию
+// НЕ смотрели, хотя весь остальной API живёт на сессии WebUI (R201/R202):
+// браузер после входа не имеет никакого токена в странице (R222 убрал вшивание),
+// поэтому рукопожатие всегда получало 401. Живой факт (замер на стенде
+// 2026-11-17): страница «Логи» показывала только
+//
+//	«Ошибка WebSocket → Переподключение… (1/10)» и так по кругу,
+//
+// а /ws/metrics не поднимался вовсе — то есть live-tail логов и живой график
+// метрик были недоступны ЛЮБОМУ вошедшему оператору.
+//
+// Правила (в порядке приоритета, как у AuthMiddleware):
+//  1. аутентификация выключена — доступ есть;
+//  2. валидная сессия в cookie (браузер) — доступ есть;
+//  3. валидный токен в заголовке или в query (браузер не умеет задавать заголовки
+//     на WebSocket, поэтому query — законный способ; он же нужен скриптам);
+//  4. иначе — ErrWSUnauthorized.
+//
+// Роль НЕ проверяется: оба канала читают только состояние (логи и метрики), это
+// read-only, ровно как GET в AuthMiddleware.
+func (a *TokenAuthenticator) AuthorizeWS(r *http.Request) error {
+	if a == nil || !a.enabled {
+		return nil
+	}
+	if a.sessionFor(r) != nil {
+		return nil
+	}
+	if ok, _ := a.Authenticate(r); ok {
+		return nil
+	}
+	return ErrWSUnauthorized
 }
 
 // AuthMiddleware - middleware для проверки аутентификации

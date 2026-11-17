@@ -288,6 +288,14 @@ func main() {
 	referencePath := reference.ResolvePath(conf.LoadBalancer.StatePath)
 	referenceStore := reference.NewStore(referencePath)
 	referenceStore.Load()
+	// R493f (2026-11-17): существующий файл, созданный ДО появления шаблонов,
+	// получает недостающие наборы параметров. Сид при этом не перезапускается и
+	// записи оператора не трогаются (правила — reference.EnsureSeedTemplates).
+	// Живой факт: на стенде вкладка «Шаблоны» была пустой, применять было нечего.
+	if added := referenceStore.EnsureSeedTemplates(); added > 0 {
+		logger.Get().Infow("reference: seed-шаблоны добраны при старте",
+			"path", referencePath, "added", added)
+	}
 	apiServer.SetReferenceStore(referenceStore)
 
 	// Session 17 (2026-07-27): persistent runtime overrides для llamaCpp.

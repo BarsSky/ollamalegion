@@ -154,6 +154,56 @@ func (s *Store) applyFile(data []byte) {
 		"templates", len(doc.Templates))
 }
 
+// EnsureSeedTemplates — ДОБАВИТЬ недостающие seed-шаблоны в СУЩЕСТВУЮЩЕЕ
+// хранилище и вернуть, сколько добавлено (R493f, 2026-11-17).
+//
+// ЗАЧЕМ ОТДЕЛЬНО ОТ СИДА. Решение человека №4 запрещает перезаписывать
+// существующий файл сидом — и это правильно: записи, которые правил оператор,
+// трогать нельзя. Но у стоящего стенда файл уже создан (рекомендации есть), а
+// шаблонов в нём НЕТ, потому что первый сид создавал `Templates: []`. Без
+// добора страница «Справка и шаблоны» на живом стенде осталась бы с пустой
+// вкладкой навсегда.
+//
+// Правила (идемпотентно и без потерь):
+//   - добавляются ТОЛЬКО те seed-шаблоны, чьего id в файле нет;
+//   - существующий шаблон с тем же id НЕ перезаписывается (даже если оператор
+//     изменил его до неузнаваемости) — это его запись, а не наша;
+//   - рекомендации не трогаются вообще;
+//   - запись на диск — одна, только если что-то добавилось.
+func (s *Store) EnsureSeedTemplates() int {
+	if s == nil {
+		return 0
+	}
+	seeds := seedTemplates(nowRFC3339())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing := make(map[string]bool, len(s.doc.Templates))
+	for _, t := range s.doc.Templates {
+		existing[t.ID] = true
+	}
+	added := 0
+	for _, t := range seeds {
+		if existing[t.ID] {
+			continue
+		}
+		s.doc.Templates = append(s.doc.Templates, t)
+		existing[t.ID] = true
+		added++
+	}
+	if added == 0 {
+		return 0
+	}
+	if warn := s.persistWarningLocked(); warn != "" {
+		logger.Get().Warnw("reference: seed-шаблоны добавлены только в память",
+			"path", s.path, "added", added, "warning", warn)
+		return added
+	}
+	logger.Get().Infow("reference: недостающие seed-шаблоны добавлены",
+		"path", s.path, "added", added, "templates_total", len(s.doc.Templates))
+	return added
+}
+
 // seed — однократный сид из доков. Файл создаётся атомарной записью.
 func (s *Store) seed() bool {
 	doc := SeedDoc(nowRFC3339())

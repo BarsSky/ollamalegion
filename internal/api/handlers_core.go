@@ -142,18 +142,13 @@ const wsReadDeadline = 90 * time.Second
 
 // wsMetricsHandler — WebSocket handler для live-метрик.
 func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
-	// Проверяем токен ДО WebSocket upgrade, но только если auth включена
-	if s.authenticator != nil && s.authenticator.IsEnabled() {
-		token := r.URL.Query().Get("token")
-		if token == "" {
-			http.Error(w, "Unauthorized: token is required", http.StatusUnauthorized)
-			return
-		}
-		valid, _ := s.authenticator.Authenticate(r)
-		if !valid {
-			http.Error(w, "Unauthorized: invalid token", http.StatusUnauthorized)
-			return
-		}
+	// Auth до Upgrade. R493f (2026-11-17): сессия WebUI — законный доступ наравне
+	// с токеном (см. AuthorizeWS). Раньше требовался только `?token=`, поэтому у
+	// вошедшего оператора /ws/metrics не поднимался вовсе, и дашборд жил без
+	// живого графика.
+	if err := s.authenticator.AuthorizeWS(r); err != nil {
+		http.Error(w, "Unauthorized: session or token required", http.StatusUnauthorized)
+		return
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)

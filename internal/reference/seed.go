@@ -41,8 +41,83 @@ func SeedDoc(now string) Doc {
 	return Doc{
 		Version:         SchemaVersion,
 		Recommendations: recs,
-		Templates:       []Template{},
+		Templates:       seedTemplates(now),
 	}
+}
+
+// seedTemplates — наборы параметров, которые оператор применяет на бэкенд
+// (страница «Справка и шаблоны», вкладка «Шаблоны»).
+//
+// ЗАЧЕМ ОНИ ЕСТЬ В СИДЕ. R493f (2026-11-17): живой факт — оператор открыл
+// страницу с шаблонами и увидел ПУСТОЙ список: сид создавал только записи-
+// рекомендации, а `Templates: []Template{}` был пуст по построению. Страница при
+// этом работает (проверено headless-браузером: вкладка, «Создать шаблон»,
+// применимость к модели на месте), но применять было нечего.
+//
+// ПАРАМЕТРЫ НЕ ДУБЛИРУЮТСЯ ЧИСЛАМИ: набор собирается ИЗ той же рекомендации,
+// которую описывает (`BasedOn`), поэтому правка чисел в одном месте не
+// расходится со вторым. Документ-первоисточник тот же.
+func seedTemplates(now string) []Template {
+	recs := seedRecommendations()
+	byID := make(map[string]Recommendation, len(recs))
+	for _, r := range recs {
+		byID[r.ID] = r
+	}
+
+	specs := []struct {
+		id      string
+		name    string
+		basedOn string
+		comment string
+	}{
+		{
+			id:      "tpl-agent-loop-4b",
+			name:    "Агентский цикл на 4B/8 ГБ: окно 32K, без размышлений",
+			basedOn: "qwen3-4b-8gb-agent",
+			comment: "Для агентских циклов (Cline, OpenWebUI tools): ход должен быть коротким. " +
+				"Размышления выключены — на 4B они съедают ответ, и ход завершается пустым. " +
+				"Окно 32K оставляет запас под преамбулу инструментов.",
+		},
+		{
+			id:      "tpl-27b-a10-131k",
+			name:    "27B Q4 на A10 24 ГБ: окно 131K, KV q4_0",
+			basedOn: "qwen3-8-27b-ud-q4-a10-24gb",
+			comment: "Большая модель на одной A10: KV в q4_0 (иначе не влезает вместе с весами), " +
+				"primary=true — клиентский num_ctx окно не поднимает.",
+		},
+		{
+			id:      "tpl-reasoning-32k",
+			name:    "Рассуждающая модель: окно 32K, размышления ВКЛ, потолок вывода 8192",
+			basedOn: "deepseek-r1-distill",
+			comment: "Для R1-дистиллятов и подобных. В агентских циклах всё равно лучше " +
+				"enableReasoning=false и меньше numPredict: скорость хода важнее глубины.",
+		},
+	}
+
+	out := make([]Template, 0, len(specs))
+	for _, spec := range specs {
+		rec, ok := byID[spec.basedOn]
+		if !ok {
+			continue // сид без рекомендации не создаём: шаблон обязан иметь источник
+		}
+		params, err := json.Marshal(rec.Params)
+		if err != nil {
+			continue
+		}
+		out = append(out, Template{
+			ID:        spec.id,
+			Name:      spec.name,
+			Version:   1,
+			Params:    json.RawMessage(params),
+			Comment:   spec.comment,
+			BasedOn:   spec.basedOn,
+			Author:    "docs-import",
+			CreatedAt: now,
+			UpdatedAt: now,
+			Revision:  1,
+		})
+	}
+	return out
 }
 
 // seedRecommendations — записи из §1 и §3.1–§3.6 документа.

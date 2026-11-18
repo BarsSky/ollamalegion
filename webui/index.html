@@ -1334,7 +1334,18 @@
                             <div class="reference-list" id="referenceRecList"></div>
                         </div>
                         <div class="reference-pane" id="referenceTplPane" hidden>
+                            <!-- R515 (2026-11-19): шаблоны стало можно ПРАВИТЬ.
+                                 Сервер умел PUT/DELETE …/templates/{id} всегда, но
+                                 в UI не было ни кнопки, ни формы — на это и была
+                                 жалоба оператора (§2.6 разбора). Кнопка и форма
+                                 рисуются модулем reference-page.js; здесь только
+                                 контейнеры. -->
+                            <div class="reference-toolbar">
+                                <button type="button" class="btn btn-primary" data-admin-only
+                                        data-ref-action="new-tpl" data-i18n="reference.tpl_editor.new">Новый шаблон</button>
+                            </div>
                             <div class="reference-list" id="referenceTplList"></div>
+                            <div class="reference-editor" id="referenceTplEditor" hidden></div>
                         </div>
                         <div class="reference-editor" id="referenceEditor" hidden></div>
                     </div>

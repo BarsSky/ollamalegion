@@ -88,10 +88,15 @@
             confirm: false,
             preview: null,
             error: null,
-            busy: false
+            busy: false,
+            // R515: `usage.usedByProfiles` из GET …/templates/{id} — подсказка
+            // «у каких профилей значения уже совпадают с шаблоном».
+            usedByProfiles: []
         },
         // Открытый редактор рекомендации (null = закрыт).
-        editor: null
+        editor: null,
+        // R515: открытый редактор шаблона (null = закрыт).
+        tplEditor: null
     };
 
     // =====================================================================
@@ -854,6 +859,18 @@
             '</div>' +
             (tplState.error ? '<div class="reference-status reference-status-error">' + errorHtml(tplState.error) + '</div>' : '') +
             (tplState.busy ? '<div class="reference-empty">' + esc(t('reference.tpl.busy', 'Считаю предпросмотр…')) + '</div>' : '') +
+            // R515: подсказка «кто уже совпадает» — API отдаёт usage.usedByProfiles
+            // в GET …/templates/{id}, а страница его не показывала вовсе.
+            (typeof tplState.usedByProfiles !== 'undefined' && tplState.usedByProfiles
+                ? '<div class="reference-tpl-usage">' +
+                    (tplState.usedByProfiles.length
+                        ? esc(t('reference.tpl_editor.usage_some',
+                            'Значения шаблона уже совпадают с профилями: {value}',
+                            { value: tplState.usedByProfiles.join(', ') }))
+                        : esc(t('reference.tpl_editor.usage_none',
+                            'Ни один профиль модели пока не совпадает со значениями шаблона.'))) +
+                  '</div>'
+                : '') +
             renderPreview(tplState.preview) +
             '</div>';
     }
@@ -881,6 +898,13 @@
                 '<div class="reference-card-actions">' +
                     '<button type="button" class="btn btn-secondary btn-sm" data-ref-action="toggle-tpl" data-ref-id="' + esc(id) + '">' +
                         esc(expanded ? t('reference.tpl.collapse', 'Свернуть') : t('reference.tpl.expand', 'Открыть')) + '</button>' +
+                    // R515: правка и удаление шаблона. Сервер их умел всегда
+                    // (PUT/DELETE …/templates/{id}), а в UI кнопок не было —
+                    // на это и была жалоба «шаблоны нельзя править».
+                    '<button type="button" class="btn btn-secondary btn-sm" data-admin-only data-ref-action="edit-tpl" data-ref-id="' + esc(id) + '">' +
+                        esc(t('reference.tpl_editor.edit_short', 'Изменить')) + '</button>' +
+                    '<button type="button" class="btn btn-danger btn-sm" data-admin-only data-ref-action="delete-tpl" data-ref-id="' + esc(id) + '">' +
+                        esc(t('reference.tpl_editor.delete_short', 'Удалить')) + '</button>' +
                 '</div>' +
             '</div>' +
             (tpl.comment ? '<p class="reference-card-comment">' + esc(tpl.comment) + '</p>' : '') +
@@ -969,6 +993,9 @@
         renderModelFilter();
         renderRecommendationList();
         renderTemplateList();
+        // R515: редактор шаблона перерисовывается вместе со списком: после
+        // load() он мог ссылаться на только что удалённый шаблон.
+        renderTplEditor();
     }
 
     // =====================================================================
@@ -1353,6 +1380,20 @@
             state.tpl.id = String(id);
             state.tpl.preview = null;
             state.tpl.error = null;
+            state.tpl.usedByProfiles = null;
+            // R515: `usage.usedByProfiles` приходит ВМЕСТЕ с шаблоном
+            // (GET …/templates/{id}), а не в списке. Берём при раскрытии и только
+            // для того шаблона, который всё ещё раскрыт: подсказка, не данные.
+            var wrapper = api();
+            if (wrapper && typeof wrapper.get === 'function') {
+                wrapper.get('templates', String(id)).then(function (res) {
+                    if (String(state.tpl.id) !== String(id)) return;
+                    var usage = res && res.usage && Object.prototype.toString.call(res.usage.usedByProfiles) === '[object Array]'
+                        ? res.usage.usedByProfiles : [];
+                    state.tpl.usedByProfiles = usage;
+                    renderTemplateList();
+                }).catch(function () { /* подсказка не критична: шаблон уже показан */ });
+            }
         }
         renderTemplateList();
     }
@@ -1568,6 +1609,262 @@
     }
 
     // =====================================================================
+    // Редактор шаблона (R515)
+    // =====================================================================
+    //
+    // ЖИВАЯ ЖАЛОБА ОПЕРАТОРА (§2.6 разбора): «шаблоны в „Справке" нельзя
+    // править». Ограничение было ТОЛЬКО в UI: сервер умеет всё —
+    // PUT/DELETE /api/v1/reference/templates/{id} (internal/api/routes.go:520-522,
+    // handlers_reference.go:509-536,614-680), валидация params — :633-647.
+    // Страница же звала upsert/remove только для 'recommendations', а у шаблонов
+    // было три действия: открыть/предпросмотр/применить.
+    //
+    // Второго способа записи не заводим: тело PUT шаблона — та же форма, что у
+    // профиля модели (плоский объект params), поэтому значение поля приводится
+    // по MODEL_PARAM_SPECS тем же coerceValue, что и в редакторе рекомендации.
+
+    function emptyTplEditor() {
+        return {
+            isNew: true,
+            id: '',
+            revision: 0,
+            name: '',
+            version: 1,
+            basedOn: '',
+            comment: '',
+            params: [{ name: '', raw: '' }]
+        };
+    }
+
+    function tplEditorFromTemplate(tpl) {
+        var e = emptyTplEditor();
+        e.isNew = false;
+        e.id = String(tpl.id || '');
+        e.revision = Number(tpl.revision || 0);
+        e.name = String(tpl.name || '');
+        e.version = Number(tpl.version || 1);
+        e.basedOn = String(tpl.basedOn || '');
+        e.comment = String(tpl.comment || '');
+        e.params = [];
+        var params = tpl.params || {};
+        Object.keys(params).forEach(function (name) {
+            var value = params[name];
+            e.params.push({
+                name: String(name),
+                raw: (value === undefined || value === null) ? '' :
+                    (typeof value === 'object' ? JSON.stringify(value) : String(value))
+            });
+        });
+        if (!e.params.length) e.params.push({ name: '', raw: '' });
+        return e;
+    }
+
+    function openTplEditor(tpl) {
+        state.tplEditor = tpl ? tplEditorFromTemplate(tpl) : emptyTplEditor();
+        renderTplEditor();
+    }
+
+    function closeTplEditor() {
+        state.tplEditor = null;
+        renderTplEditor();
+    }
+
+    /** tplValueInputHtml — контрол значения по метаданным поля (тип/границы/варианты). */
+    function tplValueInputHtml(row, index) {
+        var spec = paramSpec(row.name);
+        var type = (spec && spec.type) || 'text';
+        var attrs = ' class="form-control" data-ref-tpledit="paramValue" data-ref-index="' + index + '"';
+        if (type === 'bool') {
+            var isTrue = String(row.raw).toLowerCase() === 'true';
+            return '<select' + attrs + '>' +
+                '<option value="false"' + (isTrue ? '' : ' selected') + '>' + esc(t('reference.value.no', 'нет')) + '</option>' +
+                '<option value="true"' + (isTrue ? ' selected' : '') + '>' + esc(t('reference.value.yes', 'да')) + '</option>' +
+                '</select>';
+        }
+        if (type === 'enum' && spec && Object.prototype.toString.call(spec.options) === '[object Array]') {
+            return '<select' + attrs + '>' + spec.options.map(function (option) {
+                return '<option value="' + esc(option) + '"' +
+                    (String(row.raw) === String(option) ? ' selected' : '') + '>' + esc(option) + '</option>';
+            }).join('') + '</select>';
+        }
+        var extra = '';
+        if (type === 'int') {
+            if (spec && spec.min !== undefined) extra += ' min="' + esc(spec.min) + '"';
+            if (spec && spec.max !== undefined) extra += ' max="' + esc(spec.max) + '"';
+            if (spec && spec.step !== undefined) extra += ' step="' + esc(spec.step) + '"';
+            extra += ' type="number"';
+        } else {
+            extra += ' type="text"';
+        }
+        return '<input' + attrs + extra + ' value="' + esc(row.raw) + '">';
+    }
+
+    /** tplEditorBody — состояние редактора → тело PUT /templates/{id}. */
+    function tplEditorBody() {
+        var e = state.tplEditor;
+        var body = { name: String(e.name || '').trim(), version: Number(e.version) || 1, params: {} };
+        var count = 0;
+        e.params.forEach(function (row) {
+            var name = String(row.name || '').trim();
+            if (!name) return;
+            var value = coerceValue(paramSpec(name), row.raw);
+            if (value === null || value === '') return;
+            body.params[name] = value;
+            count++;
+        });
+        if (String(e.comment || '').trim()) body.comment = String(e.comment).trim();
+        if (String(e.basedOn || '').trim()) body.basedOn = String(e.basedOn).trim();
+        if (!e.isNew && e.revision) body.revision = e.revision;
+        return { body: body, params: count };
+    }
+
+    function saveTplEditor() {
+        var e = state.tplEditor;
+        if (!e) return Promise.resolve(false);
+        var wrapper = api();
+        if (!wrapper) {
+            showStatus('error', t('reference.error.no_api',
+                'Слой HTTP страницы не загружен (Api.reference) — обновите страницу.'));
+            return Promise.resolve(false);
+        }
+        var id = String(e.id || '').trim().toLowerCase();
+        if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(id)) {
+            showStatus('error', t('reference.tpl_editor.invalid_id',
+                'Идентификатор шаблона — slug из латинских букв, цифр, точки, дефиса и подчёркивания (3–64 символа).'));
+            return Promise.resolve(false);
+        }
+        if (!String(e.name || '').trim()) {
+            showStatus('error', t('reference.tpl_editor.name_required', 'Название шаблона обязательно.'));
+            return Promise.resolve(false);
+        }
+        var built = tplEditorBody();
+        if (!built.params) {
+            showStatus('error', t('reference.tpl_editor.params_required',
+                'Нужен хотя бы один параметр: шаблон без значений ничего не меняет (сервер ответит params_required).'));
+            return Promise.resolve(false);
+        }
+        return wrapper.upsert('templates', id, built.body).then(function (res) {
+            var saved = (res && res.template) || {};
+            showStatus('ok', t('reference.tpl_editor.saved', 'Шаблон сохранён (revision {value})', {
+                value: saved.revision === undefined ? '' : saved.revision
+            }));
+            closeTplEditor();
+            return load();
+        }).catch(function (err) {
+            // 409 показываем прямо в форме: набранное не должно потеряться.
+            showStatus('error', errorText(err));
+            return false;
+        });
+    }
+
+    function deleteTemplate(id) {
+        var wrapper = api();
+        if (!wrapper || !id) return Promise.resolve(false);
+        var ask = t('reference.tpl_editor.delete_confirm',
+            'Удалить шаблон «{value}»? Применённые к моделям значения останутся — удаляется только набор.', { value: id });
+        if (typeof window.confirm === 'function' && !window.confirm(ask)) return Promise.resolve(false);
+        return wrapper.remove('templates', String(id)).then(function () {
+            if (state.tplEditor && String(state.tplEditor.id) === String(id)) closeTplEditor();
+            if (String(state.tpl.id) === String(id)) state.tpl.id = '';
+            showStatus('ok', t('reference.tpl_editor.deleted', 'Шаблон «{value}» удалён', { value: id }));
+            return load();
+        }).catch(function (err) {
+            showStatus('error', errorText(err));
+            return false;
+        });
+    }
+
+    /** renderTplEditor — форма создания/правки шаблона (host: #referenceTplEditor). */
+    function renderTplEditor() {
+        var host = byId('referenceTplEditor');
+        if (!host) return;
+        var e = state.tplEditor;
+        if (!e) {
+            host.hidden = true;
+            host.innerHTML = '';
+            return;
+        }
+        host.hidden = false;
+        var specs = paramSpecs();
+        var rows = e.params.map(function (row, index) {
+            var nameSelect = '<select class="form-control" data-ref-tpledit="paramName" data-ref-index="' + index + '">' +
+                '<option value="">' + esc(t('reference.tpl_editor.pick_param', '— поле профиля —')) + '</option>' +
+                specs.map(function (spec) {
+                    return '<option value="' + esc(spec.field) + '"' +
+                        (String(row.name) === String(spec.field) ? ' selected' : '') + '>' +
+                        esc(spec.field) + ' — ' + esc(specLabel(spec)) + '</option>';
+                }).join('') +
+                (row.name && !paramSpec(row.name)
+                    ? '<option value="' + esc(row.name) + '" selected>' + esc(row.name) + '</option>' : '') +
+                '</select>';
+            return '<tr>' +
+                '<td>' + nameSelect + '</td>' +
+                '<td>' + tplValueInputHtml(row, index) + '</td>' +
+                '<td><button type="button" class="btn btn-danger btn-sm" data-ref-action="tpl-editor-del-param" ' +
+                    'data-ref-index="' + index + '">×</button></td>' +
+                '</tr>';
+        }).join('');
+        host.innerHTML = '<div class="reference-editor-card">' +
+            '<h4 class="reference-card-title">' +
+                esc(e.isNew ? t('reference.tpl_editor.new', 'Новый шаблон')
+                    : t('reference.tpl_editor.edit', 'Правка шаблона «{value}»', { value: e.id })) +
+            '</h4>' +
+            '<div class="reference-tpl-controls">' +
+                '<label class="reference-field"><span>' + esc(t('reference.tpl_editor.id', 'Идентификатор (slug)')) + '</span>' +
+                    '<input class="form-control" type="text" data-ref-tpledit="id" value="' + esc(e.id) + '"' +
+                        (e.isNew ? '' : ' readonly') + '></label>' +
+                '<label class="reference-field"><span>' + esc(t('reference.tpl_editor.name', 'Название')) + '</span>' +
+                    '<input class="form-control" type="text" data-ref-tpledit="name" value="' + esc(e.name) + '"></label>' +
+                '<label class="reference-field"><span>' + esc(t('reference.tpl_editor.version', 'Версия содержимого')) + '</span>' +
+                    '<input class="form-control" type="number" min="1" step="1" data-ref-tpledit="version" value="' + esc(e.version) + '"></label>' +
+                '<label class="reference-field"><span>' + esc(t('reference.tpl_editor.based_on', 'Из записи (id, необязательно)')) + '</span>' +
+                    '<input class="form-control" type="text" data-ref-tpledit="basedOn" value="' + esc(e.basedOn) + '"></label>' +
+            '</div>' +
+            '<label class="reference-field"><span>' + esc(t('reference.tpl_editor.comment', 'Когда годится (необязательно)')) + '</span>' +
+                '<input class="form-control" type="text" data-ref-tpledit="comment" value="' + esc(e.comment) + '"></label>' +
+            '<table class="reference-table"><thead><tr>' +
+                '<th>' + esc(t('reference.tpl_editor.param', 'Параметр')) + '</th>' +
+                '<th>' + esc(t('reference.tpl_editor.value', 'Значение')) + '</th>' +
+                '<th></th>' +
+            '</tr></thead><tbody>' + rows + '</tbody></table>' +
+            '<div class="reference-tpl-actions">' +
+                '<button type="button" class="btn btn-secondary" data-admin-only data-ref-action="tpl-editor-add-param">' +
+                    esc(t('reference.tpl_editor.add_param', 'Добавить параметр')) + '</button>' +
+                '<button type="button" class="btn btn-primary" data-admin-only data-ref-action="tpl-editor-save">' +
+                    esc(t('reference.tpl_editor.save', 'Сохранить')) + '</button>' +
+                '<button type="button" class="btn btn-secondary" data-ref-action="tpl-editor-cancel">' +
+                    esc(t('common.cancel', 'Отмена')) + '</button>' +
+                (e.isNew ? '' :
+                    '<button type="button" class="btn btn-danger" data-admin-only data-ref-action="tpl-editor-delete" ' +
+                        'data-ref-id="' + esc(e.id) + '">' + esc(t('reference.tpl_editor.delete', 'Удалить')) + '</button>') +
+            '</div>' +
+            '</div>';
+    }
+
+    function applyTplEditorInput(field, index, input) {
+        var e = state.tplEditor;
+        if (!e || !field) return;
+        var value = input && input.type === 'checkbox' ? !!input.checked : (input ? input.value : '');
+        if (field === 'id') { e.id = String(value); return; }
+        if (field === 'name') { e.name = String(value); return; }
+        if (field === 'version') { e.version = Number(value) || 1; return; }
+        if (field === 'basedOn') { e.basedOn = String(value); return; }
+        if (field === 'comment') { e.comment = String(value); return; }
+        if (isNaN(index)) return;
+        if (field === 'paramName') {
+            if (!e.params[index]) return;
+            e.params[index].name = String(value);
+            var spec = paramSpec(e.params[index].name);
+            if (spec && spec.unit && !e.params[index].unit) e.params[index].unit = spec.unit;
+            // Тип поля изменился — перерисовать строку, чтобы получить нужный
+            // контрол (number/select). Это действие оператора, не тик.
+            renderTplEditor();
+            return;
+        }
+        if (field === 'paramValue') { if (e.params[index]) e.params[index].raw = String(value); return; }
+    }
+
+    // =====================================================================
     // Монтирование и обработчики
     // =====================================================================
 
@@ -1602,6 +1899,33 @@
         if (action === 'delete-rec') { deleteRecommendation(id); return; }
         if (action === 'to-template') { createTemplateFrom(id); return; }
         if (action === 'toggle-tpl') { toggleTemplate(id); return; }
+        // R515: правка шаблонов — через тот же PUT/DELETE, что уже был в API.
+        if (action === 'new-tpl') { openTplEditor(null); return; }
+        if (action === 'edit-tpl') {
+            var tpl = templateById(id);
+            if (tpl) openTplEditor(tpl);
+            return;
+        }
+        if (action === 'delete-tpl') { deleteTemplate(id); return; }
+        if (action === 'tpl-editor-save') { saveTplEditor(); return; }
+        if (action === 'tpl-editor-cancel') { closeTplEditor(); return; }
+        if (action === 'tpl-editor-delete') {
+            if (state.tplEditor) deleteTemplate(state.tplEditor.id);
+            return;
+        }
+        if (action === 'tpl-editor-add-param') {
+            if (!state.tplEditor) return;
+            state.tplEditor.params.push({ name: '', raw: '' });
+            renderTplEditor();
+            return;
+        }
+        if (action === 'tpl-editor-del-param') {
+            if (!state.tplEditor || isNaN(index)) return;
+            state.tplEditor.params.splice(index, 1);
+            if (!state.tplEditor.params.length) state.tplEditor.params.push({ name: '', raw: '' });
+            renderTplEditor();
+            return;
+        }
         if (action === 'preview') { previewTemplate(); return; }
         if (action === 'apply') { applyTemplate(); return; }
         if (action === 'editor-add-param') {
@@ -1670,6 +1994,14 @@
     function onInput(ev) {
         var target = ev && ev.target;
         if (!target || !target.getAttribute) return;
+        // R515: поля редактора шаблона идут своим атрибутом — иначе их значение
+        // попадало бы в состояние редактора РЕКОМЕНДАЦИИ (общий data-ref-edit).
+        var tplEditField = target.getAttribute('data-ref-tpledit');
+        if (tplEditField) {
+            var tplEditIndex = Number(target.getAttribute('data-ref-index'));
+            applyTplEditorInput(tplEditField, isNaN(tplEditIndex) ? NaN : tplEditIndex, target);
+            return;
+        }
         if (target.id === 'referenceSearch') {
             state.filter.search = String(target.value || '');
             renderRecommendationList();
@@ -1775,6 +2107,14 @@
         errorText: errorText,
         paramSpecs: paramSpecs,
         renderEditor: renderEditor,
+        // R515: редактор шаблона (проверяется webui/tests/reference-templates-editor.test.js).
+        renderTplEditor: renderTplEditor,
+        tplEditorBody: tplEditorBody,
+        openTplEditor: openTplEditor,
+        closeTplEditor: closeTplEditor,
+        saveTplEditor: saveTplEditor,
+        deleteTemplate: deleteTemplate,
+        tplValueInputHtml: tplValueInputHtml,
         _state: state
     };
 

@@ -1,3 +1,36 @@
+## [0.7.328 - R525: R3 читаемости — main() cppworker разобран по этапам, 2026-11-18]
+
+Структурный шаг R3 плана читаемости (пункт «`main()` (599) → `buildServer()`,
+`registerRoutes()`, `run()`»). **Поведение не менялось**: блоки перенесены
+дословно, порядок вызовов в `main()` — прежний порядок строк.
+
+**Сделано (`cmd/cppworker/main.go`).** `main()` (599 строк) разобран на этапы:
+
+| Функция | Строк | Что делает |
+|---|---|---|
+| `main` | ~60 | флаги, i18n, SIGPIPE, health-check, порядок этапов |
+| `initWorkerLogging` | ~20 | уровень логирования + кольцевой буфер |
+| `loadWorkerConfig` | ~15 | `.env` → `LoadConfigFromEnv` |
+| `logStartupLayoutDecision` | ~25 | журнал решения по раскладке (R370) |
+| `applyEnvOverrides` | 286 | port/kv/timeouts/tensor-split/split-mode/main-gpu/llama-build/флаги/валидация/models-dir |
+| `initWorkerBackend` | ~12 | `currentConfig`, `backend`, `SetGlobalBackend` |
+| `prepareWorkerRuntime` | ~20 | reasoning self-test, адаптивный загрузчик |
+| `serveAndWait` | 173 | HTTP-сервер, авто-регистрация, синхронизаторы, штатное завершение |
+
+Порядок «env → операторские переопределения» остался в `main()` **явной строкой**
+(`applyStartupLayoutConfigR370`), потому что его закрепляет сторож
+`startup_config_r370_test.go` («без правки существующих тестов» — значит, вызов
+остаётся в `main`). Журнал решения вынесен отдельно и получает уже применённый конфиг.
+
+**Измерено `scripts/structure_report.ps1`:** функций > 300 строк **41 → 40** (ушла
+`main` 599; новых >300 не появилось: `applyEnvOverrides` 286, `serveAndWait` 173).
+Функций > 1000 — по-прежнему 2 (`proxyRequestLlamaCpp` 2428,
+`writeChatStreamResponseWithTools` 1426): это следующие шаги, и для второй перенос
+в другой файл запрещён (тесты читают `handlers_chat.go` по имени — см. R524).
+
+**Проверки.** `gofmt` чисто, `go build`/`go vet -tags llama_stub ./...` — чисто,
+`cmd/cppworker` тесты зелёные (включая сторожей R370 и `rpc_split_mode_wiring_r108`).
+
 ## [0.7.327 - R524: R3 читаемости — ollama-поверхность вынесена из handlers_model.go отдельным файлом, 2026-11-18]
 
 Структурный шаг R3 (`docs/plans/2026-11-19-readability-refactor.md`): **поведение не

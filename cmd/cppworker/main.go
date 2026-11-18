@@ -140,37 +140,44 @@ func packageLogger() *zap.SugaredLogger {
 // Main
 // ============================================================
 
+// R525 (2026-11-19, R3 читаемости): main() разобран по этапам.
+// ПОВЕДЕНИЕ НЕ МЕНЯЛОСЬ: блоки перенесены дословно, только в функции;
+// порядок вызовов в main() — прежний порядок строк.
 func main() {
-	// R486 (2026-11-10): доказательство идентичности — ПЕРВЫМ делом.
-	// Проверка не зависит ни от конфига, ни от GPU: если бинарь не совпадает
-	// с запечённым /app/identity.json, контейнер не должен принимать запросы
-	// вообще (живой случай: образ был собран с коммитом предыдущего релиза).
 	version.MustVerifyR486("cppworker")
-
 	flag.Parse()
-
-	// R234 (2026-10-24): язык логов и ошибок. Локальная настройка (env/локаль)
-	// применяется до первого сообщения; дальше StartFromBalancer подтягивает
-	// язык с балансера, поэтому переключение в WebUI действует на весь стенд.
 	i18n.BootstrapFromEnv("CPPWORKER")
-
-	// R173 (2026-10-18): SIGPIPE НЕ ДОЛЖЕН УБИВАТЬ ВОРКЕР.
-	//
-	// ЖИВАЯ АВАРИЯ. Мастер раскладки грузил модель с удалённым узлом: 1251 МиБ
-	// весов лились в RPC-сокет, и когда сокет закрывался (узел пересоздавался
-	// приказом балансера), процесс умирал с кодом 141 = SIGPIPE. Ни сообщения, ни
-	// паники в логе — только точки трейса ggml. Go свои записи от SIGPIPE
-	// защищает сам, но C++-слой llama.cpp пишет в сокет напрямую, и для него
-	// действует умолчание ОС: процесс завершается. Выключение SIGPIPE превращает
-	// смерть в обычную ошибку записи (EPIPE), которую llama.cpp сообщает как отказ
-	// операции — клиент выживает, а причина видна в логе.
 	signal.Ignore(syscall.SIGPIPE)
-
 	if *healthCheck {
 		runHealthCheck()
 		return
 	}
+	log := initWorkerLogging()
+	cfg := loadWorkerConfig(log)
+	rpcDecision, appliedOverrides := applyStartupLayoutConfigR370(&cfg, os.Getenv)
+	logStartupLayoutDecision(log, cfg, rpcDecision, appliedOverrides)
+	applyEnvOverrides(&cfg, log)
+	initWorkerBackend(cfg, log)
 
+	// Round 37 (2026-08-18): CLI mode — exit BEFORE starting HTTP server.
+	// -feasible <model>: print feasible n_ctx and exit.
+	// -auto-load <model>: auto-detect n_ctx, load model, exit.
+	// Оба используют GetBackend() → SetGlobalBackend выше обязателен.
+	if *feasibleModel != "" {
+		os.Exit(runFeasible(*feasibleModel, os.Stdout))
+	}
+	if *autoLoadModel != "" {
+		os.Exit(runAutoLoad(*autoLoadModel, os.Stdout))
+	}
+
+	prepareWorkerRuntime(log)
+
+	router := setupRouter()
+	serveAndWait(router, cfg, log)
+}
+
+// initWorkerLogging — уровень логирования и кольцевой буфер (R525).
+func initWorkerLogging() *zap.SugaredLogger {
 	logLevel := "info"
 	if *verbose {
 		logLevel = "debug"
@@ -191,6 +198,12 @@ func main() {
 	// (/api/v1/cppworker/debug/bundle). CPPWORKER_LOG_BUFFER_ENTRIES=0 выключает.
 	initLogBufferR476()
 	log := logger.Get()
+	return log
+}
+
+// buildWorkerConfig — .env, конфиг, решение по раскладке R370, env-переопределения,
+// флаги, валидация и каталог моделей (R525).
+func loadWorkerConfig(log *zap.SugaredLogger) cppbackend.Config {
 
 	dotEnvPath := *envFile
 	if dotEnvPath == "" {
@@ -223,7 +236,11 @@ func main() {
 	// балансером, молча отключалась (rpc_enabled=false, ни одной RPC-строки в
 	// логе загрузки) — двухузловой стенд деградировал в однопузловой без единого
 	// сообщения. См. startup_config_r370.go.
-	rpcDecision, appliedOverrides := applyStartupLayoutConfigR370(&cfg, os.Getenv)
+	return cfg
+}
+
+// logStartupLayoutDecision — журнал решения по раскладке (R525, порядок R370).
+func logStartupLayoutDecision(log *zap.SugaredLogger, cfg cppbackend.Config, rpcDecision rpcMode, appliedOverrides []string) {
 	for _, note := range rpcDecision.Notes {
 		log.Infow(i18n.T("cppworker.main.rpc_mode", note),
 			"rpc_enabled", rpcDecision.Enabled,
@@ -239,6 +256,11 @@ func main() {
 			"keys", appliedOverrides, "idleUnloadMinutes", cfg.IdleUnloadMinutes,
 			"rpc_enabled", cfg.RPCEnabled, "rpc_servers", cfg.RPCServers)
 	}
+}
+
+// applyEnvOverrides — env-переопределения при старте (R525).
+func applyEnvOverrides(cfgPtr *cppbackend.Config, log *zap.SugaredLogger) {
+	cfg := *cfgPtr
 	// Если --port не передан явно (равен default 18092), а CPPWORKER_PORT
 	// задан в env с отличным значением — применяем env.
 	if !isFlagSet("port") {
@@ -521,7 +543,11 @@ func main() {
 	if err := os.MkdirAll(cfg.ModelsDir, 0755); err != nil {
 		log.Fatalw("failed to create models directory", "dir", cfg.ModelsDir, "error", err)
 	}
+	*cfgPtr = cfg
+}
 
+// initWorkerBackend — создание backend, currentConfig и регистрация для CLI (R525).
+func initWorkerBackend(cfg cppbackend.Config, log *zap.SugaredLogger) {
 	cc := cfg
 	currentConfig = &cc
 
@@ -532,18 +558,10 @@ func main() {
 	// Round 37 (2026-08-18): register backend for CLI tools (-feasible, -auto-load).
 	cppbackend.SetGlobalBackend(backend)
 	log.Infow("Backend initialized", "version", backend.Version(), "gpuCount", backend.GetGPUCount())
+}
 
-	// Round 37 (2026-08-18): CLI mode — exit BEFORE starting HTTP server.
-	// -feasible <model>: print feasible n_ctx and exit.
-	// -auto-load <model>: auto-detect n_ctx, load model, exit.
-	// Оба используют GetBackend() → SetGlobalBackend выше обязателен.
-	if *feasibleModel != "" {
-		os.Exit(runFeasible(*feasibleModel, os.Stdout))
-	}
-	if *autoLoadModel != "" {
-		os.Exit(runAutoLoad(*autoLoadModel, os.Stdout))
-	}
-
+// prepareWorkerRuntime — self-test reasoning и адаптивный загрузчик (R525).
+func prepareWorkerRuntime(log *zap.SugaredLogger) {
 	// Round 17 (2026-07-31): startup self-test для reasoning routing.
 	// Логируем какие модели БУДУТ иметь reasoning routing при LoadModel —
 	// это помогает оператору сразу увидеть конфигурационные баги (типа
@@ -564,9 +582,10 @@ func main() {
 		}
 		return nil
 	})
+}
 
-	router := setupRouter()
-
+// serveAndWait — HTTP-сервер, авто-регистрация, синхронизаторы и штатное завершение (R525).
+func serveAndWait(router http.Handler, cfg cppbackend.Config, log *zap.SugaredLogger) {
 	// R93 (2026-10-09): фоновая проверка каталога моделей.
 	//
 	// ЗАЧЕМ. Каталог моделей может меняться без перезапуска контейнера (оператор

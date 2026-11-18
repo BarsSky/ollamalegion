@@ -169,6 +169,14 @@ rpc-ссылки) + `handlers_backends_list.go` 616 + `handlers_backends_mutate.
 склейка тел в исходном порядке совпадает с исходным телом (нормализованное сравнение); плюс
 `go vet` 0, `gofmt` чисто, `go test` и `-race` по `cmd/cppworker` и `internal/api` зелёные.
 
+**Итог R525 (часть R3, факт).** `cmd/cppworker/main.go`: `main()` 599 строк разобран
+на этапы — `initWorkerLogging` (~20), `loadWorkerConfig` (~15),
+`logStartupLayoutDecision` (~25), `applyEnvOverrides` (286), `initWorkerBackend` (~12),
+`prepareWorkerRuntime` (~20), `serveAndWait` (173). Вызов
+`applyStartupLayoutConfigR370` остался **в `main`** явной строкой: его закрепляет
+сторож `startup_config_r370_test.go:141-155` («без правки тестов» → вызов не
+переносим). Замер `scripts/structure_report.ps1`: функций > 300 — **41 → 40**;
+> 1000 — по-прежнему 2.
 **Итог R524 (часть R3, факт).** `handlers_model.go` 3664 → **2897**:
 ollama-поверхность (`handleOllamaTags/PS/Show/Copy/Create/Push`,
 `writeOllamaShow*`, `modelDigest`, `quantizationForPSModel`, `modelParameterSize`,

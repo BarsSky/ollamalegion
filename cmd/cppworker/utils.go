@@ -276,6 +276,10 @@ func writeCppWorkerErrorWithBridgeInfo(w http.ResponseWriter, status int, prefix
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
+	// R521 (§8.3.5): ошибка декода уносит последние строки лога llama.cpp.
+	// Клиент видел «code 1» и не мог понять причину, хотя мост эти строки
+	// перехватывает (CUDA OOM был прямо в них).
+	msg = cppbackend.AppendDecodeTailToMessage(msg)
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 

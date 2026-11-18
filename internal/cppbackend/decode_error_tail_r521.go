@@ -107,3 +107,18 @@ func decodeErrorWithTail(err error, lines []string) error {
 func decodeErrorTailLive() []string {
 	return bridge.RecentLogLines(decodeErrorTailLines)
 }
+
+// AppendDecodeTailToMessage — приложить хвост лога llama.cpp к тексту ошибки
+// (R521, §8.3.5) для слоя HTTP.
+//
+// ПОЧЕМУ НЕ В diagnoseInferenceFailure. Там менять error нельзя: R224 закрепляет,
+// что «не наша» ошибка возвращается ТЕМ ЖЕ значением (identity), иначе failover
+// теряет исходную причину. Диагноз остаётся прежним, а хвост добавляется в
+// момент формирования ответа клиенту — там, где ошибка больше не классифицируется.
+func AppendDecodeTailToMessage(msg string) string {
+	withTail, added := appendDecodeTail(msg, decodeErrorTailLive())
+	if !added {
+		return msg
+	}
+	return withTail
+}

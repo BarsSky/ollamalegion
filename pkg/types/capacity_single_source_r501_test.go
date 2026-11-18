@@ -16,17 +16,19 @@ import "testing"
 
 // TestR501_CapacityFromValue — одна трактовка чисел (C-3).
 func TestR501_CapacityFromValue(t *testing.T) {
+	// Порядок полей — под fieldalignment (govet в CI): сначала числа, затем
+	// булевы, иначе структура занимает 32 байта вместо 24 и линтер краснеет.
 	cases := []struct {
 		n         int
-		wantKnown bool
 		wantValue int
+		wantKnown bool
 		wantUnlim bool
 	}{
-		{4, true, 4, false},
-		{1, true, 1, false},
-		{0, false, 0, false}, // «не задано», а не «ноль слотов» и не «10»
-		{-1, true, 0, true},  // «без лимита»
-		{-7, true, 0, true},  // любое отрицательное — тот же смысл
+		{4, 4, true, false},
+		{1, 1, true, false},
+		{0, 0, false, false}, // «не задано», а не «ноль слотов» и не «10»
+		{-1, 0, true, true},  // «без лимита»
+		{-7, 0, true, true},  // любое отрицательное — тот же смысл
 	}
 	for _, c := range cases {
 		got := CapacityFromValueR501(c.n)

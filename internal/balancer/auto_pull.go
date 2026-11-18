@@ -339,7 +339,7 @@ func (apm *AutoPullManager) findBackendWithModelReady(model string) string {
 
 		// Шаг 1: модель уже загружена в память (RunningModels)
 		for _, m := range metrics.Ollama.RunningModels {
-			if m.Name == model || strings.Contains(m.Name, model) {
+			if modelNameMatches(m.Name, model) {
 				return id
 			}
 		}
@@ -348,7 +348,7 @@ func (apm *AutoPullManager) findBackendWithModelReady(model string) string {
 		// Ollama автоматически загрузит модель при первом запросе.
 		if metrics.Ollama.AvailableModels != nil {
 			for _, m := range metrics.Ollama.AvailableModels {
-				if m.Name == model || strings.Contains(m.Name, model) {
+				if modelNameMatches(m.Name, model) {
 					logger.Get().Infow("auto-pull: model found in available models (not running, will auto-load)",
 						"model", model, "backend", id)
 					return id
@@ -424,7 +424,7 @@ func (apm *AutoPullManager) findBestBackendForPull(model string) string {
 
 			// Если модель уже доступна на этом бэкенде (available, не running) — бонус
 			for _, m := range metrics.Ollama.AvailableModels {
-				if m.Name == model || strings.Contains(m.Name, model) {
+				if modelNameMatches(m.Name, model) {
 					score += 80
 					break
 				}

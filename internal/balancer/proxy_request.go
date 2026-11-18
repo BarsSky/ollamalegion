@@ -1045,7 +1045,7 @@ func (p *Proxy) warmupOllamaModel(backendID, host string, port int, model string
 
 	modelExists := false
 	for _, m := range tagsData.Models {
-		if m.Name == model || strings.Contains(m.Name, model) {
+		if modelNameMatches(m.Name, model) {
 			modelExists = true
 			break
 		}

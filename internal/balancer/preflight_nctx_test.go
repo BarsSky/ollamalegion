@@ -409,14 +409,20 @@ func TestDecidePreflight_DefaultNPredictWhenZero(t *testing.T) {
 	// оценки промпта. Раньше здесь ожидался NoOp, и именно из-за этого Cline жил с
 	// неизменным окном.
 	//
-	// R451 (2026-11-06): в таргет входит только минимальный вывод (256), а не
-	// дефолтные 4096: 8000+256+64 = 8320 > загруженных 4096 → перезагрузка.
+	// R451 (2026-11-06): в таргет входит только минимальный вывод, а не дефолтные
+	// 4096: 8000+512+64 = 8576 > загруженных 4096 → перезагрузка.
+	//
+	// R502 / аудит N-9: минимум — 512 (общий с воркером,
+	// types.ContextBudgetMinAnswerTokensR502), а не 256: воркер ниже 512 не
+	// опускает n_predict и отвечает 413, поэтому балансер обязан считать по нему.
+	wantTarget := 8000 + agentOutputReserveMinTokens + 64
 	if res.Decision != PreflightReload {
-		t.Fatalf("ожидался PreflightReload (8320 > загруженных 4096), получено %v (target=%d)",
-			res.Decision, res.TargetNCtx)
+		t.Fatalf("ожидался PreflightReload (%d > загруженных 4096), получено %v (target=%d)",
+			wantTarget, res.Decision, res.TargetNCtx)
 	}
-	if res.TargetNCtx != 8320 {
-		t.Errorf("TargetNCtx=%d, ожидалось 8320 (8000 + минимальный вывод 256 + 64)", res.TargetNCtx)
+	if res.TargetNCtx != wantTarget {
+		t.Errorf("TargetNCtx=%d, ожидалось %d (8000 + минимальный вывод %d + 64)",
+			res.TargetNCtx, wantTarget, agentOutputReserveMinTokens)
 	}
 	// Прежний таргет (с дефолтным бюджетом клиента) доступен в режиме client.
 	t.Setenv("LB_AGENT_WINDOW_BUDGET", "client")

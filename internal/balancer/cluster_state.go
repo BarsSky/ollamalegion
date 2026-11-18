@@ -570,12 +570,12 @@ func (p *Proxy) PublishEvent(ev types.Event) {
 	p.eventBus.Publish(ev)
 }
 
-// SetUnloadScheduler — установка планировщика выгрузки моделей
-func (p *Proxy) SetUnloadScheduler(us *UnloadScheduler) {
-	p.unloadScheduler = us
-}
-
-// GetUnloadScheduler — получение планировщика выгрузки
+// GetUnloadScheduler — получение планировщика выгрузки.
+//
+// R502 / аудит X-1: сеттера `SetUnloadScheduler` больше нет. Планировщик —
+// единственный объект, созданный прокси; подмена указателя снаружи и была
+// причиной второго, «мёртвого» цикла выгрузки (его `lastUsed` не обновлялся,
+// потому что RecordModelUse идёт через указатель прокси).
 func (p *Proxy) GetUnloadScheduler() *UnloadScheduler {
 	return p.unloadScheduler
 }

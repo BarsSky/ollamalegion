@@ -236,7 +236,7 @@ func (p *Proxy) calculateModelLoadPenalty(backendID string, modelName string) fl
 	}
 
 	for _, m := range metrics.Ollama.RunningModels {
-		if m.Name == modelName || strings.Contains(m.Name, modelName) {
+		if modelNameMatches(m.Name, modelName) {
 			return 0
 		}
 	}

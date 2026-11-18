@@ -1,7 +1,6 @@
 package balancer
 
 import (
-	"strings"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -866,13 +865,13 @@ func (p *Proxy) findLessLoadedBackendAnyWhere(
 func (p *Proxy) backendHasModel(metrics *types.BackendMetrics, modelName string) bool {
 	// Проверяем Ollama модели
 	for _, m := range metrics.Ollama.RunningModels {
-		if m.Name == modelName || strings.Contains(m.Name, modelName) {
+		if modelNameMatches(m.Name, modelName) {
 			return true
 		}
 	}
 	// Проверяем llama.cpp модели
 	for _, m := range metrics.LlamaCpp.LoadedModels {
-		if m.Name == modelName || strings.Contains(m.Name, modelName) {
+		if modelNameMatches(m.Name, modelName) {
 			return true
 		}
 	}

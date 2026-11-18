@@ -702,11 +702,17 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 			"timeout", config.Balancing.AutoPull.PullTimeout)
 	}
 
-	// Инициализация background controllers
-	p.unloadScheduler = NewUnloadScheduler(p)
-	p.unloadScheduler.Start()
+	// Инициализация background controllers.
+	//
+	// R502 / аудит X-1: здесь только СОЗДАНИЕ планировщика выгрузки; запуск —
+	// фаза запуска (`main` зовёт GetUnloadScheduler().Start()). Раньше объект
+	// стартовал прямо в конструкторе, а `main` создавал второй и подменял
+	// указатель: первый цикл продолжал жить со своим, никогда не обновляемым
+	// `lastUsed` (RecordModelUse идёт через указатель прокси).
+	//
 	// R499 / аудит S-1: тюнер весов удалён (его веса не читались скорингом,
 	// а RecordOutcome недостижим на llama.cpp-пути).
+	p.unloadScheduler = NewUnloadScheduler(p)
 
 	// Инициализация nctxReload координатора (Stage 3, 5).
 	// Загружает конфиг из BalancingSettings.NCtxReload (см. internal/config).

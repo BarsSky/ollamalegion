@@ -126,14 +126,21 @@ func TestPreflight_R6031_NoExplicitClientOverride(t *testing.T) {
 	// R451 (2026-11-06): таргет считается БЕЗ бюджета вывода клиента. Раньше
 	// ожидалось 5000+3000+64 = 8064, и второй ход Cline уезжал в unload+load на
 	// 243 с, хотя промпт в окно влезал (живой дефект: max_tokens 15393 раздувал
-	// «нужное окно» до 40134 при загруженных 32768). Теперь закладывается только
-	// нижняя граница осмысленного вывода (256): 5000+256+64 = 5320.
+	// «нужное окно» до 40134 при загруженных 32768). Закладывается только нижняя
+	// граница осмысленного вывода.
+	//
+	// R502 / аудит N-9: граница — 512, а не 256, и она ОБЩАЯ с воркером
+	// (types.ContextBudgetMinAnswerTokensR502): ниже 512 воркер не опускает
+	// n_predict и отвечает 413. При 256 балансер для остатка 300…511 решал
+	// «обслужить» — и клиент получал отказ при живом запасе окна.
+	wantTarget := 5000 + agentOutputReserveMinTokens + 64
 	if res.Decision != PreflightReload {
 		t.Fatalf("промпт по оценке не влезает в загруженное окно 2048 — ожидался "+
 			"PreflightReload, получено %v", res.Decision)
 	}
-	if res.TargetNCtx != 5320 {
-		t.Errorf("TargetNCtx=%d, ожидалось 5320 (промпт 5000 + минимальный вывод 256 + 64)", res.TargetNCtx)
+	if res.TargetNCtx != wantTarget {
+		t.Errorf("TargetNCtx=%d, ожидалось %d (промпт 5000 + минимальный вывод %d + 64)",
+			res.TargetNCtx, wantTarget, agentOutputReserveMinTokens)
 	}
 	if !res.AgentDerivedWindow {
 		t.Error("ожидалась пометка AgentDerivedWindow (окно выведено из промпта)")

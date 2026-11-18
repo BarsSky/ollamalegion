@@ -51,8 +51,10 @@ var capacityStaticReadAllowAPI_R501 = map[string]bool{
 // allow-списка; на маршрутных путях — только EffectiveMaxConcurrentRequests().
 func TestR501_StaticCapacityNotReadOnRoutingPaths(t *testing.T) {
 	type pkg struct {
-		dir   string
+		// Порядок полей — под fieldalignment (govet в CI): сначала map, затем
+		// строка, иначе объект занимает лишние 8 байт и линтер краснеет.
 		allow map[string]string
+		dir   string
 	}
 	pkgs := []pkg{
 		{dir: ".", allow: capacityStaticReadAllowR501},

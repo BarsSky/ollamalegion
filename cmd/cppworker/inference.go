@@ -13,11 +13,22 @@ import (
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/tokencount"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // ============================================================
 // Token counting
 // ============================================================
+
+// minNPredictClamp — минимальный бюджет ответа (n_predict), ниже которого n_predict
+// не опускается.
+//
+// R502 / аудит N-9: то же число, что у балансера
+// (types.ContextBudgetMinAnswerTokensR502 = 512). Раньше здесь была своя
+// константа 512, а балансер считал по 256 — для остатка 300…511 балансер решал
+// «обслужить», а этот путь отвечал 413. Константа на уровне пакета, чтобы тест
+// мог проверить, что оба конца берут ОДНО значение.
+const minNPredictClamp = types.ContextBudgetMinAnswerTokensR502
 
 func countTokens(modelName, text string) int {
 	if text == "" {
@@ -465,7 +476,6 @@ func clampNPredictToFitContext(modelName, prompt string, params *bridge.Generati
 		actualTokens = tokencount.Estimate(prompt)
 	}
 
-	const minNPredictClamp = 512
 	// Запас 1 токен под EOS-маркер.
 	maxAllowedNPredict := nCtx - actualTokens - 1
 

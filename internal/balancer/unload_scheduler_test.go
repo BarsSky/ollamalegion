@@ -286,12 +286,26 @@ func TestUnloadModel(t *testing.T) {
 		t.Error("lastUsed should be cleared after unload")
 	}
 
-	// Verify model marked as warming (to block new requests)
+	// R503 / аудит S4 X-2: метка «warming» больше НЕ ставится.
+	//
+	// Прежняя версия теста требовала `WarmingUpModels["m1"]` («to block new
+	// requests») — то есть закрепляла дефект: метка означает «модель грузится»,
+	// попадает в P2 селектора и в монитор, и model_instance_controller исключает
+	// по ней бэкенд из размещения. Простаивающая модель объявлялась загружающейся,
+	// хотя с ней ничего не делали, а маршрут мог увести запрос «ждать загрузку».
 	p.backends["b1"].mu.Lock()
 	_, isWarming := p.backends["b1"].WarmingUpModels["m1"]
 	p.backends["b1"].mu.Unlock()
-	if !isWarming {
-		t.Error("model should be marked as warming after unload")
+	if isWarming {
+		t.Error("простой модели не должен помечать её как загружающуюся: метка " +
+			"WarmingUpModels уводит запрос в режим ожидания загрузки (аудит X-2)")
+	}
+	// Кулдаун вместо метки: повторное сообщение о той же паре — не раньше 2 минут.
+	us.mu.Lock()
+	_, cooldown := us.pending["m1@b1"]
+	us.mu.Unlock()
+	if !cooldown {
+		t.Error("после обработки простоя не выставлен кулдаун сообщений (pending)")
 	}
 
 	// Missing backend should not panic
@@ -346,33 +360,41 @@ func TestSetEnabled(t *testing.T) {
 }
 
 func TestActiveModelsMap(t *testing.T) {
+	// R503 / аудит S4 X-2: ИСТОЧНИКИ НАГРУЗКИ СТАЛИ БОЕВЫМИ.
+	//
+	// Прежняя версия этого теста закрепляла мёртвый источник: она писала модели в
+	// `queueMgr.processing`/`pending` — legacy-списки, которые после R78 всегда
+	// пусты (запросы ждут в admission-очереди), и проверяла, что функция их видит.
+	// То есть тест подтверждал работу защиты, которой на стенде не было.
+	//
+	// Теперь проверяются те же три сигнала, по которым реально видно нагрузку:
+	// занятые слоты бэкенда, очередь admission на бэкенде, живой поток сессии.
 	p := &Proxy{
-		config:   &types.LoadBalancerConfig{},
-		queueMgr: NewQueueManager(nil, 10),
+		config:     &types.LoadBalancerConfig{},
+		backends:   map[string]*BackendState{},
+		metricsMgr: NewMetricsManager(),
+		sessionMgr: NewSessionManager(),
+		admission:  newAdmissionQueue(time.Second),
 	}
-
-	p.queueMgr.processingMu.Lock()
-	p.queueMgr.processing = []*QueuedRequest{
-		{Model: "m1", Target: "b1"},
-	}
-	p.queueMgr.processingMu.Unlock()
-
-	p.queueMgr.pendingMu.Lock()
-	p.queueMgr.pending = []*QueuedRequest{
-		{Model: "m2", Target: "b2"},
-	}
-	p.queueMgr.pendingMu.Unlock()
+	p.backends["b1"] = &BackendState{Backend: &types.Backend{ID: "b1"}, ActiveReqs: 1}
+	p.backends["b3"] = &BackendState{Backend: &types.Backend{ID: "b3"}}
+	p.admission.enqueue("b2", "sess-1")
+	p.sessionMgr.SetWithProtocol("sess-2", "b4", "m4", "client", "127.0.0.1", "test", "")
+	p.sessionMgr.SetStreamActive("sess-2", true)
 
 	us := NewUnloadScheduler(p)
-	active := us.activeModelsMap()
+	busy, activeKeys := us.activeModelsMap()
 
-	if !active["m1@b1"] {
-		t.Error("m1@b1 should be active")
+	if !busy["b1"] {
+		t.Error("b1 занят слотом (ActiveReqs=1) — обязан считаться занятым")
 	}
-	if !active["m2@b2"] {
-		t.Error("m2@b2 should be active")
+	if !busy["b2"] {
+		t.Error("b2 держит очередь admission — обязан считаться занятым")
 	}
-	if active["m3@b3"] {
-		t.Error("m3@b3 should not be active")
+	if busy["b3"] {
+		t.Error("b3 свободен и без очереди — не должен считаться занятым")
+	}
+	if !activeKeys["m4@b4"] {
+		t.Error("m4@b4 с живым потоком сессии — модель обязана считаться активной")
 	}
 }

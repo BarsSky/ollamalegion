@@ -353,6 +353,32 @@ func (aq *admissionQueue) waitingCount() int {
 	return total
 }
 
+// waitingByBackend — R503 (2026-11-19, аудит S4 X-2): сколько запросов ЖДЁТ слот
+// на каждом бэкенде.
+//
+// Зачем отдельный снимок. Планировщик выгрузки защищал «активные» модели по
+// `queueMgr.processing`/`pending` — legacy-спискам, которые после R78 всегда пусты
+// (запросы ждут в admission-очереди). То есть защита «не выгружать модель под
+// нагрузкой» не работала вовсе. Здесь — настоящий источник ожидания: бэкенд, к
+// которому стоит очередь, занят и выгружать с него модель нельзя.
+func (aq *admissionQueue) waitingByBackend() map[string]int {
+	if aq == nil {
+		return nil
+	}
+	aq.mu.Lock()
+	defer aq.mu.Unlock()
+	if len(aq.waiters) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(aq.waiters))
+	for backendID, list := range aq.waiters {
+		if n := len(list); n > 0 {
+			out[backendID] = n
+		}
+	}
+	return out
+}
+
 // markInflight — изменить счётчик активных запросов сессии.
 func (aq *admissionQueue) markInflight(session string, delta int) {
 	if aq == nil || session == "" {

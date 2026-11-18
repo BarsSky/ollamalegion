@@ -25,15 +25,22 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"ollama-loadbalancer/pkg/types"
 )
 
 const (
 	// agentOutputReserveDefaultTokens — сколько токенов вывода закладывать в окно,
 	// если клиент не задал бюджет (Cline max_tokens не шлёт).
 	agentOutputReserveDefaultTokens = 4096
-	// agentOutputReserveMinTokens — нижняя граница бюджета: меньше 256 токенов на
-	// ход агента бессмысленно, и «окно» из одного промпта не имело бы смысла.
-	agentOutputReserveMinTokens = 256
+	// agentOutputReserveMinTokens — нижняя граница бюджета ответа.
+	//
+	// R502 / аудит N-9: значение больше НЕ своё (было 256). Оно общее с воркером
+	// (types.ContextBudgetMinAnswerTokensR502 = 512): воркер ниже 512 не опускает
+	// n_predict и отвечает 413, если не помещается. При 256 балансер для остатка
+	// 300…511 решал «обслужить», а воркер отказывал — то есть запас окна был, а
+	// клиент получал отказ.
+	agentOutputReserveMinTokens = types.ContextBudgetMinAnswerTokensR502
 	// agentOutputReserveMaxTokens — верхняя граница: защита от мусора в env.
 	agentOutputReserveMaxTokens = 131072
 	// agentWindowSlackTokens — запас на служебные токены шаблона/BOS (как в

@@ -1,7 +1,6 @@
 package balancer
 
 import (
-	"strings"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -112,7 +111,7 @@ func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendT
 
 		hasModel := false
 		for _, m := range metrics.Ollama.RunningModels {
-			if m.Name == modelName || strings.Contains(m.Name, modelName) {
+			if modelNameMatches(m.Name, modelName) {
 				hasModel = true
 				break
 			}
@@ -120,7 +119,7 @@ func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendT
 		if !hasModel {
 			// Also check llama.cpp loaded models
 			for _, m := range metrics.LlamaCpp.LoadedModels {
-				if m.Name == modelName || strings.Contains(m.Name, modelName) {
+				if modelNameMatches(m.Name, modelName) {
 					hasModel = true
 					break
 				}

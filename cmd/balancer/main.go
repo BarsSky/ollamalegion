@@ -239,11 +239,17 @@ func main() {
 	prewarmCtrl := balancer.NewPrewarmController(proxy, conf.Balancing.Prewarm)
 	modelInstanceCtrl := balancer.NewModelInstanceController(proxy, conf.Balancing.ModelInstances)
 
-	// Создание планировщика выгрузки и тюнера весов
-	unloadScheduler := balancer.NewUnloadScheduler(proxy)
-
-	// Подключение к proxy
-	proxy.SetUnloadScheduler(unloadScheduler)
+	// R502 / аудит X-1: планировщик выгрузки НЕ создаём здесь.
+	//
+	// БЫЛО: `NewProxy` создавал и запускал свой планировщик, а здесь создавался
+	// ВТОРОЙ и подменял указатель (SetUnloadScheduler), после чего запускался ещё
+	// раз. Первый объект продолжал крутить свой цикл, но его `lastUsed` больше
+	// никто не обновлял (RecordModelUse идёт через указатель прокси) — то есть
+	// жил лишний цикл, который «ничего не выгружает» и только путал диагностику:
+	// в логе два «unloadScheduler», выгрузки — только у второго.
+	// Теперь объект один: его создаёт прокси, а запускаем мы в фазе запуска
+	// (как prewarmCtrl/modelInstanceCtrl), чтобы конструктор не плодил горутины.
+	unloadScheduler := proxy.GetUnloadScheduler()
 
 	// Создание health checker
 	healthChecker := balancer.NewHealthChecker(
@@ -440,10 +446,14 @@ func main() {
 	prewarmCtrl.Start()
 	modelInstanceCtrl.Start()
 
-	// Запуск планировщика выгрузки и тюнера весов
+	// Запуск планировщика выгрузки.
+	//
+	// R502 / аудит X-1: объект один (создан прокси в NewProxy и получен через
+	// GetUnloadScheduler выше); запускаем здесь, рядом с остальными контроллерами,
+	// а не в конструкторе. Строка про «adaptive weight tuner» убрана: тюнер
+	// удалён в R499, и печать обещала работу, которой нет.
 	fmt.Println("[Unload] Starting unload scheduler...")
 	unloadScheduler.Start()
-	fmt.Println("[Weight] Starting adaptive weight tuner...")
 
 	// Создание HTTP сервера для прокси
 	mux := http.NewServeMux()

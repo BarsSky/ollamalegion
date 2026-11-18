@@ -407,7 +407,14 @@ jobs:
           # Проверено локально: без кавычек — FAIL .out, в кавычках — ok.
           # Таймаут 180s → 300s: ./internal/... идёт ~140s, а с инструментацией
           # покрытия медленнее (у соседнего шага тестов бюджет уже 300s).
-          & $go test -tags llama_stub "-coverprofile=coverage.out" -covermode=atomic -timeout 300s ./internal/...
+          #
+          # R500 (2026-11-19): sdbackend исключён из общего прогона покрытия — та
+          # же причина, что и в ubuntu-fallback: пакет держит реальные порты
+          # (waitPortFree до 60 с), под покрытием ожидание не укладывается, и шаг
+          # краснеет на живом тесте. У пакета есть свой шаг «Test internal/sdbackend
+          # (no race)», где он идёт один и зелёный.
+          $pkgs = & $go list ./internal/... | Where-Object { $_ -notmatch '/internal/sdbackend$' }
+          & $go test -tags llama_stub "-coverprofile=coverage.out" -covermode=atomic -timeout 300s @pkgs
 
       - name: Coverage summary
         if: success()
@@ -617,9 +624,19 @@ jobs:
           # (60.07s)» — это НЕ тест и не код: в supervisor есть ожидание
           # освобождения порта (portFreeTimeout=60 c), а покрытие гоняло 20
           # пакетов параллельно на двухъядерном раннере. Тот же пакет отдельно
-          # с покрытием проходит за 4.7 c. Отдельный шаг «Test internal/sdbackend
-          # (no race)» зелёный по той же причине — он идёт один.
-          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -p 1 -timeout 300s ./internal/...
+          # с покрытием проходит за 4.7 c.
+          #
+          # R500 (2026-11-19): `-p 1` НЕ ПОМОГЛО — прогон 2e8e06f3 упал снова, с
+          # тем же 60.07s. Значит дело не в параллельности пакетов, а в том, что
+          # sdbackend держит РЕАЛЬНЫЕ порты (waitPortFree ждёт освобождения до
+          # 60 с), и под инструментацией покрытия это ожидание не укладывается.
+          # Тест при этом зелёный в своём собственном шаге выше («Test
+          # internal/sdbackend (no race)», идёт один, 4.7 с). Поэтому sdbackend
+          # ИСКЛЮЧЁН из общего прогона покрытия: у него есть отдельный шаг, а
+          # общий прогон должен быть детерминированным. Список строится через
+          # go list, чтобы не перечислять пакеты руками.
+          pkgs=$(go list ./internal/... | grep -v '/internal/sdbackend$')
+          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -p 1 -timeout 300s $pkgs
           go tool cover -func=coverage.out | tail -1
 
       - name: Upload coverage artifact

@@ -170,11 +170,15 @@ rpc-ссылки) + `handlers_backends_list.go` 616 + `handlers_backends_mutate.
 `go vet` 0, `gofmt` чисто, `go test` и `-race` по `cmd/cppworker` и `internal/api` зелёные.
 
 **Итог R527 (часть R3, факт).** `cmd/cppworker/handlers_chat.go`:
-`writeChatStreamResponseWithTools` **1426 → 954** — вынесено **начало** стрима, тремя
-функциями того же файла: `startToolsStreamGeneration(run *toolsStreamRun) bool` (361:
-дельты content/thinking, сторожа удержания R482/R485, callback, генерация и кадры
-ошибок), `startToolsStreamKeepalive` (58: кадр «запрос принят» R189 + heartbeat,
-cleanup возвращается функцией) и `logToolsStreamSummary` (121: сводка хода и done-кадр).
+`writeChatStreamResponseWithTools` **1426 → 954** (AST) — вынесено **начало** стрима,
+семи функциями того же файла: `startToolsStreamGeneration(run *toolsStreamRun) bool`
+(100 — дельты, связывание callback, генерация и кадры ошибок), `onStreamToken` (60 —
+callback: отмена/обрыв, чистка токена, thinking сразу, удержание блока размышлений),
+`emitContentWindow` (145 — предохранители и нарезка окна удержания),
+`releaseHoldIfOverdue` (57 — R482/R485), `writeToolsStreamGenerationError` (39 — кадры
+ошибки, включая reload-loop-limit/413), `startToolsStreamKeepalive` (55 — кадр «запрос
+принят» R189 + heartbeat, cleanup возвращается функцией), `logToolsStreamSummary`
+(121 — сводка хода и done-кадр).
 Состояние — не копия: `toolsStreamRun` держит указатели на переменные вызывающей
 функции, `thinkingParser` — ячейкой (`**ReasoningStreamState`), потому что повтор R406
 в финализации заменяет парсер, а callback обязан взять новый.
@@ -182,21 +186,30 @@ cleanup возвращается функцией) и `logToolsStreamSummary` (1
 текстом, а идентификаторы изменяемого состояния заменялись механически (сканер токенов
 `go/scanner`, поэтому комментарии и строки не тронуты). Обратная проверка: к фрагментам
 `git show HEAD` применено то же преобразование, после чего тела совпали **дословно** —
-`startToolsStreamGeneration` 351 непустая строка, `logToolsStreamSummary` 111 строк
-(различия только ожидаемые: `return` → `return false` на двух путях ошибки, пролог с
-локальными алиасами, алиас парсера в callback и присваивания в структуру). В
-`startToolsStreamKeepalive` изменение ровно одно: cleanup возвращается функцией вместо
-`defer` внутри — тело и комментарии перенесены дословно.
+`releaseHoldIfOverdue` 50 непустых строк, callback (`onStreamToken` + `emitContentWindow`)
+185 строк, кадры ошибки 37 строк, `logToolsStreamSummary` 111 строк. Ожидаемые различия:
+алиасы входа, пролог, и 13 отступных `return true` → `return` в `emitContentWindow`
+(метод без значения). В `startToolsStreamKeepalive` изменение ровно одно: cleanup
+возвращается функцией вместо `defer` внутри.
 **Почему финализация НЕ выносилась.** Первый вариант (вынести 911 строк финализации в
 `finishToolsStream`) собирался и проходил `go vet`, но покраснели два сторожа:
 `TestR394_ToolsPathUsesBudgetAwareReason` (AST: ≥3 вызовов `toolsTerminalReasonR394`
 ВНУТРИ `writeChatStreamResponseWithTools`) и `TestR404_Wiring` (точные строки
 `if anyStreamed {`, `reasoningOut != "" && !thinkingStreamed`). Тесты не правились —
 вынесено начало, финализация осталась там, где её проверяют сторожа.
+**Первая попытка покраснела в CI (записано как есть).** Lint (`only-new-issues`):
+`funlen` у `startToolsStreamGeneration` — 175 **вызовов** при лимите 100 (лимит
+`statements`, не строк), `fieldalignment` у `toolsStreamRun` (432 → 384) и
+`chatStreamFinish` (368 → 320), `ineffassign` на `retriedNoThink`. Исправлено:
+функция разбита дальше (методы выше), поля структур переставлены ровно по совету
+`fieldalignment` (порядок ни на что не влияет — конструкторы на именованных полях),
+`retriedNoThink` удалён: присваивание после повтора ни на что не влияло, предикат
+читал флаг выше и один раз, а блок R406 ровно один — теперь в вызове стоит `false`
+с комментарием. Повторная проверка тем же линтером (`golangci-lint:v1.61.0` в Docker,
+`--new-from-patch`, конфиг репозитория) — 0 находок.
 Замер после R527 (`scripts/structure_report.ps1`, до → после): функций **> 1000 — 2 → 1**
-(осталась `proxyRequestLlamaCpp` 2428), **> 300 — 40 → 41** (сокращённая функция в отчёте
-983 и вынесенный этап 361 — обе выше порога; показатель начнёт падать, когда этапы
-опустятся ниже 300), **≥ 150 — 122 → 123**.
+(осталась `proxyRequestLlamaCpp` 2428), **> 300 — 40 → 40** (сокращённая функция в отчёте
+983 всё ещё выше порога, а вынесенные этапы — уже ниже 300), **≥ 150 — 122 → 122**.
 **Попутно:** `structure_report.ps1` печатал метрику «>1000» пустой, когда под неё
 попадала ровно одна функция (`Where-Object` → одиночный объект без `.Count`); обёрнуто
 в `@()` — на HEAD метрика печатает 2, после правки 1.

@@ -1695,7 +1695,6 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// R406: видимый текст клиенту уже ушёл? Нужно, чтобы аварийный повтор без
 	// размышлений не дублировал уже показанный ответ.
 	contentStreamed := false
-	retriedNoThink := false
 
 	// R527: кадр «запрос принят» и heartbeat-горутина вынесены вместе с их
 	// разбором (startToolsStreamKeepalive): у функции остаётся только проводка.
@@ -1905,8 +1904,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// R493: promptOpensReasoning — шаблон сам открыл <think> в конце промпта;
 	// в таком случае сырой вывод БЕЗ маркеров — это размышления, и предикат
 	// обязан их видеть (иначе живой «пустой ответ» после 8 минут thinking).
+	// R527: повтора ещё не было — блок ниже единственный вход в него, поэтому
+	// retried=false. Переменная-флаг удалена: присваивание после повтора ни на что
+	// не влияло (ineffassign), и она не переживала свою же область чтения.
 	if toolsShouldRetryWithoutThinkingR406(params.NPredict, generatedTokens, fullOutput,
-		cleanFinalContent(outputForParse), promptNoThink, contentStreamed, len(toolCalls), retriedNoThink,
+		cleanFinalContent(outputForParse), promptNoThink, contentStreamed, len(toolCalls), false,
 		PromptOpensReasoning(prompt), reasoningBudgetTokensR493()) {
 
 		attempt1Tokens := generatedTokens
@@ -1924,7 +1926,6 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		thinkingParser = NewReasoningStreamState()
 		thinkingParser.SetImpliedOpen(false)
 		atomic.StoreInt64(&firstTokenAt, 0)
-		retriedNoThink = true
 		if retryErr := generateStreamWithRamFallback(ctx, modelName, promptNoThink, params, callback, false); retryErr != nil {
 			logger.Get().Warnw("writeChatStreamResponseWithTools: no-thinking retry failed (R406)",
 				"model", modelName, "error", retryErr)
@@ -2585,25 +2586,26 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 // частью 519-строчной функции. Поведение не менялось: тело перенесено дословно,
 // изменён только способ доступа к состоянию (поля вместо локальных переменных).
 type chatStreamFinish struct {
-	// Порядок полей — под fieldalignment: крупные значения, затем строки,
-	// затем указатели (иначе govet: «struct with 376 pointer bytes could be 320»).
-	params               bridge.GenerationParams
+	// Порядок полей — под fieldalignment (R527: «368 pointer bytes could be 320»):
+	// сначала указатели/интерфейсы, затем строки, затем значения и флаги. Порядок
+	// ни на что не влияет: конструктор использует именованные поля.
 	start                time.Time
 	prefillStartTime     time.Time
 	ctx                  context.Context
-	modelName            string
-	prompt               string
-	createdAt            string
+	firstTokenAt         *int64
+	thinkOverride        *bool
+	streamErr            *error
+	contentSeen          *strings.Builder
 	callback             func(string) bool
 	sw                   *safeStreamWriter
 	r                    *http.Request
-	thinkOverride        *bool
-	outputBuf            *strings.Builder
-	firstTokenAt         *int64
-	rcParser             *ReasoningStreamState
 	emittedContentRawLen *int
-	contentSeen          *strings.Builder
-	streamErr            *error
+	outputBuf            *strings.Builder
+	rcParser             *ReasoningStreamState
+	modelName            string
+	createdAt            string
+	prompt               string
+	params               bridge.GenerationParams
 	rcSendReasoning      bool
 }
 
@@ -2858,13 +2860,15 @@ func finishChatStream(in *chatStreamFinish) {
 // Порядок полей — под fieldalignment: значение, интерфейсы и строки, затем
 // указатели и функции, затем флаги.
 type toolsStreamRun struct {
-	params             bridge.GenerationParams
-	w                  http.ResponseWriter
+	// Порядок полей — под fieldalignment (R527: «432 pointer bytes could be 384»):
+	// сначала указатели/интерфейсы/функции, затем строки, значение params и флаги.
 	ctx                context.Context
-	modelName          string
-	createdAt          string
-	prompt             string
-	emitContentDelta   func(string)
+	w                  http.ResponseWriter
+	firstTokenAt       *int64
+	holdReleasedAt     *time.Time
+	holdReleaseReason  *string
+	firstContentAt     *time.Time
+	streamedBytes      *int
 	emitThinkingDelta  func(string)
 	callback           func(string) bool
 	outputBuf          *strings.Builder
@@ -2872,9 +2876,9 @@ type toolsStreamRun struct {
 	r                  *http.Request
 	thinkingParserCell **ReasoningStreamState
 	streamErr          *error
-	firstTokenAt       *int64
 	emittedLen         *int
-	streamedBytes      *int
+	holdSince          *time.Time
+	emitContentDelta   func(string)
 	holdReleasedBytes  *int
 	anyStreamed        *bool
 	contentStreamed    *bool
@@ -2882,10 +2886,10 @@ type toolsStreamRun struct {
 	reasoningHold      *bool
 	toolsHold          *bool
 	holdKeptReasoning  *bool
-	holdSince          *time.Time
-	holdReleasedAt     *time.Time
-	firstContentAt     *time.Time
-	holdReleaseReason  *string
+	modelName          string
+	prompt             string
+	createdAt          string
+	params             bridge.GenerationParams
 	streamContent      bool
 	reasoningEcho      bool
 }
@@ -2903,16 +2907,13 @@ func startToolsStreamGeneration(x *toolsStreamRun) bool {
 	// Неизменяемые входы — локальными именами, чтобы перенесённое тело читалось
 	// как прежде.
 	modelName := x.modelName
-	createdAt := x.createdAt
 	prompt := x.prompt
+	reasoningEcho := x.reasoningEcho
+	createdAt := x.createdAt
 	params := x.params
 	ctx := x.ctx
-	r := x.r
 	w := x.w
 	sw := x.sw
-	outputBuf := x.outputBuf
-	streamContent := x.streamContent
-	reasoningEcho := x.reasoningEcho
 	// streamErr — результат генерации. Вызывающая функция читает его в своём
 	// defer (recordLastPromptFromErrorWithContext), поэтому итог пишется в её
 	// переменную при любом выходе.
@@ -2980,260 +2981,12 @@ func startToolsStreamGeneration(x *toolsStreamRun) bool {
 		*x.anyStreamed = true
 	}
 
-	// releaseHoldIfOverdue — R482: снять удержание, если оно длится слишком
-	// долго или накопило слишком много. Накопленное НЕ отдаём (в нём могут быть
-	// размышления), но все следующие токены пойдут клиенту нормально.
-	//
-	// R485: если удержание вызвано РАЗМЫШЛЕНИЯМИ (открытый блок/канал открыт
-	// шаблоном), удержание НЕ снимаем — иначе размышления уходят в content,
-	// клиент сохраняет их как ответ ассистента, и на следующем ходу модель видит
-	// свои же размышления как прошлый ответ (живой архив: content_len=18720/65109
-	// у assistant-сообщений с tool_calls). Аварийный тумблер —
-	// CPPWORKER_TOOLS_HOLD_RELEASE_REASONING=1.
-	releaseHoldIfOverdue := func() bool {
-		if !*x.reasoningHold && !*x.toolsHold {
-			// Удержание закончилось само (R190 нашёл закрывающий маркер) —
-			// следующий эпизод считается с нуля.
-			*x.holdSince = time.Time{}
-			return false
-		}
-		if (*x.holdSince).IsZero() {
-			*x.holdSince = time.Now()
-			return false
-		}
-		held := len(outputBuf.String()) - *x.emittedLen
-		ok, why := toolsHoldShouldReleaseR482(*x.holdSince, held, time.Now())
-		if !ok {
-			return false
-		}
-		if toolsHoldReasoningR485(*x.reasoningHold, outputBuf.String(), prompt, modelName, reasoningEcho, *x.emittedLen) &&
-			!toolsHoldReleaseReasoningR485() {
-			if !*x.holdKeptReasoning {
-				*x.holdKeptReasoning = true
-				logger.Get().Warnw("R485: удержание reasoning не снимаем — иначе размышления уйдут в content",
-					"model", modelName,
-					"reason", why,
-					"held_ms", time.Since(*x.holdSince).Milliseconds(),
-					"held_bytes", held,
-					"switch", "CPPWORKER_TOOLS_HOLD_RELEASE_REASONING=1 — снять принудительно (риск загрязнения истории)",
-					"thinking_switch", "CPPWORKER_TOOLS_THINKING=on — отдавать размышления в поле thinking")
-				recordWorkerEventR483(r, "/api/chat", "hold_kept_reasoning",
-					fmt.Sprintf("%s held_ms=%d held_bytes=%d", why, time.Since(*x.holdSince).Milliseconds(), held))
-			}
-			return false
-		}
-		*x.reasoningHold = false
-		*x.toolsHold = false
-		*x.emittedLen = len(outputBuf.String())
-		*x.holdReleaseReason = why
-		*x.holdReleasedAt = time.Now()
-		*x.holdReleasedBytes = held
-		logger.Get().Warnw("R482: удержание вывода снято — ход снова потоковый",
-			"model", modelName,
-			"reason", why,
-			"held_ms", (*x.holdReleasedAt).Sub(*x.holdSince).Milliseconds(),
-			"held_bytes", held,
-			"hold_max_sec", int(toolsHoldMaxHoldR482().Seconds()),
-			"hold_max_bytes", toolsHoldMaxBytesR482(),
-			"note", "накопленное не отдаётся (возможны размышления); последующие токены идут в content")
-		// R483: событие в кольцо воркера — иначе «ответ одним куском» в архиве
-		// диагностики не видно без чтения текста лога.
-		recordWorkerEventR483(r, "/api/chat", "hold_released",
-			fmt.Sprintf("%s held_ms=%d held_bytes=%d", why, (*x.holdReleasedAt).Sub(*x.holdSince).Milliseconds(), held))
-		return true
-	}
-
-	callback := func(token string) bool {
-		// thinkingParser читаем у вызывающей функции на КАЖДОМ вызове: повтор
-		// R406 в финализации заменяет парсер чистым, и callback обязан взять новый,
-		// иначе дельты второй попытки смешались бы с состоянием первой.
-		thinkingParser := *x.thinkingParserCell
-		select {
-		case <-ctx.Done():
-			// R483: клиент отменил запрос — это событие хода (в кольцо сбоев).
-			recordWorkerEventR483(r, r.URL.Path, "client_cancelled", "request context canceled by client")
-			return false
-		default:
-		}
-		// R83: writer broken (клиент ушёл) → прекращаем генерацию немедленно.
-		if sw.IsBroken() {
-			// R483: обрыв записи клиенту — событие хода, а не только строка в логе.
-			recordWorkerEventR483(r, r.URL.Path, "client_gone", "stream write failed or client disconnected")
-			return false
-		}
-		// R83: чистим управляющие символы (см. stream_sanitize.go).
-		token = sanitizeStreamText(token)
-		outputBuf.WriteString(token)
-		// R482: если удержание вывода длится слишком долго (шаблон не закрывает
-		// канал размышлений), снимаем его — иначе весь ответ уйдёт одним куском.
-		if releaseHoldIfOverdue() {
-			return true
-		}
-		// R404: thinking отдаём сразу — он не может быть вызовом инструмента,
-		// поэтому не ждёт закрытия блока и не попадает под reasoningHold ниже.
-		if td := toolsFeedThinkingR404(thinkingParser, token); td != "" {
-			emitThinkingDelta(td)
-		}
-		// R66b: TTFT — время первого непустого токена.
-		if token != "" {
-			atomic.CompareAndSwapInt64(x.firstTokenAt, 0, time.Now().UnixNano())
-		}
-		// R190: пока открыт блок размышлений — держим; как только закрыт — отдаём дельты.
-		if *x.reasoningHold {
-			if end := reasoningBlockEnd(outputBuf.String()); end > 0 {
-				*x.reasoningHold = false
-				*x.toolsHold = false
-				*x.emittedLen = end
-				logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_reasoning_block_closed"),
-					"model", modelName, "reasoning_end", end)
-			} else {
-				return true
-			}
-		}
-		if !streamContent || *x.toolsHold || token == "" {
-			return true
-		}
-		buf := outputBuf.String()
-		// Предохранитель 1: ответ начинается с JSON — парсер может счесть его
-		// tool_calls целиком (стратегия 4), поэтому дельтами не отдаём.
-		//
-		// R106d (2026-10-12): то же для markdown-фенса (```json) — модели кладут
-		if *x.emittedLen == 0 && (toolsStreamStartsWithJSON(buf) || toolsStreamStartsWithFence(buf)) {
-			*x.toolsHold = true
-			return true
-		}
-		// R106d (2026-10-12): то же для markdown-фенса (```json) — вызывать после JSON-проверки.
-		// Раньше здесь стояла вторая ветка guard-а; после R190 она объединена выше.
-		// Предохранитель 1b (R106c, 2026-10-12): ответ начинается с reasoning-блока
-		// (<think>, <thinking>, <reasoning>, <analysis>, <|channel>thought).
-		// Размышления — НЕ ответ, и клиенту в content их отдавать нельзя: Cline
-		// показывал thinking как ответ («команда инструмента в квадратных
-		// скобках»), а сам tool call терялся. Держим дельты и отдаём reasoning
-		// отдельным полем в финальном чанке (см. reasoningOut ниже).
-		if *x.emittedLen == 0 && startsWithReasoningMarker(buf) {
-			*x.reasoningHold = true
-			*x.toolsHold = true
-			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_starts_with_reasoning"),
-				"model", modelName)
-			return true
-		}
-		// R471 (2026-11-06): ОТКРЫВАЮЩЕГО маркера может НЕ быть в тексте (канал
-		// открыт шаблоном), и тогда начало вывода уходило клиенту как ответ.
-		// Живой прогон: streamed_content_bytes=5363 при content_len=3323 — 2040
-		// символов английских размышлений уехали в content вместе с русским
-		// ответом, хотя финальный разбор считал их reasoning. Держим начало до
-		// закрывающего маркера (см. reasoning_start_hold_r471.go).
-		if *x.emittedLen == 0 && reasoningStartHoldR471(prompt, modelName, reasoningEcho) {
-			*x.reasoningHold = true
-			*x.toolsHold = true
-			logger.Get().Infow("R471: начало вывода удерживается до закрывающего маркера размышлений",
-				"model", modelName,
-				"why", "клиент не просил размышления, но модель их умеет и в промпте они включены",
-				"switch", "CPPWORKER_TOOLS_THINKING")
-			return true
-		}
-		// Предохранитель 1c (R110, 2026-10-13): ответ начинается со СЛУЖЕБНОГО
-		// токена шаблона (`<end_of_turn>`, `<|end|>`, `<start_of_turn>model`).
-		// Такие дельты тоже не отдаём: служебный токен — не текст ответа, а когда
-		// буфер перерастал окно удержания, `cut` попадал уже ПОСЛЕ токена и клиент
-		// получал его как обычный текст (живой случай: «ERROR: EMPTY
-		// CONTENT<end_of_turn>» в записи сессии Cline).
-		if *x.emittedLen == 0 && toolsStreamStartsWithServiceToken(buf) {
-			*x.toolsHold = true
-			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_starts_with_service_token"),
-				"model", modelName)
-			return true
-		}
-		// Предохранитель 2: в хвосте появился маркер tool call. Prose ПЕРЕД
-		// маркером обязан уйти клиенту (он уже сгенерирован и не является
-		// частью вызова) — иначе окно удержания съедало бы до 32 байт ответа.
-		if pos, ok := toolsStreamMarkerPos(buf, toolsStreamHoldback+len(token)); ok {
-			if pos > *x.emittedLen {
-				emitContentDelta(buf[*x.emittedLen:pos])
-				*x.emittedLen = pos
-			}
-			*x.toolsHold = true
-			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_marker_found"),
-				"model", modelName, "emitted", *x.emittedLen, "buffered", len(buf))
-			return true
-		}
-		// Предохранитель 2b (R113, 2026-10-13): JSON-форма вызова ВНУТРИ прозы.
-		// Прежние проверки держали только вывод, НАЧИНАЮЩИЙСЯ с JSON; живой прогон
-		// Cline-запроса дал прозу с последующим JSON вызова — и он уехал клиенту
-		// дельтами (в сессии это «инструмент в теле ответа»).
-		if pos, ok := toolsStreamJSONCallPos(buf, toolsStreamHoldback+len(token)); ok {
-			if pos > *x.emittedLen {
-				emitContentDelta(buf[*x.emittedLen:pos])
-				*x.emittedLen = pos
-			}
-			*x.toolsHold = true
-			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_json_call_in_prose"),
-				"model", modelName, "emitted", *x.emittedLen, "buffered", len(buf))
-			return true
-		}
-		// Предохранитель 2c (R114b, 2026-10-13): в НЕПЕРЕДАННОМ хвосте началась
-		// JSON-структура. Дельты прекращаем на её первой скобке: иначе начало
-		// вызова уходит клиенту обрывком («…task complete. [{"id":
-		// "call_submit_and_exit","type":"function",…» — живая сессия Cline:
-		// объект начинался раньше, чем в окне удержания появлялся ключ, на
-		// который смотрел прежний предохранитель).
-		if pos, ok := toolsStreamJSONStructPos(buf, len(buf)-*x.emittedLen); ok {
-			if pos > *x.emittedLen {
-				emitContentDelta(buf[*x.emittedLen:pos])
-				*x.emittedLen = pos
-			}
-			*x.toolsHold = true
-			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_json_struct_in_tail"),
-				"model", modelName, "emitted", *x.emittedLen, "buffered", len(buf))
-			return true
-		}
-		// Предохранитель 2d (R114b): открывающий маркер размышлений в хвосте —
-		// блок начался после отданной прозы, и его тело не является ответом.
-		if reason, hold := toolsStreamHoldsTailStart(buf[*x.emittedLen:]); hold {
-			*x.toolsHold = true
-			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_tail_held"),
-				"model", modelName, "reason", reason,
-				"emitted", *x.emittedLen, "buffered", len(buf))
-			return true
-		}
-		cut := len(buf) - toolsStreamHoldback
-		if cut <= *x.emittedLen {
-			return true
-		}
-		cut = toolsStreamRuneSafeCut(buf, *x.emittedLen, cut)
-		if cut <= *x.emittedLen {
-			return true
-		}
-		// R414 (2026-11-03): служебные маркеры размышлений (в частности
-		// gemma-4 `<channel|>`) не должны уходить клиенту как текст ответа.
-		// Живой случай: «…run the check command.<channel|>» в сессии Cline.
-		// Сначала удерживаем хвост, который может быть НАЧАЛОМ маркера, затем
-		// отдаём текст до первого ПОЛНОГО маркера и пропускаем сам маркер.
-		delta := buf[*x.emittedLen:cut]
-		if hb := toolsStreamMarkerPrefixHoldbackR414(delta); hb > 0 {
-			cut -= hb
-			if cut <= *x.emittedLen {
-				return true
-			}
-			cut = toolsStreamRuneSafeCut(buf, *x.emittedLen, cut)
-			if cut <= *x.emittedLen {
-				return true
-			}
-			delta = buf[*x.emittedLen:cut]
-		}
-		if pos, markerLen, found := toolsStreamMarkerScanR414(delta); found {
-			if pos > 0 {
-				emitContentDelta(delta[:pos])
-			}
-			// Маркер не отдаём: сдвигаем позицию ЗА него, чтобы он не попал
-			// в следующую дельту.
-			*x.emittedLen += pos + markerLen
-			return true
-		}
-		emitContentDelta(delta)
-		*x.emittedLen = cut
-		return true
-	}
+	// R527: дельты и callback — методы на состоянии (funlen: у функции 100
+	// вызовов, а не строк). Финализации нужны те же замыкания, поэтому
+	// ссылки кладём в структуру сразу.
+	x.emitContentDelta = emitContentDelta
+	x.emitThinkingDelta = emitThinkingDelta
+	callback := x.onStreamToken
 
 	// /api/chat streaming with tools: full buffer, single final response.
 	streamErr = generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false)
@@ -3241,42 +2994,7 @@ func startToolsStreamGeneration(x *toolsStreamRun) bool {
 	// Если во время streaming произошла ошибка — отдаём финальный chunk с error,
 	// как в writeChatStreamResponse. Tool calls в этом случае не анализируем.
 	if streamErr != nil {
-		maybeRestartOnMemorySlotError(streamErr, modelName)
-		// Специальная обработка reload-loop-limit: HTTP-статус 413 в NDJSON-чанке
-		// с error+code+model+attempts. OpenWebUI увидит error и завершит сессию
-		// с понятным сообщением (вместо бесконечного цикла unload+reload).
-		if rllErr, ok := streamErr.(*ReloadLoopLimitError); ok {
-			errChunk := map[string]interface{}{
-				"model":           modelName,
-				"created_at":      createdAt,
-				"message":         map[string]string{"role": "assistant", "content": ""},
-				"done":            true,
-				"done_reason":     "error",
-				"error":           rllErr.Error(),
-				"code":            "reload_loop_limit",
-				"attempts":        rllErr.Count,
-				"elapsed_seconds": rllErr.Elapsed.Seconds(),
-				"http_status":     http.StatusRequestEntityTooLarge,
-			}
-			errJSON, _ := json.Marshal(errChunk)
-			// Также ставим HTTP-статус в response (best-effort: если streaming уже начат — http.status будет проигнорирован клиентом, но код в NDJSON всё равно будет передан).
-			w.Header().Set("X-CppWorker-Error", "reload_loop_limit")
-			w.Header().Set("X-HTTP-Status", "413")
-			sw.Writef("%s\n", errJSON)
-			sw.Flush()
-			return false
-		}
-		errChunk := map[string]interface{}{
-			"model":       modelName,
-			"created_at":  createdAt,
-			"message":     map[string]string{"role": "assistant", "content": ""},
-			"done":        true,
-			"done_reason": "error",
-			"error":       streamErr.Error(),
-		}
-		errJSON, _ := json.Marshal(errChunk)
-		sw.Writef("%s\n", errJSON)
-		sw.Flush()
+		writeToolsStreamGenerationError(w, sw, modelName, createdAt, streamErr)
 		return false
 	}
 
@@ -3480,4 +3198,333 @@ func startToolsStreamKeepalive(sw *safeStreamWriter, ctx context.Context, modelN
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// releaseHoldIfOverdue — R482/R485: снять удержание вывода, если оно длится
+// слишком долго или накопило слишком много (R527: вынесено методом из
+// startToolsStreamGeneration; тело и комментарии перенесены дословно).
+//
+// releaseHoldIfOverdue — R482: снять удержание, если оно длится слишком
+// долго или накопило слишком много. Накопленное НЕ отдаём (в нём могут быть
+// размышления), но все следующие токены пойдут клиенту нормально.
+//
+// R485: если удержание вызвано РАЗМЫШЛЕНИЯМИ (открытый блок/канал открыт
+// шаблоном), удержание НЕ снимаем — иначе размышления уходят в content,
+// клиент сохраняет их как ответ ассистента, и на следующем ходу модель видит
+// свои же размышления как прошлый ответ (живой архив: content_len=18720/65109
+// у assistant-сообщений с tool_calls). Аварийный тумблер —
+// CPPWORKER_TOOLS_HOLD_RELEASE_REASONING=1.
+func (x *toolsStreamRun) releaseHoldIfOverdue() bool {
+	modelName := x.modelName
+	prompt := x.prompt
+	reasoningEcho := x.reasoningEcho
+	outputBuf := x.outputBuf
+	r := x.r
+	if !*x.reasoningHold && !*x.toolsHold {
+		// Удержание закончилось само (R190 нашёл закрывающий маркер) —
+		// следующий эпизод считается с нуля.
+		*x.holdSince = time.Time{}
+		return false
+	}
+	if (*x.holdSince).IsZero() {
+		*x.holdSince = time.Now()
+		return false
+	}
+	held := len(outputBuf.String()) - *x.emittedLen
+	ok, why := toolsHoldShouldReleaseR482(*x.holdSince, held, time.Now())
+	if !ok {
+		return false
+	}
+	if toolsHoldReasoningR485(*x.reasoningHold, outputBuf.String(), prompt, modelName, reasoningEcho, *x.emittedLen) &&
+		!toolsHoldReleaseReasoningR485() {
+		if !*x.holdKeptReasoning {
+			*x.holdKeptReasoning = true
+			logger.Get().Warnw("R485: удержание reasoning не снимаем — иначе размышления уйдут в content",
+				"model", modelName,
+				"reason", why,
+				"held_ms", time.Since(*x.holdSince).Milliseconds(),
+				"held_bytes", held,
+				"switch", "CPPWORKER_TOOLS_HOLD_RELEASE_REASONING=1 — снять принудительно (риск загрязнения истории)",
+				"thinking_switch", "CPPWORKER_TOOLS_THINKING=on — отдавать размышления в поле thinking")
+			recordWorkerEventR483(r, "/api/chat", "hold_kept_reasoning",
+				fmt.Sprintf("%s held_ms=%d held_bytes=%d", why, time.Since(*x.holdSince).Milliseconds(), held))
+		}
+		return false
+	}
+	*x.reasoningHold = false
+	*x.toolsHold = false
+	*x.emittedLen = len(outputBuf.String())
+	*x.holdReleaseReason = why
+	*x.holdReleasedAt = time.Now()
+	*x.holdReleasedBytes = held
+	logger.Get().Warnw("R482: удержание вывода снято — ход снова потоковый",
+		"model", modelName,
+		"reason", why,
+		"held_ms", (*x.holdReleasedAt).Sub(*x.holdSince).Milliseconds(),
+		"held_bytes", held,
+		"hold_max_sec", int(toolsHoldMaxHoldR482().Seconds()),
+		"hold_max_bytes", toolsHoldMaxBytesR482(),
+		"note", "накопленное не отдаётся (возможны размышления); последующие токены идут в content")
+	// R483: событие в кольцо воркера — иначе «ответ одним куском» в архиве
+	// диагностики не видно без чтения текста лога.
+	recordWorkerEventR483(r, "/api/chat", "hold_released",
+		fmt.Sprintf("%s held_ms=%d held_bytes=%d", why, (*x.holdReleasedAt).Sub(*x.holdSince).Milliseconds(), held))
+	return true
+}
+
+// onStreamToken — callback генерации tools-пути (R527): чистит дельты, отдаёт
+// thinking сразу, держит content окном до конца возможного маркера вызова.
+// Тело перенесено дословно; thinkingParser читается из ячейки вызывающей
+// функции на КАЖДОМ вызове — повтор R406 в финализации заменяет парсер.
+func (x *toolsStreamRun) onStreamToken(token string) bool {
+	modelName := x.modelName
+	ctx := x.ctx
+	r := x.r
+	sw := x.sw
+	outputBuf := x.outputBuf
+	streamContent := x.streamContent
+	// thinkingParser читаем у вызывающей функции на КАЖДОМ вызове: повтор
+	// R406 в финализации заменяет парсер чистым, и callback обязан взять новый,
+	// иначе дельты второй попытки смешались бы с состоянием первой.
+	thinkingParser := *x.thinkingParserCell
+	select {
+	case <-ctx.Done():
+		// R483: клиент отменил запрос — это событие хода (в кольцо сбоев).
+		recordWorkerEventR483(r, r.URL.Path, "client_cancelled", "request context canceled by client")
+		return false
+	default:
+	}
+	// R83: writer broken (клиент ушёл) → прекращаем генерацию немедленно.
+	if sw.IsBroken() {
+		// R483: обрыв записи клиенту — событие хода, а не только строка в логе.
+		recordWorkerEventR483(r, r.URL.Path, "client_gone", "stream write failed or client disconnected")
+		return false
+	}
+	// R83: чистим управляющие символы (см. stream_sanitize.go).
+	token = sanitizeStreamText(token)
+	outputBuf.WriteString(token)
+	// R482: если удержание вывода длится слишком долго (шаблон не закрывает
+	// канал размышлений), снимаем его — иначе весь ответ уйдёт одним куском.
+	if x.releaseHoldIfOverdue() {
+		return true
+	}
+	// R404: thinking отдаём сразу — он не может быть вызовом инструмента,
+	// поэтому не ждёт закрытия блока и не попадает под reasoningHold ниже.
+	if td := toolsFeedThinkingR404(thinkingParser, token); td != "" {
+		x.emitThinkingDelta(td)
+	}
+	// R66b: TTFT — время первого непустого токена.
+	if token != "" {
+		atomic.CompareAndSwapInt64(x.firstTokenAt, 0, time.Now().UnixNano())
+	}
+	// R190: пока открыт блок размышлений — держим; как только закрыт — отдаём дельты.
+	if *x.reasoningHold {
+		if end := reasoningBlockEnd(outputBuf.String()); end > 0 {
+			*x.reasoningHold = false
+			*x.toolsHold = false
+			*x.emittedLen = end
+			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_reasoning_block_closed"),
+				"model", modelName, "reasoning_end", end)
+		} else {
+			return true
+		}
+	}
+	if !streamContent || *x.toolsHold || token == "" {
+		return true
+	}
+	// R527: предохранители и нарезка окна — отдельным методом (funlen).
+	x.emitContentWindow(token)
+	return true
+}
+
+// emitContentWindow — предохранители и нарезка окна удержания tools-пути
+// (R527: вынесено из onStreamToken; порядок проверок и комментарии прежние).
+// Дельта уходит клиенту только после всех предохранителей: разметка вызова,
+// JSON-тело, служебные маркеры и размышления в content не попадают.
+func (x *toolsStreamRun) emitContentWindow(token string) {
+	modelName := x.modelName
+	prompt := x.prompt
+	reasoningEcho := x.reasoningEcho
+	outputBuf := x.outputBuf
+	buf := outputBuf.String()
+	// Предохранитель 1: ответ начинается с JSON — парсер может счесть его
+	// tool_calls целиком (стратегия 4), поэтому дельтами не отдаём.
+	//
+	// R106d (2026-10-12): то же для markdown-фенса (```json) — модели кладут
+	if *x.emittedLen == 0 && (toolsStreamStartsWithJSON(buf) || toolsStreamStartsWithFence(buf)) {
+		*x.toolsHold = true
+		return
+	}
+	// R106d (2026-10-12): то же для markdown-фенса (```json) — вызывать после JSON-проверки.
+	// Раньше здесь стояла вторая ветка guard-а; после R190 она объединена выше.
+	// Предохранитель 1b (R106c, 2026-10-12): ответ начинается с reasoning-блока
+	// (<think>, <thinking>, <reasoning>, <analysis>, <|channel>thought).
+	// Размышления — НЕ ответ, и клиенту в content их отдавать нельзя: Cline
+	// показывал thinking как ответ («команда инструмента в квадратных
+	// скобках»), а сам tool call терялся. Держим дельты и отдаём reasoning
+	// отдельным полем в финальном чанке (см. reasoningOut ниже).
+	if *x.emittedLen == 0 && startsWithReasoningMarker(buf) {
+		*x.reasoningHold = true
+		*x.toolsHold = true
+		logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_starts_with_reasoning"),
+			"model", modelName)
+		return
+	}
+	// R471 (2026-11-06): ОТКРЫВАЮЩЕГО маркера может НЕ быть в тексте (канал
+	// открыт шаблоном), и тогда начало вывода уходило клиенту как ответ.
+	// Живой прогон: streamed_content_bytes=5363 при content_len=3323 — 2040
+	// символов английских размышлений уехали в content вместе с русским
+	// ответом, хотя финальный разбор считал их reasoning. Держим начало до
+	// закрывающего маркера (см. reasoning_start_hold_r471.go).
+	if *x.emittedLen == 0 && reasoningStartHoldR471(prompt, modelName, reasoningEcho) {
+		*x.reasoningHold = true
+		*x.toolsHold = true
+		logger.Get().Infow("R471: начало вывода удерживается до закрывающего маркера размышлений",
+			"model", modelName,
+			"why", "клиент не просил размышления, но модель их умеет и в промпте они включены",
+			"switch", "CPPWORKER_TOOLS_THINKING")
+		return
+	}
+	// Предохранитель 1c (R110, 2026-10-13): ответ начинается со СЛУЖЕБНОГО
+	// токена шаблона (`<end_of_turn>`, `<|end|>`, `<start_of_turn>model`).
+	// Такие дельты тоже не отдаём: служебный токен — не текст ответа, а когда
+	// буфер перерастал окно удержания, `cut` попадал уже ПОСЛЕ токена и клиент
+	// получал его как обычный текст (живой случай: «ERROR: EMPTY
+	// CONTENT<end_of_turn>» в записи сессии Cline).
+	if *x.emittedLen == 0 && toolsStreamStartsWithServiceToken(buf) {
+		*x.toolsHold = true
+		logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_starts_with_service_token"),
+			"model", modelName)
+		return
+	}
+	// Предохранитель 2: в хвосте появился маркер tool call. Prose ПЕРЕД
+	// маркером обязан уйти клиенту (он уже сгенерирован и не является
+	// частью вызова) — иначе окно удержания съедало бы до 32 байт ответа.
+	if pos, ok := toolsStreamMarkerPos(buf, toolsStreamHoldback+len(token)); ok {
+		if pos > *x.emittedLen {
+			x.emitContentDelta(buf[*x.emittedLen:pos])
+			*x.emittedLen = pos
+		}
+		*x.toolsHold = true
+		logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_marker_found"),
+			"model", modelName, "emitted", *x.emittedLen, "buffered", len(buf))
+		return
+	}
+	// Предохранитель 2b (R113, 2026-10-13): JSON-форма вызова ВНУТРИ прозы.
+	// Прежние проверки держали только вывод, НАЧИНАЮЩИЙСЯ с JSON; живой прогон
+	// Cline-запроса дал прозу с последующим JSON вызова — и он уехал клиенту
+	// дельтами (в сессии это «инструмент в теле ответа»).
+	if pos, ok := toolsStreamJSONCallPos(buf, toolsStreamHoldback+len(token)); ok {
+		if pos > *x.emittedLen {
+			x.emitContentDelta(buf[*x.emittedLen:pos])
+			*x.emittedLen = pos
+		}
+		*x.toolsHold = true
+		logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_json_call_in_prose"),
+			"model", modelName, "emitted", *x.emittedLen, "buffered", len(buf))
+		return
+	}
+	// Предохранитель 2c (R114b, 2026-10-13): в НЕПЕРЕДАННОМ хвосте началась
+	// JSON-структура. Дельты прекращаем на её первой скобке: иначе начало
+	// вызова уходит клиенту обрывком («…task complete. [{"id":
+	// "call_submit_and_exit","type":"function",…» — живая сессия Cline:
+	// объект начинался раньше, чем в окне удержания появлялся ключ, на
+	// который смотрел прежний предохранитель).
+	if pos, ok := toolsStreamJSONStructPos(buf, len(buf)-*x.emittedLen); ok {
+		if pos > *x.emittedLen {
+			x.emitContentDelta(buf[*x.emittedLen:pos])
+			*x.emittedLen = pos
+		}
+		*x.toolsHold = true
+		logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_json_struct_in_tail"),
+			"model", modelName, "emitted", *x.emittedLen, "buffered", len(buf))
+		return
+	}
+	// Предохранитель 2d (R114b): открывающий маркер размышлений в хвосте —
+	// блок начался после отданной прозы, и его тело не является ответом.
+	if reason, hold := toolsStreamHoldsTailStart(buf[*x.emittedLen:]); hold {
+		*x.toolsHold = true
+		logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_tail_held"),
+			"model", modelName, "reason", reason,
+			"emitted", *x.emittedLen, "buffered", len(buf))
+		return
+	}
+	cut := len(buf) - toolsStreamHoldback
+	if cut <= *x.emittedLen {
+		return
+	}
+	cut = toolsStreamRuneSafeCut(buf, *x.emittedLen, cut)
+	if cut <= *x.emittedLen {
+		return
+	}
+	// R414 (2026-11-03): служебные маркеры размышлений (в частности
+	// gemma-4 `<channel|>`) не должны уходить клиенту как текст ответа.
+	// Живой случай: «…run the check command.<channel|>» в сессии Cline.
+	// Сначала удерживаем хвост, который может быть НАЧАЛОМ маркера, затем
+	// отдаём текст до первого ПОЛНОГО маркера и пропускаем сам маркер.
+	delta := buf[*x.emittedLen:cut]
+	if hb := toolsStreamMarkerPrefixHoldbackR414(delta); hb > 0 {
+		cut -= hb
+		if cut <= *x.emittedLen {
+			return
+		}
+		cut = toolsStreamRuneSafeCut(buf, *x.emittedLen, cut)
+		if cut <= *x.emittedLen {
+			return
+		}
+		delta = buf[*x.emittedLen:cut]
+	}
+	if pos, markerLen, found := toolsStreamMarkerScanR414(delta); found {
+		if pos > 0 {
+			x.emitContentDelta(delta[:pos])
+		}
+		// Маркер не отдаём: сдвигаем позицию ЗА него, чтобы он не попал
+		// в следующую дельту.
+		*x.emittedLen += pos + markerLen
+		return
+	}
+	x.emitContentDelta(delta)
+	*x.emittedLen = cut
+}
+
+// writeToolsStreamGenerationError — кадры ошибки генерации tools-пути (R527):
+// reload-loop-limit уходит с кодом и HTTP-статусом 413, остальное — общим кадром.
+func writeToolsStreamGenerationError(w http.ResponseWriter, sw *safeStreamWriter, modelName, createdAt string, streamErr error) {
+	maybeRestartOnMemorySlotError(streamErr, modelName)
+	// Специальная обработка reload-loop-limit: HTTP-статус 413 в NDJSON-чанке
+	// с error+code+model+attempts. OpenWebUI увидит error и завершит сессию
+	// с понятным сообщением (вместо бесконечного цикла unload+reload).
+	if rllErr, ok := streamErr.(*ReloadLoopLimitError); ok {
+		errChunk := map[string]interface{}{
+			"model":           modelName,
+			"created_at":      createdAt,
+			"message":         map[string]string{"role": "assistant", "content": ""},
+			"done":            true,
+			"done_reason":     "error",
+			"error":           rllErr.Error(),
+			"code":            "reload_loop_limit",
+			"attempts":        rllErr.Count,
+			"elapsed_seconds": rllErr.Elapsed.Seconds(),
+			"http_status":     http.StatusRequestEntityTooLarge,
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		// Также ставим HTTP-статус в response (best-effort: если streaming уже начат — http.status будет проигнорирован клиентом, но код в NDJSON всё равно будет передан).
+		w.Header().Set("X-CppWorker-Error", "reload_loop_limit")
+		w.Header().Set("X-HTTP-Status", "413")
+		sw.Writef("%s\n", errJSON)
+		sw.Flush()
+		return
+	}
+	errChunk := map[string]interface{}{
+		"model":       modelName,
+		"created_at":  createdAt,
+		"message":     map[string]string{"role": "assistant", "content": ""},
+		"done":        true,
+		"done_reason": "error",
+		"error":       streamErr.Error(),
+	}
+	errJSON, _ := json.Marshal(errChunk)
+	sw.Writef("%s\n", errJSON)
+	sw.Flush()
+	return
 }

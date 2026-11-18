@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/strutil"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -301,11 +302,6 @@ func envIntAny(names []string, fallback int) int {
 }
 
 // firstNonEmpty — первое непустое значение (после TrimSpace).
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if t := strings.TrimSpace(v); t != "" {
-			return t
-		}
-	}
-	return ""
-}
+// R507 (шаг R7): единственная реализация — pkg/strutil (см. там, почему
+// вариантов три: копии расходились обработкой пробелов).
+var firstNonEmpty = strutil.FirstNonEmptyTrimmed

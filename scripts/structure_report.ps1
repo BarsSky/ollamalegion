@@ -90,6 +90,17 @@ $runnFiles = Get-CodeFiles |
     Where-Object { $_.Name -notmatch $skipFilePattern -and $_.Name -match '_r\d{3,}' }
 $rnnnCount = $runnFiles.Count
 
+# R507 (шаг R7): дубли хелперов. Считаются ОПРЕДЕЛЕНИЯ (func ...), не алиасы:
+# единственные реализации живут в pkg/strutil и pkg/numutil, min/max — встроенные.
+$dupNames = @('firstNonEmpty', 'minInt', 'maxInt', 'defaultIfZero')
+$dupCount = 0
+foreach ($f in (Get-CodeFiles | Where-Object { $_.Extension -eq '.go' -and $_.Name -notmatch $skipFilePattern })) {
+    $text = Get-Content $f.FullName -Raw
+    foreach ($n in $dupNames) {
+        if ($text -match ('func\s+' + [regex]::Escape($n) + '\s*\(')) { $dupCount++ }
+    }
+}
+
 $checks = @(
     [pscustomobject]@{ Metric = 'функций > 1000 строк'; Now = $over1000; Target = '0';       Ok = ($over1000 -eq 0) }
     [pscustomobject]@{ Metric = 'функций > 300 строк';  Now = $over300;  Target = '<= 5';    Ok = ($over300 -le 5) }
@@ -97,6 +108,7 @@ $checks = @(
     [pscustomobject]@{ Metric = 'файлов >= 1500 строк'; Now = $bigFiles; Target = '<= 3';    Ok = ($bigFiles -le 3) }
     [pscustomobject]@{ Metric = 'cppbackend/backend.go'; Now = $backendLines; Target = '<= 800'; Ok = ($backendLines -le 800) }
     [pscustomobject]@{ Metric = 'боевых файлов с _rNNN'; Now = $rnnnCount; Target = '0';     Ok = ($rnnnCount -eq 0) }
+    [pscustomobject]@{ Metric = 'дублей хелперов (R7)'; Now = $dupCount; Target = '0';      Ok = ($dupCount -eq 0) }
 )
 
 Write-Output ''

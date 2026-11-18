@@ -46,6 +46,7 @@ import (
 	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/imagetool"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/strutil"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -893,14 +894,9 @@ func floatField(doc map[string]interface{}, key string) float64 {
 	return 0
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
-}
+// R507 (шаг R7): единственная реализация — pkg/strutil (см. там, почему
+// вариантов три: копии расходились обработкой пробелов).
+var firstNonEmpty = strutil.FirstNonEmptyRaw
 
 func containsString(list []string, v string) bool {
 	for _, item := range list {

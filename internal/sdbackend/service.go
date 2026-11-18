@@ -160,37 +160,37 @@ func (s *Service) Shutdown(ctx context.Context) {
 // лимиты (они важнее движковых для клиента: после нормализации размер всегда
 // кратен 64, batch ≤ 8, очередь — наша).
 type CapabilitiesResponse struct {
-	Ready        bool                   `json:"ready"`
-	State        string                 `json:"state"`
-	Model        string                 `json:"model,omitempty"`
-	PID          int                    `json:"pid,omitempty"`
-	Engine       map[string]any         `json:"engine,omitempty"`
-	Models       []ModelInfo            `json:"models"`
-	Limits       LimitsInfo             `json:"limits"`
-	PinnedRevision string               `json:"pinned_sd_server_revision"`
-	VRAM         *VRAMInfo              `json:"vram,omitempty"`
-	Warnings     []string               `json:"warnings,omitempty"`
+	Ready          bool           `json:"ready"`
+	State          string         `json:"state"`
+	Model          string         `json:"model,omitempty"`
+	PID            int            `json:"pid,omitempty"`
+	Engine         map[string]any `json:"engine,omitempty"`
+	Models         []ModelInfo    `json:"models"`
+	Limits         LimitsInfo     `json:"limits"`
+	PinnedRevision string         `json:"pinned_sd_server_revision"`
+	VRAM           *VRAMInfo      `json:"vram,omitempty"`
+	Warnings       []string       `json:"warnings,omitempty"`
 }
 
 // LimitsInfo — лимиты, которые применяет ВОРКЕР (а не движок).
 type LimitsInfo struct {
-	MinWidth        int `json:"min_width"`
-	MaxWidth        int `json:"max_width"`
-	MinHeight       int `json:"min_height"`
-	MaxHeight       int `json:"max_height"`
-	SizeMultiple    int `json:"size_multiple"`
-	MaxBatchCount   int `json:"max_batch_count"`
-	MinSteps        int `json:"min_steps"`
-	MaxSteps        int `json:"max_steps"`
-	MaxCFGScale     float64 `json:"max_cfg_scale"`
-	QueueSize       int `json:"queue_size"`
-	QueueInFlight   int `json:"queue_in_flight"`
-	QueueWaiting    int `json:"queue_waiting"`
-	CompletedTTLSec int `json:"completed_job_ttl_seconds"`
-	GenerationTimeoutSec int `json:"generation_timeout_seconds"`
-	SeedAlwaysPositive bool `json:"seed_always_positive"`
-	SupportsResponseFormatURL bool `json:"supports_response_format_url"`
-	CancelQueuedOnly bool `json:"cancel_queued_only"`
+	MinWidth                  int     `json:"min_width"`
+	MaxWidth                  int     `json:"max_width"`
+	MinHeight                 int     `json:"min_height"`
+	MaxHeight                 int     `json:"max_height"`
+	SizeMultiple              int     `json:"size_multiple"`
+	MaxBatchCount             int     `json:"max_batch_count"`
+	MinSteps                  int     `json:"min_steps"`
+	MaxSteps                  int     `json:"max_steps"`
+	MaxCFGScale               float64 `json:"max_cfg_scale"`
+	QueueSize                 int     `json:"queue_size"`
+	QueueInFlight             int     `json:"queue_in_flight"`
+	QueueWaiting              int     `json:"queue_waiting"`
+	CompletedTTLSec           int     `json:"completed_job_ttl_seconds"`
+	GenerationTimeoutSec      int     `json:"generation_timeout_seconds"`
+	SeedAlwaysPositive        bool    `json:"seed_always_positive"`
+	SupportsResponseFormatURL bool    `json:"supports_response_format_url"`
+	CancelQueuedOnly          bool    `json:"cancel_queued_only"`
 }
 
 // BuildLimits — лимиты воркера с учётом capabilities движка (если есть).
@@ -199,26 +199,26 @@ func (s *Service) BuildLimits() LimitsInfo {
 	lim := LimitsInfo{
 		MinWidth: MinImageSide, MaxWidth: MaxImageSide,
 		MinHeight: MinImageSide, MaxHeight: MaxImageSide,
-		SizeMultiple: SizeMultiple,
+		SizeMultiple:  SizeMultiple,
 		MaxBatchCount: MaxBatchCount, MinSteps: MinSteps, MaxSteps: MaxSteps,
 		MaxCFGScale: maxCFGScale,
-		QueueSize: s.Queue.Capacity(), QueueInFlight: s.Queue.InFlight(),
-		QueueWaiting: s.Queue.Rejected(),
-		CompletedTTLSec: int(jobTTL.Seconds()),
-		GenerationTimeoutSec: s.Config.GenerationTimeoutSec,
-		SeedAlwaysPositive: true,
+		QueueSize:   s.Queue.Capacity(), QueueInFlight: s.Queue.InFlight(),
+		QueueWaiting:              s.Queue.Rejected(),
+		CompletedTTLSec:           int(jobTTL.Seconds()),
+		GenerationTimeoutSec:      s.Config.GenerationTimeoutSec,
+		SeedAlwaysPositive:        true,
 		SupportsResponseFormatURL: s.Store != nil,
 		// НЕ обещаем mid-flight cancel: движок его не умеет (409).
 		CancelQueuedOnly: true,
 	}
 	if caps != nil && caps.Limits.MaxWidth > 0 {
 		// Показываем РЕАЛЬНЫЕ границы движка, но не шире наших (кратность 64).
-		lim.MinWidth = maxInt(lim.MinWidth, caps.Limits.MinWidth)
-		lim.MinHeight = maxInt(lim.MinHeight, caps.Limits.MinHeight)
-		lim.MaxWidth = minInt(lim.MaxWidth, caps.Limits.MaxWidth)
-		lim.MaxHeight = minInt(lim.MaxHeight, caps.Limits.MaxHeight)
+		lim.MinWidth = max(lim.MinWidth, caps.Limits.MinWidth)
+		lim.MinHeight = max(lim.MinHeight, caps.Limits.MinHeight)
+		lim.MaxWidth = min(lim.MaxWidth, caps.Limits.MaxWidth)
+		lim.MaxHeight = min(lim.MaxHeight, caps.Limits.MaxHeight)
 		if caps.Limits.MaxBatchCount > 0 {
-			lim.MaxBatchCount = minInt(lim.MaxBatchCount, caps.Limits.MaxBatchCount)
+			lim.MaxBatchCount = min(lim.MaxBatchCount, caps.Limits.MaxBatchCount)
 		}
 	}
 	return lim
@@ -292,18 +292,4 @@ func (s *Service) FindModel(name string) (ModelInfo, bool) {
 		}
 	}
 	return ModelInfo{}, false
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"ollama-loadbalancer/pkg/numutil"
 	"strings"
 
 	"ollama-loadbalancer/pkg/types"
@@ -158,12 +159,12 @@ func ComputeEnhancedModelBonusForTest(models []types.RunningModel, wModelLoaded 
 }
 
 // defaultIfZero возвращает def если val <= 0
-func defaultIfZero(val, def float64) float64 {
-	if val <= 0 {
-		return def
-	}
-	return val
-}
+// R507 (шаг R7): единственная реализация — pkg/numutil. Здесь сохранён алиас: имя
+// defaultIfZero используется вызывающим кодом и тестами пакета.
+//
+// Семантика НЕ «ноль»: <= 0 → def — отрицательный вес тоже мусор. Именно поэтому
+// объединение с int-вариантом из cmd/balancer было бы изменением поведения.
+var defaultIfZero = numutil.DefaultIfNotPositiveFloat
 
 // calculateScoreSimple - упрощённое вычисление score (без enhanced-весов)
 // Используется когда UseEnhancedScoring=false для обратной совместимости

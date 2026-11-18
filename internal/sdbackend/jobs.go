@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/pkg/strutil"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -73,16 +74,16 @@ type JobRecord struct {
 	Error         string `json:"error,omitempty"`
 	ErrorCode     string `json:"error_code,omitempty"`
 	// Images — результат: b64_json и/или url (зависит от response_format).
-	Images       []JobImage `json:"images,omitempty"`
-	Width        int        `json:"width"`
-	Height       int        `json:"height"`
-	Steps        int        `json:"steps"`
-	Seed         int64      `json:"seed"`
-	BatchCount   int        `json:"batch_count"`
-	OutputFormat string     `json:"output_format"`
-	DurationMS   int64      `json:"duration_ms,omitempty"`
-	Prompt       string     `json:"prompt,omitempty"`
-	NegativePrompt string   `json:"negative_prompt,omitempty"`
+	Images         []JobImage `json:"images,omitempty"`
+	Width          int        `json:"width"`
+	Height         int        `json:"height"`
+	Steps          int        `json:"steps"`
+	Seed           int64      `json:"seed"`
+	BatchCount     int        `json:"batch_count"`
+	OutputFormat   string     `json:"output_format"`
+	DurationMS     int64      `json:"duration_ms,omitempty"`
+	Prompt         string     `json:"prompt,omitempty"`
+	NegativePrompt string     `json:"negative_prompt,omitempty"`
 	// Notes — что нормализация поправила (steps/n/batch/size).
 	Notes []string `json:"notes,omitempty"`
 }
@@ -311,8 +312,8 @@ func (r *JobRunner) Submit(ctx context.Context, model string, urlMode, injectSee
 			Height:         n.Height,
 			Steps:          n.Steps,
 			Seed:           n.Seed,
-			BatchCount:    n.BatchCount,
-			OutputFormat:  n.OutputFormat,
+			BatchCount:     n.BatchCount,
+			OutputFormat:   n.OutputFormat,
 			Prompt:         n.Prompt,
 			NegativePrompt: n.NegativePrompt,
 			Notes:          n.Notes,
@@ -438,7 +439,8 @@ func (r *JobRunner) Cancel(id string) error {
 		return fmt.Errorf("%w: %s", ErrJobNotFound, id)
 	}
 	switch entry.rec.State {
-	case JobStateQueued:		entry.cancelled = true
+	case JobStateQueued:
+		entry.cancelled = true
 		now := time.Now().UTC()
 		entry.rec.State = JobStateCancelled
 		entry.rec.EndedAt = &now
@@ -729,14 +731,9 @@ func errorCodeOf(err error) string {
 	return "generation_failed"
 }
 
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
+// R507 (шаг R7): единственная реализация — pkg/strutil (см. там, почему
+// вариантов три: копии расходились обработкой пробелов).
+var firstNonEmpty = strutil.FirstNonEmptyAny
 
 // ProfileFor — профиль модели для нормализации (nil, если модели нет).
 func (r *JobRunner) ProfileFor(model string) *types.ImageModelProfile {

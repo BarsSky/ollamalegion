@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"ollama-loadbalancer/pkg/strutil"
 	"sort"
 	"strconv"
 	"strings"
@@ -1076,35 +1077,12 @@ func (p *Proxy) IsLlamaCppModelLoaded(backendID, modelName string) bool {
 	return false
 }
 
-// containsFold — case-insensitive substring match.
-func containsFold(haystack, needle string) bool {
-	if len(needle) > len(haystack) {
-		return false
-	}
-	hl := len(haystack)
-	nl := len(needle)
-	for i := 0; i+nl <= hl; i++ {
-		match := true
-		for j := 0; j < nl; j++ {
-			h := haystack[i+j]
-			n := needle[j]
-			if h >= 'A' && h <= 'Z' {
-				h += 'a' - 'A'
-			}
-			if n >= 'A' && n <= 'Z' {
-				n += 'a' - 'A'
-			}
-			if h != n {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
-}
+// containsFold — R507 (шаг R7): единственная реализация — pkg/strutil.ContainsFold.
+//
+// ВАЖНО про перенос: реализация там ПОбАЙТОВАЯ, с понижением регистра только для
+// ASCII — ровно как было здесь. Замена на strings.ToLower сменила бы поведение на
+// не-ASCII, а рефакторинг поведение не меняет.
+var containsFold = strutil.ContainsFold
 
 // LoadedContextForModel — фактический n_ctx загруженного инстанса модели на любом
 // llama.cpp-бэкенде (0 = неизвестно/не загружена).

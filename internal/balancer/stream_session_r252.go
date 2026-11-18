@@ -224,7 +224,7 @@ func (t *sseDoneTrackerR252) note(p []byte) {
 		return
 	}
 	if len(t.tail) > 0 && len(p) > 0 {
-		joined := make([]byte, 0, len(t.tail)+minInt(len(p), need))
+		joined := make([]byte, 0, len(t.tail)+min(len(p), need))
 		joined = append(joined, t.tail...)
 		take := len(p)
 		if take > need {
@@ -243,13 +243,6 @@ func (t *sseDoneTrackerR252) note(p []byte) {
 
 // DoneSent — терминатор уже ушёл клиенту.
 func (t *sseDoneTrackerR252) DoneSent() bool { return t.doneSent }
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 // ensurePlainSSEDone — дописать `data: [DONE]`, если последний кадр им не был.
 //

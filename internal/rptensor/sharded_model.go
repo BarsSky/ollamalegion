@@ -24,15 +24,15 @@ import (
 type MatrixName string
 
 const (
-	MatrixQProj    MatrixName = "q_proj"
-	MatrixKProj    MatrixName = "k_proj"
-	MatrixVProj    MatrixName = "v_proj"
-	MatrixOProj    MatrixName = "o_proj"
-	MatrixMLPUp    MatrixName = "mlp_up"
-	MatrixMLPGate  MatrixName = "mlp_gate"
-	MatrixMLPDown  MatrixName = "mlp_down"
-	MatrixLMHead   MatrixName = "lm_head"
-	MatrixEmbed    MatrixName = "embed_tokens"
+	MatrixQProj   MatrixName = "q_proj"
+	MatrixKProj   MatrixName = "k_proj"
+	MatrixVProj   MatrixName = "v_proj"
+	MatrixOProj   MatrixName = "o_proj"
+	MatrixMLPUp   MatrixName = "mlp_up"
+	MatrixMLPGate MatrixName = "mlp_gate"
+	MatrixMLPDown MatrixName = "mlp_down"
+	MatrixLMHead  MatrixName = "lm_head"
+	MatrixEmbed   MatrixName = "embed_tokens"
 )
 
 // AllMatrices — список всех матриц, для которых строится шардирование.
@@ -109,17 +109,17 @@ func (s TensorShard) Equal(other TensorShard) bool {
 // содержит полный набор шардов для слоя (по одному на каждый rank для
 // каждой матрицы).
 type ShardedModel struct {
-	Name        string
-	HiddenSize    int // e.g., 4096 для 8B
+	Name             string
+	HiddenSize       int // e.g., 4096 для 8B
 	IntermediateSize int // FFN hidden, e.g., 11008 для 8B / 2752 для 8B-GQA
-	NumLayers     int // e.g., 32 для 8B
-	NumHeads      int // e.g., 32 для 8B
-	NumKVHeads    int // GQA: e.g., 8 (если 0 — равно NumHeads)
-	VocabSize     int // e.g., 128256 для LLaMA-3
+	NumLayers        int // e.g., 32 для 8B
+	NumHeads         int // e.g., 32 для 8B
+	NumKVHeads       int // GQA: e.g., 8 (если 0 — равно NumHeads)
+	VocabSize        int // e.g., 128256 для LLaMA-3
 
-	WorldSize  int                    // TP degree (1..32 обычно)
-	Strategy   PartitionStrategy      // общая стратегия
-	LayerShards map[int][]TensorShard  // layer → shards for all ranks
+	WorldSize   int                   // TP degree (1..32 обычно)
+	Strategy    PartitionStrategy     // общая стратегия
+	LayerShards map[int][]TensorShard // layer → shards for all ranks
 
 	mu sync.RWMutex // защищает LayerShards при concurrent reads
 }
@@ -146,15 +146,15 @@ func NewShardedModel(name string, hiddenSize, intermediateSize, numLayers, numHe
 		vocabSize = 128256 // LLaMA-3 default
 	}
 	return &ShardedModel{
-		Name:            name,
-		HiddenSize:      hiddenSize,
+		Name:             name,
+		HiddenSize:       hiddenSize,
 		IntermediateSize: intermediateSize,
-		NumLayers:       numLayers,
-		NumHeads:        numHeads,
-		NumKVHeads:      numHeads, // default MHA
-		VocabSize:       vocabSize,
-		WorldSize:       1,
-		LayerShards:     make(map[int][]TensorShard),
+		NumLayers:        numLayers,
+		NumHeads:         numHeads,
+		NumKVHeads:       numHeads, // default MHA
+		VocabSize:        vocabSize,
+		WorldSize:        1,
+		LayerShards:      make(map[int][]TensorShard),
 	}, nil
 }
 
@@ -449,7 +449,7 @@ func (m *ShardedModel) ShardForRank(layer, rank int) ([]TensorShard, error) {
 	}
 
 	all := m.LayerShards[layer]
-	out := make([]TensorShard, 0, len(all)/maxInt(m.WorldSize, 1))
+	out := make([]TensorShard, 0, len(all)/max(m.WorldSize, 1))
 	for _, s := range all {
 		if s.Rank == rank {
 			out = append(out, s)
@@ -531,9 +531,3 @@ func roundUpTo(value, multiple int) int {
 }
 
 // maxInt — максимум из двух int (для Go < 1.21 совместимости).
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

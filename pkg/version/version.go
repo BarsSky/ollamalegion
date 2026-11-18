@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"ollama-loadbalancer/pkg/strutil"
 )
 
 // Значения по умолчанию переопределяются через -ldflags -X.
@@ -178,11 +180,6 @@ func (a About) Fields() map[string]interface{} {
 }
 
 // firstNonEmpty возвращает первое непустое значение (пробелы обрезаются).
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if trimmed := strings.TrimSpace(v); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
+// R507 (шаг R7): единственная реализация — pkg/strutil (см. там, почему
+// вариантов три: копии расходились обработкой пробелов).
+var firstNonEmpty = strutil.FirstNonEmptyTrimmed

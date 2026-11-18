@@ -24,6 +24,7 @@ import (
 	"ollama-loadbalancer/internal/runtimeoverrides"
 	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/numutil"
 	"ollama-loadbalancer/pkg/version"
 )
 
@@ -809,12 +810,8 @@ func bannerRow(label, value string) {
 
 // defaultIfZero — возвращает def если v == 0, иначе v. Helper для
 // optional config значений с defaults.
-func defaultIfZero(v, def int) int {
-	if v == 0 {
-		return def
-	}
-	return v
-}
+// R507 (шаг R7): единственная реализация — pkg/numutil (int-вариант: только ноль).
+var defaultIfZero = numutil.DefaultIfZeroInt
 
 // enableTCPKeepAlive — ConnContext hook для http.Server (Round 31 #6 sub-bug fix).
 //

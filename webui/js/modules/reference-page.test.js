@@ -288,13 +288,18 @@ async function check(name, fn) {
     // 3. «Применить»: гейт по загруженной цели и бэкенду
     // =======================================================================
 
-    await check('гейт: без загруженной цели «Применить» запрещена', function () {
+    // R516: цель `loaded:false` — это узел, где файл модели ЛЕЖИТ НА ДИСКЕ
+    // (каталог назвал его backendId). Сервер такое применение разрешает и грузит
+    // модель сам (handlers_reference_apply.go:294-324,368-391), поэтому кнопка
+    // активна, но с предупреждением «начнётся с загрузки». Запрет остаётся для
+    // случая «целей нет вообще» — см. проверку profile+reload с пустым списком.
+    await check('гейт: цель «файл на диске» разрешена с предупреждением (R516)', function () {
         const gate = RP.applyGate({
             model: 'Qwen3-4B-Instruct-2507-Q4_K_M', backendId: 'cppworker-gpu',
             mode: 'profile+reload', targets: [{ backendId: 'cppworker-gpu', loaded: false }]
         });
-        assert.strictEqual(gate.disabled, true, 'применять некуда — кнопка должна быть неактивна');
-        assert.strictEqual(gate.reason, 'no_loaded_target');
+        assert.strictEqual(gate.disabled, false, 'узел с файлом на диске сервер разрешает — кнопка не должна быть disabled');
+        assert.strictEqual(gate.warn, 'will_load', 'оператор обязан увидеть, что применение начнётся с загрузки');
     });
 
     await check('гейт: без выбранного бэкенда «Применить» запрещена (сервер ответит 400 backend_required)', function () {
@@ -320,16 +325,26 @@ async function check(name, fn) {
         assert.strictEqual(ok.disabled, false, 'модель загружена на выбранном узле — применять можно');
     });
 
-    await check('гейт: profile-only бэкенда не требует, но без загруженной цели запрещён', function () {
+    // R516 (2026-11-19): РЕШЕНИЕ ИЗМЕНЕНО по плану оператора §2.7.
+    //
+    // Было (решение человека №3): «если загруженных целей нет — „Применить" неактивна
+    // в любом режиме». Стало: для profile-only бэкенд не нужен вовсе — сервер пишет
+    // профиль по имени модели и reload не запускает, то есть «применять некуда» здесь
+    // неправда. Для profile+reload запрет сохранён: там действительно нужен узел,
+    // и «применить на все узлы» задевало бы чужие (см. проверку ниже).
+    await check('гейт: profile-only бэкенда не требует и без загруженной цели разрешён (R516)', function () {
         const withTarget = RP.applyGate({
             model: 'M', backendId: '', mode: 'profile-only',
             targets: [{ backendId: 'cppworker-gpu', loaded: true }]
         });
         assert.strictEqual(withTarget.disabled, false, 'profile-only не перезагружает модель — бэкенд не нужен');
         const noTarget = RP.applyGate({ model: 'M', backendId: '', mode: 'profile-only', targets: [] });
-        assert.strictEqual(noTarget.disabled, true,
-            'если загруженных целей нет — «Применить» неактивна в любом режиме (требование оператора)');
-        assert.strictEqual(noTarget.reason, 'no_loaded_target');
+        assert.strictEqual(noTarget.disabled, false,
+            'profile-only пишет профиль по имени модели — пустой список целей не повод блокировать');
+        const reloadNoTarget = RP.applyGate({ model: 'M', backendId: '', mode: 'profile+reload', targets: [] });
+        assert.strictEqual(reloadNoTarget.disabled, true,
+            'для profile+reload без целей «Применить» обязана быть неактивна');
+        assert.strictEqual(reloadNoTarget.reason, 'no_loaded_target');
         assert.strictEqual(RP.applyGate({ model: '', mode: 'profile-only' }).reason, 'model_required',
             'модель нужна в любом режиме: без неё неизвестно, какой профиль менять');
     });

@@ -79,6 +79,10 @@
         // единственный честный источник привязки «модель → бэкенды».
         loadedModels: [],
         loadedByModel: {},
+        // R516: каталог файлов узла (GET /api/v1/cppworker/model-catalog):
+        // {backendId, files:[{name,sizeBytes}]}. backendId обязателен - без него
+        // страница не имеет права предлагать узел «где файл лежит на диске».
+        catalog: { backendId: '', files: [] },
         // Состояние вкладки «Шаблоны»: какой шаблон раскрыт и что выбрано.
         tpl: {
             id: '',
@@ -316,7 +320,7 @@
      * нечувствительно к регистру и к суффиксу `.gguf` — у сервера на границе
      * профилей та же нормализация.
      */
-    function loadedTargetsFor(loadedModels, model) {
+    function loadedTargetsFor(loadedModels, model, catalog) {
         var wanted = normalizeModelName(model);
         var out = [];
         if (!wanted) return out;
@@ -333,6 +337,36 @@
                 activeQueries: (m.activeQueries === undefined ? null : m.activeQueries)
             });
         });
+        // R516 (§2.7 разбора): цель «файл есть на диске, модель не загружена».
+        //
+        // ЖИВАЯ ЖАЛОБА: «селектор „где поднять" ждёт бэкенд с загруженной
+        // моделью». Сервер для применения шаблона требует лишь существования
+        // бэкенда и файла (handlers_reference_apply.go:294-324,368-391), а UI
+        // брал цели ТОЛЬКО из cluster/models/loaded — то есть запрещал то, что
+        // сервер разрешает. Каталог `/api/v1/cppworker/model-catalog` отдаёт
+        // файлы папки моделей и (с R516) имя узла, у которого они прочитаны.
+        //
+        // Узел НЕ выдумываем: если каталог не назвал backendId, дополнительных
+        // целей не появляется — иначе оператор выбрал бы узел, где файла нет.
+        var cat = catalog || {};
+        var catBackend = String(cat.backendId || '');
+        var files = Object.prototype.toString.call(cat.files) === '[object Array]' ? cat.files : [];
+        if (catBackend && !out.some(function (x) { return x.backendId === catBackend; })) {
+            var hasFile = files.some(function (f) {
+                return f && normalizeModelName(f.name) === wanted;
+            });
+            if (hasFile) {
+                out.push({
+                    backendId: catBackend,
+                    name: String(model || ''),
+                    backendType: 'llama_cpp',
+                    loaded: false,
+                    fromCatalog: true,
+                    contextLength: 0,
+                    activeQueries: null
+                });
+            }
+        }
         return out;
     }
 
@@ -361,22 +395,36 @@
         var mode = o.mode === 'profile-only' ? 'profile-only' : 'profile+reload';
         var model = String(o.model || '').trim();
         var targets = Object.prototype.toString.call(o.targets) === '[object Array]' ? o.targets : [];
-        var loaded = targets.filter(function (x) { return x && x.loaded !== false; });
         if (!model) return { disabled: true, reason: 'model_required' };
-        if (!loaded.length) return { disabled: true, reason: 'no_loaded_target' };
-        if (mode === 'profile-only') return { disabled: false, reason: '' };
+        // R516: режим «только профиль» бэкенда не требует ВООБЩЕ — reload не
+        // запускается, сервер пишет профиль по имени модели. Раньше здесь
+        // стояла общая проверка «есть загруженные цели», и profile-only был
+        // заблокирован при пустом списке, хотя серверу бэкенд не нужен (§2.7).
+        if (mode === 'profile-only') return { disabled: false, reason: '', warn: '' };
+        if (!targets.length) return { disabled: true, reason: 'no_loaded_target' };
         var backendId = String(o.backendId || '').trim();
         if (!backendId) return { disabled: true, reason: 'backend_required' };
-        var known = loaded.some(function (x) { return String(x.backendId) === backendId; });
-        if (!known) return { disabled: true, reason: 'backend_not_loaded' };
-        return { disabled: false, reason: '' };
+        var chosen = null;
+        targets.forEach(function (x) {
+            if (x && String(x.backendId) === backendId) chosen = x;
+        });
+        if (!chosen) return { disabled: true, reason: 'backend_not_loaded' };
+        // Цель «файл на диске» разрешена сервером (handlers_reference_apply.go:
+        // 294-324,368-391), поэтому кнопка активна, но оператор предупреждён:
+        // модель будет загружаться, это минуты, а не мгновенное применение.
+        if (chosen.loaded === false) return { disabled: false, reason: '', warn: 'will_load' };
+        return { disabled: false, reason: '', warn: '' };
     }
 
     /** gateText — человеческий текст причины, почему «Применить» неактивна. */
     function gateText(reason) {
         if (reason === 'no_loaded_target') {
             return t('reference.gate.no_loaded_target',
-                'Модель нигде не загружена — применять некуда. Загрузите модель на бэкенде и обновите страницу.');
+                'Модель нигде не загружена и файла на диске нет — применять некуда. Загрузите модель на бэкенде и обновите страницу.');
+        }
+        if (reason === 'will_load') {
+            return t('reference.gate.will_load',
+                'Модель на этом узле ещё не загружена — применение начнётся с её загрузки (это минуты, а не секунды).');
         }
         if (reason === 'backend_required') {
             return t('reference.gate.backend_required',
@@ -711,17 +759,44 @@
      */
     function modelChoices(selection) {
         var out = state.loadedModels.slice();
+        // R516: модель, чей файл лежит на диске, но которая ещё не загружена,
+        // тоже должна выбираться — иначе «где поднять» по-прежнему упирается в
+        // «сначала загрузите модель». Сравниваем без суффикса .gguf и регистра,
+        // как это делает сервер на границе профилей.
+        var seen = {};
+        out.forEach(function (n) { seen[normalizeModelName(n)] = true; });
+        catalogModelNames().forEach(function (n) {
+            var key = normalizeModelName(n);
+            if (seen[key]) return;
+            seen[key] = true;
+            out.push(n);
+        });
         var sel = String(selection || '');
         if (sel && out.indexOf(sel) === -1) out.push(sel);
         return out;
     }
 
     function backendChoices(model, selection) {
-        var targets = loadedTargetsFor(state.loadedModels, model);
+        var targets = loadedTargetsFor(state.loadedModels, model, state.catalog);
         var out = targets.map(function (t) { return t.backendId; });
         var sel = String(selection || '');
         if (sel && out.indexOf(sel) === -1) out.push(sel);
         return out;
+    }
+
+    /**
+     * catalogModelNames — имена моделей, чьи файлы есть на диске узла каталога.
+     *
+     * Возвращаем имя файла БЕЗ `.gguf` и без приведения регистра: приводить его к
+     * нижнему — значит показать оператору `qwen3-14b-instruct-2507` вместо
+     * `Qwen3-14B-Instruct-2507`. Сравнение с загруженными идёт по нормализованной
+     * форме (там регистр и суффикс не важны).
+     */
+    function catalogModelNames() {
+        var files = Object.prototype.toString.call(state.catalog.files) === '[object Array]' ? state.catalog.files : [];
+        return files.map(function (f) {
+            return String((f && f.name) || '').trim().replace(/\.gguf$/i, '');
+        }).filter(function (n) { return !!n; });
     }
 
     function renderTargets(targets) {
@@ -814,7 +889,7 @@
         var models = Object.prototype.toString.call(c.models) === '[object Array]'
             ? c.models : modelChoices(tplState.model);
         var targets = Object.prototype.toString.call(c.targets) === '[object Array]'
-            ? c.targets : loadedTargetsFor(state.loadedModels, tplState.model);
+            ? c.targets : loadedTargetsFor(state.loadedModels, tplState.model, state.catalog);
         var gate = applyGate({
             model: tplState.model,
             backendId: tplState.backendId,
@@ -827,9 +902,14 @@
                     (String(name) === String(tplState.model) ? ' selected' : '') + '>' + esc(name) + '</option>';
             })).join('');
         var backendOptions = ['<option value="">' + esc(t('reference.tpl.pick_backend', '— выберите бэкенд —')) + '</option>']
-            .concat(backendChoices(tplState.model, tplState.backendId).map(function (id) {
-                return '<option value="' + esc(id) + '"' +
-                    (String(id) === String(tplState.backendId) ? ' selected' : '') + '>' + esc(id) + '</option>';
+            .concat(targets.map(function (tg) {
+                // R516: узел, где файл есть, а модель не загружена, помечаем —
+                // иначе оператор не понимает, почему применение «зависло».
+                var label = tg.loaded === false
+                    ? tg.backendId + ' ' + t('reference.tpl.on_disk', '(файл на диске, не загружена)')
+                    : tg.backendId;
+                return '<option value="' + esc(tg.backendId) + '"' +
+                    (String(tg.backendId) === String(tplState.backendId) ? ' selected' : '') + '>' + esc(label) + '</option>';
             })).join('');
         var applyDisabled = gate.disabled ? ' disabled' : '';
         var previewDisabled = String(tplState.model || '') ? '' : ' disabled';
@@ -855,7 +935,11 @@
                     esc(t('reference.tpl.preview', 'Предпросмотр')) + '</button>' +
                 '<button type="button" class="btn btn-primary" data-admin-only data-ref-action="apply"' + applyDisabled + '>' +
                     esc(t('reference.tpl.apply', 'Применить')) + '</button>' +
-                (gate.disabled ? '<span class="reference-apply-hint">' + esc(gateText(gate.reason)) + '</span>' : '') +
+                // R516: предупреждение «будет загрузка» — не отказ, кнопка активна.
+                ((gate.disabled || gate.warn)
+                    ? '<span class="reference-apply-hint' + (gate.disabled ? '' : ' is-warning') + '">' +
+                        esc(gateText(gate.disabled ? gate.reason : gate.warn)) + '</span>'
+                    : '') +
             '</div>' +
             (tplState.error ? '<div class="reference-status reference-status-error">' + errorHtml(tplState.error) + '</div>' : '') +
             (tplState.busy ? '<div class="reference-empty">' + esc(t('reference.tpl.busy', 'Считаю предпросмотр…')) + '</div>' : '') +
@@ -1460,7 +1544,7 @@
         var wrapper = api();
         var tpl = currentTemplate();
         if (!wrapper || !tpl) return Promise.resolve(false);
-        var targets = loadedTargetsFor(state.loadedModels, state.tpl.model);
+        var targets = loadedTargetsFor(state.loadedModels, state.tpl.model, state.catalog);
         var gate = applyGate({
             model: state.tpl.model,
             backendId: state.tpl.backendId,
@@ -1557,6 +1641,33 @@
     }
 
     /**
+     * loadCatalog — файлы моделей на диске узла (R516).
+     *
+     * `GET /api/v1/cppworker/model-catalog` читает список у ОДНОГО воркера и (с
+     * R516) отдаёт его `backendId`. Без имени узла цели не добавляются: лучше
+     * показать меньше целей, чем предложить узел, где файла нет.
+     */
+    function loadCatalog() {
+        var apiLib = window.Api && window.Api.cppworkerLoadDefaults;
+        if (!apiLib || typeof apiLib.catalog !== 'function') {
+            state.catalog = { backendId: '', files: [] };
+            return Promise.resolve(state.catalog);
+        }
+        return apiLib.catalog().then(function (res) {
+            var files = (res && Object.prototype.toString.call(res.files) === '[object Array]') ? res.files : [];
+            state.catalog = {
+                backendId: String((res && res.backendId) || ''),
+                files: files.map(function (f) {
+                    return { name: String((f && f.name) || ''), sizeBytes: Number((f && f.sizeBytes) || 0) };
+                }).filter(function (f) { return !!f.name; })
+            };
+            return state.catalog;
+        }).catch(function () {
+            state.catalog = { backendId: '', files: [] };
+            return state.catalog;
+        });
+    }
+    /**
      * load — ПРОВАЙДЕР страницы: обновляет список и детали и возвращает Promise.
      *
      * Именно эту функцию регистрирует `DataRefresh.register('reference', load)`:
@@ -1577,7 +1688,11 @@
         var jobs = [
             wrapper.list('recommendations'),
             wrapper.list('templates'),
-            loadTargets()
+            loadTargets(),
+            // R516: каталог файлов узла. Отдельный job: его недоступность не
+            // должна отменять показ справочника (без каталога целей меньше,
+            // и страница честно скажет, что модель нигде не загружена).
+            loadCatalog()
         ];
         return Promise.all(jobs).then(function (results) {
             var recs = results[0] || {};
@@ -2097,6 +2212,10 @@
         globMatch: globMatch,
         appliesToChips: appliesToChips,
         loadedTargetsFor: loadedTargetsFor,
+        // R516: состав выбора модели/узла (проверяется reference-targets-catalog.test.js).
+        modelChoices: modelChoices,
+        backendChoices: backendChoices,
+        loadCatalog: loadCatalog,
         applyGate: applyGate,
         gateText: gateText,
         formatParamValue: formatParamValue,

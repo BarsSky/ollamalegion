@@ -518,18 +518,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		// Применяем тот же паттерн, что и в proxyRequestLlamaCppNonStream.
 		// bodyBuf уже буферизован (передаётся []byte в сигнатуре), используем
 		// его для retry после reload.
-		if resp.StatusCode >= 400 && p.nctxReload != nil {
-			if nctxErr := ParseCppWorkerError(respBody, resp.StatusCode, backendID); nctxErr != nil {
-				if errors.Is(nctxErr, bridge.ErrNCtxNeedsReload) || errors.Is(nctxErr, bridge.ErrPromptTooLong) {
-					logger.Get().Infow("proxyRequestLlamaCpp: detected n_ctx error from cppworker, invoking auto-reload (streaming retry)",
-						"backend", backendID, "model", modelFromCtx,
-						"status", resp.StatusCode,
-						"is_n_ctx", errors.Is(nctxErr, bridge.ErrNCtxNeedsReload),
-						"is_prompt_too_long", errors.Is(nctxErr, bridge.ErrPromptTooLong))
-					p.handleNCtxReload(r.Context(), w, r, backendID, modelFromCtx, nctxErr, bodyBuf)
-					return nil
-				}
-			}
+		// R531 (R2 читаемости): разбор n_ctx-ошибки и адресная перезагрузка
+		// вынесены в retryAfterNCtxError; true — ответ уже отправлен.
+		if p.retryAfterNCtxError(w, r, backendID, modelFromCtx, resp.StatusCode, respBody, bodyBuf) {
+			return nil
 		}
 
 		// R60.10 (2026-09-07): upstream 4xx — pass through body AS-IS, no SSE wrap.
@@ -2803,4 +2795,28 @@ func (p *Proxy) applyPreflightOutcome(
 		return newBodyBuf, newTranslatedBody, true
 	}
 	return newBodyBuf, newTranslatedBody, false
+}
+
+// retryAfterNCtxError — распознать n_ctx-ошибку cppworker (code=2/3) и запустить
+// адресную перезагрузку модели с большим окном (R531, R2 читаемости: вынесено из
+// proxyRequestLlamaCpp дословно). true — ответ клиенту уже отправлен, вызывающая
+// функция обязана выйти с nil.
+func (p *Proxy) retryAfterNCtxError(w http.ResponseWriter, r *http.Request, backendID, modelFromCtx string, status int, respBody, bodyBuf []byte) bool {
+	if status < 400 || p.nctxReload == nil {
+		return false
+	}
+	nctxErr := ParseCppWorkerError(respBody, status, backendID)
+	if nctxErr == nil {
+		return false
+	}
+	if !errors.Is(nctxErr, bridge.ErrNCtxNeedsReload) && !errors.Is(nctxErr, bridge.ErrPromptTooLong) {
+		return false
+	}
+	logger.Get().Infow("proxyRequestLlamaCpp: detected n_ctx error from cppworker, invoking auto-reload (streaming retry)",
+		"backend", backendID, "model", modelFromCtx,
+		"status", status,
+		"is_n_ctx", errors.Is(nctxErr, bridge.ErrNCtxNeedsReload),
+		"is_prompt_too_long", errors.Is(nctxErr, bridge.ErrPromptTooLong))
+	p.handleNCtxReload(r.Context(), w, r, backendID, modelFromCtx, nctxErr, bodyBuf)
+	return true
 }

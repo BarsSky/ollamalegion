@@ -199,7 +199,10 @@
 
 ```powershell
 # 1) вместимость: три поверхности должны совпасть
-curl -s localhost:8081/api/v1/backends | jq '.backends[]|{id,max:.maxConcurrentReqs,eff:.effectiveMaxConcurrentRequests,src:.maxConcurrentRequestsSource}'
+#    NB (R508): вместо curl+jq — скрипт scripts/stand_check_r508.ps1 (то же, но с CSRF,
+#    возвратом лимита и проверкой, что ограничение снято). Поле maxConcurrentReqs в
+#    ответе не существует: на /api/v1/backends число называется maxConcurrentRequests.
+curl -s localhost:8081/api/v1/backends | jq '.backends[]|{id,max:.maxConcurrentRequests,eff:.effectiveMaxConcurrentRequests,src:.maxConcurrentRequestsSource}'
 curl -s localhost:8081/api/v1/cluster  | jq '.backends[]|{id,max:.maxConcurrentRequests,eff:.effectiveMaxConcurrentRequests}'
 # после: PUT /limits=1 при статике 4 — все пути обязаны видеть 1
 
@@ -221,6 +224,26 @@ docker exec cppworker curl -s -X POST localhost:8080/api/models/unload -d '{"mod
 # COLLECT_INTERVAL=5 → WARNING о clamp до 10 с; HEARTBEAT_INTERVAL=3s → остаётся 5 с
 ```
 
+### Результат §6 на локальном стенде (R508, 2026-11-19)
+
+Образы: `balancer:r261119-r508c`, `webui:r261119-r508b` (пересобраны и развёрнуты;
+`deployments/.env` — `BALANCER_TAG`/`WEBUI_TAG`, файл вне git). Скрипт:
+`scripts/stand_check_r508.ps1` — 22 проверки, все PASS.
+
+| Что | Факт |
+|---|---|
+| `/api/v1/backends` vs `/api/v1/cluster` | `effectiveMaxConcurrentRequests` совпадает: `cppworker-gpu-bundled-agent` 1/1, `imageworker` 64/64 |
+| `maxConcurrentRequests` рядом с effective | равен ему на обеих поверхностях (C-5): 1/1 и 64/64 |
+| источник вместимости | `node` у обоих (заявка узла, оператор лимит не ставил) |
+| **C-1 живьём** | `PUT /limits=1` на `imageworker` (эффективная была 64): backends=1, cluster=1, снапшот=1, `source=operator`; после возврата — 64 |
+| R500 | в `/queue/stats` нет ключей `workers` и `timeout_sec` |
+| режимы | `LB_CAPACITY_SINGLE_SOURCE=shadow`, `LB_GPU_BOTTLENECK=shadow` реально в env контейнера |
+| тень S3 | в логе нет строк «единый резолвер расходится» и «заявка узла просрочена» — на этом стенде новый и исторический резолверы дают одно число |
+
+Что НЕ проверено этим прогоном (и почему): п.3 (окно при `parallel=2`) требует загруженной
+модели и наблюдаемого `contextSize` в теле reload; п.4 (first-byte) — выгрузки 16+ ГБ модели;
+п.5 (единицы env) — выставляемых переменных воркера. Эти проверки делаются на прогоне с
+реальной загрузкой модели и вынесены в отдельный шаг (стенд сейчас без загруженной модели).
 ---
 
 ## 7. Уже закрыто и что отклонено после проверки

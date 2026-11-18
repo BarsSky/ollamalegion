@@ -57,7 +57,22 @@ param(
     # `nvcc fatal : Unsupported gpu architecture 'compute_120'`. Сама проверка
     # обязана быть проверяемой без 40-минутной сборки — как это сделано у
     # scripts/upgrade-donor-node.ps1 -SelfTest.
-    [switch]$SelfTest
+    [switch]$SelfTest,
+    # R508 (2026-11-19): БАЗОВЫЕ ОБРАЗЫ Dockerfile'ов — параметрами.
+    #
+    # ЖИВОЙ СЛУЧАЙ. 2026-11-19 зеркало `dockerhub.timeweb.cloud` перестало
+    # отвечать, и пересборка WebUI стала невозможной: `docker build` падал на
+    # разрешении тега базового образа, а не на коде. Обходили вручную
+    # (`docker tag nginx:alpine dockerhub.timeweb.cloud/library/nginx:alpine`) —
+    # такой обход нельзя записать в инструкцию.
+    #
+    # Пусто = умолчание самого Dockerfile (зеркало timeweb): для машин, где зеркало
+    # живо, поведение не меняется. На машине без зеркала:
+    #   $env:NGINX_BASE='library/nginx:alpine'; scripts/build-containers.ps1 -WebUI
+    # (и так же GO_BASE/ALPINE_BASE для образа балансера).
+    [string]$NginxBase = $env:NGINX_BASE,
+    [string]$GoBase = $env:GO_BASE,
+    [string]$AlpineBase = $env:ALPINE_BASE
 )
 
 # ВАЖНО (R85, 2026-10-06): docker пишет ПРОГРЕСС сборки в stderr, и при
@@ -81,6 +96,13 @@ if (-not $NoRegistryPrefix) {
 }
 
 $imageTag = if ([string]::IsNullOrWhiteSpace($Tag)) { 'latest' } else { $Tag.Trim() }
+
+# R508: базовые образы передаём только если заданы явно — иначе действуют
+# умолчания Dockerfile (зеркало timeweb) и поведение прежнее.
+$baseImageArgs = @()
+if (-not [string]::IsNullOrWhiteSpace($NginxBase)) { $baseImageArgs += @('--build-arg', ("NGINX_BASE=" + $NginxBase)) }
+if (-not [string]::IsNullOrWhiteSpace($GoBase)) { $baseImageArgs += @('--build-arg', ("GO_BASE=" + $GoBase)) }
+if (-not [string]::IsNullOrWhiteSpace($AlpineBase)) { $baseImageArgs += @('--build-arg', ("ALPINE_BASE=" + $AlpineBase)) }
 
 # R148: самопроверка проверки CUDA-арок — БЕЗ сборки и БЕЗ docker.
 # Каждый случай ниже — либо живой дефект, либо правило, которое обязано держаться.
@@ -198,7 +220,7 @@ try {
         $balancerImage = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/balancer' -Tag $imageTag
         Write-Host "=== Building $balancerImage ===" -ForegroundColor Cyan
                 $versionArgsBalancer = Get-BuildArgLinesR486 -Identity (Get-BuildIdentity -Service balancer -Version $imageTag -ImageTag $imageTag)
-docker build @versionArgsBalancer -t $balancerImage -f docker/balancer/Dockerfile .
+docker build @baseImageArgs @versionArgsBalancer -t $balancerImage -f docker/balancer/Dockerfile .
         if ($LASTEXITCODE -ne 0) { throw "Balancer build failed" }
     }
 
@@ -211,7 +233,7 @@ docker build @versionArgsBalancer -t $balancerImage -f docker/balancer/Dockerfil
         $identityWebUI = Get-BuildIdentity -Service webui -Version $imageTag -ImageTag $imageTag
         $versionArgsWebUI = Get-BuildArgLinesR486 -Identity $identityWebUI
         Write-Host "  version=$($identityWebUI.Version) commit=$($identityWebUI.GitCommit)" -ForegroundColor Gray
-        docker build @versionArgsWebUI --build-arg RELEASE=1 `
+        docker build @baseImageArgs @versionArgsWebUI --build-arg RELEASE=1 `
             -t $webuiImage -f docker/webui/Dockerfile .
         if ($LASTEXITCODE -ne 0) { throw "WebUI build failed" }
     }

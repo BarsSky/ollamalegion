@@ -12,7 +12,24 @@
 # webui-static-checks) — падает, если страница ссылается на внешний CDN или на
 # несуществующий локальный файл.
 
-FROM dockerhub.timeweb.cloud/library/nginx:alpine
+# R508 (2026-11-19): базовый образ — ПАРАМЕТР, а не хардкод.
+#
+# ЖИВАЯ ПРОБЛЕМА. По умолчанию здесь стояло зеркало `dockerhub.timeweb.cloud`.
+# 2026-11-19 оно перестало отвечать (`dial tcp 89.23.100.119:443: connection
+# attempt failed`), и пересборка WebUI стала невозможной: `docker build` падал на
+# разрешении тега базового образа, хотя сам репозиторий в порядке. Обойти можно
+# было только хаком (ручной `docker tag nginx:alpine dockerhub.timeweb.cloud/…`) —
+# такой обход нельзя записать в инструкцию.
+#
+# ТЕПЕРЬ: `ARG NGINX_BASE` с прежним зеркалом по умолчанию (поведение существующих
+# сборочных машин не меняется), а на машине без зеркала достаточно
+#   docker build --build-arg NGINX_BASE=library/nginx:alpine …
+# или (через скрипт) `$env:NGINX_BASE='library/nginx:alpine'` перед
+# scripts/build-containers.ps1. Значение по умолчанию оставлено зеркалом ЯВНО:
+# у части стендов Docker Hub ограничен по скорости/квоте, и «чинить» это сменой
+# умолчания для всех — не наше решение.
+ARG NGINX_BASE=dockerhub.timeweb.cloud/library/nginx:alpine
+FROM ${NGINX_BASE}
 
 # === Build args: пробрасываем git tag / commit / build date в рантайм ===
 # Используются entrypoint.sh для подстановки в js/modules/config.js

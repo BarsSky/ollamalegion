@@ -739,12 +739,22 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			// POST отдавал imagePort, а GET /api/v1/backends — нет, поэтому
 			// потребитель, берущий порт из списка, молча падал на дефолт 18093
 			// и на нестандартном порту уходил бы не туда.
-			"imagePort":                    backend.ImagePort,
-			"weight":                       backend.Weight,
-			"maxConcurrentRequests":        maxConcurrent,
-			"maxModels":                    maxModels,
-			"runtimeMaxModels":             backend.RuntimeMaxModels,
-			"runtimeMaxConcurrentRequests": backend.RuntimeMaxConcurrentRequests,
+			"imagePort":             backend.ImagePort,
+			"weight":                backend.Weight,
+			"maxConcurrentRequests": maxConcurrent,
+			// R508 / §6 аудита S3: то же число под тем же именем, что в
+			// /api/v1/cluster (`effectiveMaxConcurrentRequests`) и в WebUI.
+			//
+			// ЗАЧЕМ ДУБЛЬ. Проверка §6 сравнивает три поверхности, и на
+			// /api/v1/backends этого поля не было: `maxConcurrentRequests` здесь
+			// УЖЕ эффективная вместимость (ResolveCapacity), но проверяющий скрипт
+			// и панель искали привычное имя и получали null — «числа не совпали».
+			// Одно значение под одним именем на всех поверхностях дешевле, чем
+			// объяснение, почему на одной поверхности имя другое.
+			"effectiveMaxConcurrentRequests": maxConcurrent,
+			"maxModels":                      maxModels,
+			"runtimeMaxModels":               backend.RuntimeMaxModels,
+			"runtimeMaxConcurrentRequests":   backend.RuntimeMaxConcurrentRequests,
 			// R117 (2026-10-14): ПОЧЕМУ вместимость такая. До этого отчёт давал
 			// только число, и «2» одинаково выглядело как «у модели два слота», как
 			// «нода заявила n_parallel=2» и как «модели нет вовсе». Живой случай:

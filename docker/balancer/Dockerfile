@@ -40,7 +40,15 @@
 # Пин оставлен как самостоятельная польза (сборка не зависит от того, какой патч
 # Go отдал реестр), но НЕ как «лечение» той ошибки — она лечится корректной
 # передачей BUILD_DATE (переменная, а не выражение в кавычках).
-FROM dockerhub.timeweb.cloud/library/golang:1.24.3-alpine AS deps
+# R508 (2026-11-19): базовые образы — параметры (см. docker/webui/Dockerfile: зеркало
+# timeweb перестало отвечать, и сборка падала на разрешении тега, а не на коде).
+# Умолчание оставлено прежним зеркалом: поведение сборочных машин не меняется,
+# а на машине без зеркала достаточно --build-arg GO_BASE=library/golang:1.24.3-alpine.
+ARG GO_BASE=dockerhub.timeweb.cloud/library/golang:1.24.3-alpine
+# R508: ARG для FROM объявляется ДО первого FROM (глобальная область): ARG внутри
+# стадии не виден в её собственном FROM (docker: «base name should not be blank»).
+ARG ALPINE_BASE=dockerhub.timeweb.cloud/library/alpine:latest
+FROM ${GO_BASE} AS deps
 
 WORKDIR /build
 
@@ -127,7 +135,8 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
 # -----------------------------------------------------------------------------
 # Stage 4: production — минимальный alpine (локальный alpine:latest)
 # -----------------------------------------------------------------------------
-FROM dockerhub.timeweb.cloud/library/alpine:latest AS production
+# R508: ALPINE_BASE объявлен выше, рядом с GO_BASE (см. комментарий там).
+FROM ${ALPINE_BASE} AS production
 
 WORKDIR /app
 

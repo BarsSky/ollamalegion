@@ -432,7 +432,7 @@ curl -s -H "X-API-Token: <t>" "http://127.0.0.1:18081/api/v1/cluster/models/load
 
 | Правка §8.3 | Статус |
 |---|---|
-| 1. Потолок окна по памяти (вес + compute buffer + фрагментация) | ✅ `feasible.go` → `feasible_memory_r521.go`; env `CPPWORKER_COMPUTE_BUFFER_MB`; «не влезает = 0» |
+| 1. Потолок окна по памяти (вес + compute buffer + фрагментация) | ✅ `feasible.go` → `feasible_memory.go`; env `CPPWORKER_COMPUTE_BUFFER_MB`; «не влезает = 0» |
 | 2. Объявлять только влезающее окно | ✅ `advertisedMaxContextR469` учитывает `feasible_max_context` (на слот, R505) |
 | 3. Гейт проверяет ФИНАЛЬНОЕ окно | ❌ не сделано — требует разбора порядка вычисления окна в загрузчике (в логе 32768 проверено, 131072 загружено) |
 | 4. Не подавлять понижение молча | ✅ `autotune.go`: Warn с числами (feasible/клиент/риск) вместо тихого Infow |

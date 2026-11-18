@@ -122,6 +122,10 @@ func (p *Proxy) LoadState() error {
 			// отдавал 2, и heartbeat нёс узлу 2 — admission-очередь пускала два
 			// запроса на узел, который сериализует llama_decode.
 			p.config.Backends[i].NodeClaimedCapacity = saved.NodeClaimedCapacity
+			// R501 / аудит C-1: возраст заявки узла переживает перезапуск. Без
+			// этой строки после рестарта отметка терялась бы, и заявка снова
+			// считалась бы свежей бесконечно.
+			p.config.Backends[i].NodeClaimedAt = cloneTimePtr(saved.NodeClaimedAt)
 			// Round 13 (2026-07-10): restore AgentID — нужен для dedup migration
 			// (canonical = hasAgent && agentId!=""). Без этого LoadState
 			// восстанавливал hasAgent=true, но терял agentId → миграция
@@ -264,7 +268,24 @@ func (p *Proxy) LoadState() error {
 	// Для llama_cpp runtime-значение больше n_parallel смысла не имеет —
 	// приводим его к вместимости ноды и помечаем владельца. Значение МЕНЬШЕ
 	// n_parallel не трогаем: это осознанный лимит оператора (троттлинг).
+	//
+	// R501 / аудит C-1: здесь же — «пометка возраста» заявки узла. Время записи
+	// state.json (state.Updated) — момент, когда заявка была известна точно:
+	// она лежала в файле на тот момент. Возраст отсчитывается от него, поэтому
+	// заявка из старого файла не живёт «вечно свежей».
+	claimConfirmedAt := state.Updated.UTC()
+	if claimConfirmedAt.IsZero() {
+		claimConfirmedAt = time.Now().UTC()
+	}
 	for _, bs := range p.backends {
+		if bs == nil || bs.Backend == nil {
+			continue
+		}
+		if bs.Backend.NodeClaimedCapacity > 0 &&
+			(bs.Backend.NodeClaimedAt == nil || bs.Backend.NodeClaimedAt.Before(claimConfirmedAt)) {
+			t := claimConfirmedAt
+			bs.Backend.NodeClaimedAt = &t
+		}
 		reconcileNodeCapacity(bs.Backend)
 	}
 
@@ -312,18 +333,32 @@ func cloneTimePtr(src *time.Time) *time.Time {
 
 // reconcileNodeCapacity — R71: привести runtime-вместимость к реальной
 // вместимости узла, если она её превышает (см. вызов в LoadState).
+//
+// R501 / аудит C-6: признак «вместимость от ноды» больше НЕ ставится по одному
+// равенству runtimeMax == статике. Раньше это объявляло операторский лимит
+// (PUT /limits со значением, совпавшим со статикой) «значением ноды», после чего
+// заявка узла его перетирала — то есть решение человека молча отменялось
+// перерегистрацией агента. Теперь признак ставится только при доказательстве:
+//   - значение уже было помечено как «от ноды» в state.json (R71: признак
+//     переживает перезапуск балансера), либо
+//   - мы только что САМИ привели к статике устаревшее «эхо» агента (значение
+//     было выше статики — это не операторский лимит, а именно эхо), либо
+//   - значение совпадает с сохранённой заявкой узла NodeClaimedCapacity.
 func reconcileNodeCapacity(backend *types.Backend) {
 	if backend == nil || backend.Type != types.BackendTypeLlamaCpp || backend.MaxConcurrentReqs <= 0 {
 		return
 	}
+	clampedLegacyEcho := false
 	if backend.RuntimeMaxConcurrentRequests > backend.MaxConcurrentReqs {
 		logger.Get().Infow(i18n.T("balancer.state.runtime_capacity_clamped_info"),
 			"backend", backend.ID,
 			"runtime_max_concurrent_requests", backend.RuntimeMaxConcurrentRequests,
 			"max_concurrent_requests", backend.MaxConcurrentReqs)
 		backend.RuntimeMaxConcurrentRequests = backend.MaxConcurrentReqs
+		clampedLegacyEcho = true
 	}
-	if backend.RuntimeMaxConcurrentRequests == backend.MaxConcurrentReqs {
+	if clampedLegacyEcho || backend.RuntimeCapacityFromNode ||
+		(backend.NodeClaimedCapacity > 0 && backend.RuntimeMaxConcurrentRequests == backend.NodeClaimedCapacity) {
 		backend.RuntimeCapacityFromNode = true
 	}
 }

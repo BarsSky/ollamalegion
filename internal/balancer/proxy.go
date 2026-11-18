@@ -1321,7 +1321,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				forceRebalance := false
 				backendState.mu.Lock()
 				active := backendState.ActiveReqs
-				maxReqs := backendState.Backend.MaxConcurrentReqs
+				maxReqs := backendState.Backend.EffectiveMaxConcurrentRequests()
 				backendState.mu.Unlock()
 
 				// R139 (2026-10-16): нагрузку ЭТОЙ ЖЕ сессии не считаем поводом

@@ -520,7 +520,7 @@ func (p *Proxy) findBackendWithModelExcludingLocked(modelName string, exclude ma
 
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 
 		// Согласно документации: model affinity только при loadRatio < threshold
@@ -606,7 +606,7 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool, allowedTypes
 		}
 
 		state.mu.Lock()
-		if state.ActiveReqs >= state.Backend.MaxConcurrentReqs {
+		if state.ActiveReqs >= state.Backend.EffectiveMaxConcurrentRequests() {
 			state.mu.Unlock()
 			continue
 		}
@@ -676,7 +676,7 @@ func (p *Proxy) findLeastLoadedBackendWithModel(modelName string, allowedTypes [
 		}
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 		if maxReqs <= 0 {
 			continue
@@ -747,7 +747,7 @@ func (p *Proxy) findLessLoadedBackendWithModelWhere(
 
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 
 		if maxReqs <= 0 {
@@ -819,7 +819,7 @@ func (p *Proxy) findLessLoadedBackendAnyWhere(
 
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 
 		if maxReqs <= 0 {
@@ -929,7 +929,7 @@ func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.Back
 
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 
 		// Согласно документации: model affinity только при loadRatio < threshold
@@ -1010,10 +1010,14 @@ func (p *Proxy) selectFreeBackendAny(allowedTypes []types.BackendType) string {
 
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 
-		if maxReqs >= 0 && active >= maxReqs {
+		// R501 / аудит C-3: единая трактовка вместимости. «Слотов нет/не задано»
+		// (0) — кандидат пропускается (не знаем, сколько пускать); «без лимита»
+		// (-1) — не пропускается никогда. До правки здесь стояло `maxReqs >= 0`,
+		// и одно и то же число -1 читалось в соседних функциях по-разному.
+		if cap := types.CapacityFromValueR501(maxReqs); !cap.Unlimited && (!cap.Known || active >= cap.Value) {
 			continue
 		}
 
@@ -1082,7 +1086,7 @@ func (p *Proxy) selectByResources(allowedTypes []types.BackendType) string {
 
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		lastUsed := state.LastUsed
 		state.mu.Unlock()
 

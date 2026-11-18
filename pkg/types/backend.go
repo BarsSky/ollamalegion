@@ -3,7 +3,10 @@ package types
 import (
 	"os"
 	"strings"
+	"sync"
 	"time"
+
+	"ollama-loadbalancer/pkg/logger"
 )
 
 // BackendStatus - статус бэкенда
@@ -160,6 +163,20 @@ type Backend struct {
 	//
 	// 0 = узел вместимость не сообщал → работает прежнее правило.
 	NodeClaimedCapacity int `json:"nodeClaimedCapacity,omitempty"`
+
+	// NodeClaimedAt — R501 (2026-11-19, аудит C-1): КОГДА заявка узла была
+	// подтверждена в последний раз (регистрация агента, heartbeat, запись
+	// state.json).
+	//
+	// ЗАЧЕМ. Заявка считается один раз при старте агента и «замерзает» до его
+	// рестарта: узел, у которого после смены модели стало 4 слота, продолжал
+	// получать 2 — и проверить это было нечем. Теперь заявка старше TTL
+	// (LB_CAPACITY_NODE_CLAIM_TTL_SEC, дефолт 15 мин) в решении не участвует, а в
+	// лог уходит одна строка с возрастом. Время обновляют те же пути, что и саму
+	// заявку (AdoptCapacityFromNode/markCapacityFromNode), а LoadState проставляет
+	// время записи state.json — возраст отсчитывается от последнего
+	// подтверждения, а не от вечности.
+	NodeClaimedAt *time.Time `json:"nodeClaimedAt,omitempty"`
 
 	// Role — R118 (2026-10-14): РОЛЬ бэкенда в раскладке слоёв. Задаётся оператором
 	// явно (WebUI/API), а не выводится автоматически: «кто главный, кто донор, кто
@@ -429,6 +446,108 @@ func (b *Backend) ResolveCapacity() (int, string) {
 	if b == nil {
 		return 0, ""
 	}
+	// R501 / аудит S3 (2026-11-19): режим единого источника вместимости.
+	//
+	// off    — исторический резолвер ниже (поведение не меняется);
+	// shadow — новый резолвер СЧИТАЕТСЯ, расхождения пишутся в лог, решение
+	//          остаётся историческим (дефолт: включение осознанным шагом);
+	// on     — решение принимает единый резолвер, где ОПЕРАТОР выше заявки узла.
+	//
+	// Почему это вообще нужно (§1.1 C-1/C-6): заявка узла посчитана ОДИН раз при
+	// старте агента и стояла выше операторского лимита; `reconcileNodeCapacity`
+	// вдобавок объявлял операторское значение «от ноды», после чего заявка узла
+	// его перетирала.
+	if mode := CapacitySingleSourceModeR501(); mode != CapacityModeOffR501 {
+		// R501 / аудит C-1: заявка узла участвует, только если (а) она свежая —
+		// «пометка возраста» ниже, и (б) учёт фактических слотов модели включён
+		// флагом LB_CAPACITY_FROM_MODEL_SLOTS. Без (б) включение
+		// LB_CAPACITY_SINGLE_SOURCE=on молча включало бы ещё одну настройку.
+		slots := 0
+		if CapacityFromModelSlotsEnabled() {
+			slots = b.RuntimeModelSlots
+		}
+		nodeClaim := b.effectiveNodeClaimR501()
+		v2, v2Source := ResolveEffectiveCapacityV2WithSourceR501(slots, b.RuntimeMaxConcurrentRequests,
+			nodeClaim, b.MaxConcurrentReqs)
+		legacy, legacySource := b.resolveCapacityLegacy()
+		if mode == CapacityModeOnR501 {
+			return v2, v2Source
+		}
+		if v2 != legacy {
+			logCapacityDivergenceR501(b.ID, v2, legacy, legacySource)
+		}
+		return legacy, legacySource
+	}
+	return b.resolveCapacityLegacy()
+}
+
+// effectiveNodeClaimR501 — заявка узла, которой можно верить СЕЙЧАС.
+//
+// Аудит C-1: `NodeClaimedCapacity` посчитана один раз при старте агента и
+// «замерзает» до его рестарта. Поэтому у заявки есть отметка времени
+// `NodeClaimedAt` (обновляется при регистрации/heartbeat и при загрузке
+// state.json), и заявка старше LB_CAPACITY_NODE_CLAIM_TTL_SEC не участвует: без
+// этого оператор видел «вместимость 2» на узле, который после смены модели
+// держит 4 слота, и решение нельзя было проверить ничем, кроме рестарта агента.
+func (b *Backend) effectiveNodeClaimR501() int {
+	if b == nil || b.NodeClaimedCapacity <= 0 {
+		return 0
+	}
+	if NodeClaimFreshR501(b.NodeClaimedAt, time.Now()) {
+		return b.NodeClaimedCapacity
+	}
+	logStaleNodeClaimR501(b.ID, b.NodeClaimedAt, b.NodeClaimedCapacity)
+	return 0
+}
+
+// logStaleNodeClaimR501 — заявка узла просрочена (аудит C-1): пишем один раз на
+// бэкенд, а не на каждый вызов резолвера (он горячий).
+func logStaleNodeClaimR501(backendID string, claimedAt *time.Time, claim int) {
+	var age string
+	if claimedAt != nil {
+		age = time.Since(*claimedAt).Truncate(time.Second).String()
+	} else {
+		age = "неизвестен"
+	}
+	logCapacityEventOnceR501("stale:"+backendID,
+		"вместимость: заявка узла просрочена и не участвует в решении",
+		"backend", backendID,
+		"node_claimed_capacity", claim,
+		"node_claimed_age", age,
+		"ttl", CapacityNodeClaimTTLR501().String(),
+		"hint", "заявку обновляет регистрация/heartbeat агента; TTL: LB_CAPACITY_NODE_CLAIM_TTL_SEC (0 — не проверять)")
+}
+
+// logCapacityDivergenceR501 — расхождение «тень vs историческое» одной строкой
+// на бэкенд (не на каждый вызов: резолвер горячий, спам в логе недопустим).
+var capacityDivergenceSeenR501 sync.Map
+
+// logCapacityEventOnceR501 — журнал по ключу ОДИН раз. Резолвер вызывается на
+// каждый кандидат каждого запроса: без этого диагностика превратилась бы в спам
+// (и в лишнюю нагрузку на лог под нагрузкой).
+func logCapacityEventOnceR501(key, msg string, kv ...interface{}) {
+	if _, seen := capacityDivergenceSeenR501.Load(key); seen {
+		return
+	}
+	capacityDivergenceSeenR501.Store(key, struct{}{})
+	logger.Get().Infow(msg, kv...)
+}
+
+func logCapacityDivergenceR501(backendID string, v2, legacy int, legacySource string) {
+	logCapacityEventOnceR501("divergence:"+backendID,
+		"R501 capacity: единый резолвер расходится с историческим (shadow — решения не меняются)",
+		"backend", backendID,
+		"single_source", v2,
+		"legacy", legacy,
+		"legacy_source", legacySource,
+		"hint", "включить: LB_CAPACITY_SINGLE_SOURCE=on; режимы: off|shadow|on")
+}
+
+// resolveCapacityLegacy — прежний резолвер (до R501), без изменений семантики.
+func (b *Backend) resolveCapacityLegacy() (int, string) {
+	if b == nil {
+		return 0, ""
+	}
 	// R83 (2026-09-29): учёт ФАКТИЧЕСКИХ слотов модели — opt-in. При выключенном
 	// флаге правило R117 не применяется: стенды без флага работают ровно как
 	// раньше (там нода — единственный источник правды).
@@ -452,7 +571,12 @@ func (b *Backend) ResolveCapacity() (int, string) {
 			if b.RuntimeMaxConcurrentRequests < claim {
 				return b.RuntimeMaxConcurrentRequests, CapacitySourceOperator
 			}
-			return claim, CapacitySourceOperator
+			// R501 / аудит C-7: значение здесь — ЗАЯВКА УЗЛА, а не решение
+			// оператора. Раньше оно подписывалось CapacitySourceOperator, и
+			// /api/v1/backends врал об источнике ещё до этой правки: оператор
+			// видел «лимит оператора», которого не ставил. Операторский лимит
+			// выше заявки её не поднимает (физика), поэтому он и не источник.
+			return claim, CapacitySourceNode
 		}
 		return claim, CapacitySourceNode
 	}

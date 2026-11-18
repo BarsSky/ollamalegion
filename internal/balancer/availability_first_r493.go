@@ -52,8 +52,17 @@ func (p *Proxy) hasFreeSlotNowR493(backendID string) bool {
 	active := state.ActiveReqs
 	maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 	state.mu.Unlock()
-	if maxReqs <= 0 {
+	// R501 / аудит C-3: одна трактовка числа (types.CapacityFromValueR501).
+	// -1 документирован как «без лимита» (handlers_backends.go) — здесь он больше
+	// НЕ превращается в «лимит 1»: бэкенд с «без лимита» доступен. Ноль = «не
+	// задано» → консервативный дефолт R117: один слот (пока не известны
+	// фактические слоты модели), а не «сколько угодно».
+	if cap := types.CapacityFromValueR501(maxReqs); cap.Unlimited {
+		return true
+	} else if !cap.Known {
 		maxReqs = 1
+	} else {
+		maxReqs = cap.Value
 	}
 	return active < maxReqs
 }

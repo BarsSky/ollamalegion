@@ -132,7 +132,12 @@ func (pc *PrewarmController) evaluate() {
 		}
 
 		active := metrics.Ollama.ActiveRequests
-		maxReqs := state.Backend.MaxConcurrentReqs
+		// R501 / аудит C-2: вместимость — ЭФФЕКТИВНАЯ (заявка узла → лимит
+		// оператора → статика), как в admission-очереди; под state.mu, потому что
+		// резолвер читает поля бэкенда (контракт R493e).
+		state.mu.Lock()
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
+		state.mu.Unlock()
 		if maxReqs > 0 {
 			backendLoad[id] = float64(active) / float64(maxReqs)
 		}
@@ -210,7 +215,7 @@ func (pc *PrewarmController) findFreeBackendForModel(model string, excludeIDs []
 		// Не загружаем если бэкенд уже перегружен
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 		if maxReqs > 0 && active >= maxReqs {
 			continue

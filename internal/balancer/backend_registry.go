@@ -35,7 +35,22 @@ func markCapacityFromNode(backend *types.Backend) {
 		return
 	}
 	backend.RuntimeCapacityFromNode = true
-	backend.RuntimeMaxConcurrentRequests = backend.MaxConcurrentReqs
+	// R501 / аудит C-1: подтверждение заявки узла — с отметкой времени. Заявка
+	// «замерзает» до рестарта агента, поэтому резолвер считает её актуальной
+	// только TTL (LB_CAPACITY_NODE_CLAIM_TTL_SEC), а эту отметку обновляют все
+	// пути, которые заявку слышат (регистрация, heartbeat, загрузка state.json).
+	claimedAt := time.Now().UTC()
+	backend.NodeClaimedAt = &claimedAt
+	// R501 / аудит S3 (C-1/C-6): НЕ перетираем операторское значение.
+	//
+	// БЫЛО: здесь безусловно `RuntimeMaxConcurrentRequests = MaxConcurrentReqs`.
+	// Заявка узла считается ОДИН раз при старте агента, а этот путь выполняется
+	// при каждой перерегистрации — то есть операторский лимит (PUT /limits, WebUI)
+	// жил до ближайшей перерегистрации и потом молча возвращался к заявке узла.
+	// Теперь «эхо» пишется только когда оператор своего значения не задавал.
+	if backend.RuntimeMaxConcurrentRequests <= 0 {
+		backend.RuntimeMaxConcurrentRequests = backend.MaxConcurrentReqs
+	}
 }
 
 // AddBackend - добавление нового бэкенда
@@ -508,7 +523,7 @@ func (p *Proxy) GetBackendSnapshot(backendID string) (*types.Backend, bool) {
 }
 
 // GetBackendFreeSlots — возвращает количество свободных слотов backend'а
-// (MaxConcurrentReqs - ActiveReqs) для use в least_loaded selector'ах.
+// (ЭФФЕКТИВНАЯ вместимость - ActiveReqs) для use в least_loaded selector'ах.
 // Phase 8 Item 2 (2026-07-11): LoadProvider wire-up.
 //
 // Возвращает (freeSlots, ok). Если backend не найден, ok=false.
@@ -522,13 +537,17 @@ func (p *Proxy) GetBackendFreeSlots(backendID string) (int, bool) {
 	}
 	state.mu.Lock()
 	active := state.ActiveReqs
-	max := state.Backend.MaxConcurrentReqs
+	max := state.Backend.EffectiveMaxConcurrentRequests()
 	state.mu.Unlock()
-	if max <= 0 {
-		// Default: unlimited. Возвращаем большое число чтобы selector не skip'ал.
+	// R501 / аудит C-2/C-3: считается по ЭФФЕКТИВНОЙ вместимости (раньше — по
+	// статике, и операторский лимит на этом пути не соблюдался). Трактовка чисел
+	// одна — types.CapacityFromValueR501: «без лимита» (-1) и «не задано» (0) не
+	// ограничивают; возвращаем большое число, чтобы selector не skip'ал.
+	cap := types.CapacityFromValueR501(max)
+	if cap.Unlimited || !cap.Known {
 		return 1000, true
 	}
-	free := max - active
+	free := cap.Value - active
 	if free < 0 {
 		free = 0
 	}
@@ -632,12 +651,20 @@ func (p *Proxy) UpdateBackendLimits(backendID string, maxModels, maxConcurrentRe
 		return fmt.Errorf("backend with ID %s not found", backendID)
 	}
 
+	// R501 / аудит S3 (C-4): поля бэкенда меняются под state.mu.
+	//
+	// БЫЛО: запись только под p.mu. Снимки читают state.Backend под state.mu
+	// (см. контракт R493e), поэтому две разные блокировки на одни данные —
+	// та же гонка, что закрывали в ListModels. Порядок локов в пакете:
+	// p.mu → state.mu (обратного нет), поэтому берём state.mu внутри p.mu.
+	state.mu.Lock()
 	state.Backend.RuntimeMaxModels = maxModels
 	state.Backend.RuntimeMaxConcurrentRequests = maxConcurrentRequests
 	// R71 (2026-09-24): оператор явно задал лимит — снимаем признак «вместимость
 	// от ноды», иначе EffectiveMaxConcurrentRequests() продолжил бы брать
 	// MaxConcurrentReqs (n_parallel) и лимит оператора не действовал бы.
 	state.Backend.RuntimeCapacityFromNode = false
+	state.mu.Unlock()
 
 	p.PublishEvent(types.Event{
 		Type:      types.EventLimitsChange,
@@ -771,10 +798,17 @@ func (p *Proxy) AdoptCapacityFromNode(backendID string, reported int) {
 	// Заявка узла — ФАКТ о его способности, поэтому она фиксируется всегда, в
 	// собственном поле (NodeClaimedCapacity). Оно переживает перезапуск балансера
 	// и не путается ни со статикой конфига, ни с «эхом» собственного ответа.
+	//
+	// R501 / аудит C-1: подтверждение заявки обновляет отметку времени ВСЕГДА,
+	// даже когда значение не изменилось: TTL считает возраст от последнего
+	// подтверждения, а не от последнего изменения.
+	claimedAt := time.Now().UTC()
+	state.Backend.NodeClaimedAt = &claimedAt
 	if state.Backend.NodeClaimedCapacity == reported && !operatorThrottle &&
 		state.Backend.RuntimeCapacityFromNode {
 		// Идемпотентно: heartbeat приходит раз в несколько секунд, а каждая
-		// запись тянет autosave state.json.
+		// запись тянет autosave state.json. Отметка времени уже обновлена в
+		// памяти, в файл она уедет с ближайшим autosave по другому поводу.
 		return
 	}
 
@@ -855,7 +889,10 @@ func (p *Proxy) SetBackendRole(backendID, role string) bool {
 		p.mu.Unlock()
 		return false
 	}
+	// R501 / аудит S3 (C-4): роль читают снимки под state.mu — пишем так же.
+	state.mu.Lock()
 	state.Backend.Role = role
+	state.mu.Unlock()
 	p.mu.Unlock()
 	// R304: снимок ролей обновляем ЗДЕСЬ, сразу после записи роли. Иначе
 	// предикат «донор не держит своих копий» отставал бы на тик гарда (15 с), и

@@ -95,7 +95,7 @@ func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendT
 
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		_, isWarming := state.WarmingUpModels[modelName]
 		state.mu.Unlock()
 

@@ -266,6 +266,11 @@ services:
       # путей. 0 — историческое поведение (правила окна в двух местах), 1 — единое
       # решение decideWindowR493, 2 — «тень»: единое считается и расхождения
       # пишутся в лог, поведение остаётся историческим (режим для стенда).
+      - LB_CAPACITY_SINGLE_SOURCE=${LB_CAPACITY_SINGLE_SOURCE:-shadow}
+      # R501 (2026-11-19, аудит C-1): возраст заявки узла. Заявка считается один
+      # раз при старте агента; старше TTL — в решении не участвует (0 — не
+      # проверять возраст). Влияет только при LB_CAPACITY_SINGLE_SOURCE=on.
+      - LB_CAPACITY_NODE_CLAIM_TTL_SEC=${LB_CAPACITY_NODE_CLAIM_TTL_SEC:-900}
       - LB_GPU_BOTTLENECK=${LB_GPU_BOTTLENECK:-shadow}
       - LB_WINDOW_UNIFIED=${LB_WINDOW_UNIFIED:-0}
       # R493-12p (2026-11-13, этап 4 «два мозга»): один вход в очередь.

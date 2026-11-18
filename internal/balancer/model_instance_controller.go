@@ -162,7 +162,7 @@ func (mic *ModelInstanceController) ensureInstances(model string, needed int, al
 
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 		if maxReqs > 0 && active >= maxReqs {
 			continue
@@ -206,7 +206,7 @@ func (mic *ModelInstanceController) unloadExcessInstances(model string, instance
 		}
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 		ratio := 0.0
 		if maxReqs > 0 {
@@ -273,7 +273,7 @@ func (mic *ModelInstanceController) checkIdleUnload(model string, instanceIDs []
 		state := backends[id]
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 		if active > 0 {
 			continue

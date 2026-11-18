@@ -41,7 +41,7 @@ func computeBaseScoreAndPenalty(m *types.BackendMetrics) (baseScore, requestPena
 func computeNoMetricsScore(state *BackendState) float64 {
 	state.mu.Lock()
 	active := state.ActiveReqs
-	maxReqs := state.Backend.MaxConcurrentReqs
+	maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 	state.mu.Unlock()
 
 	score := float64(state.Backend.Weight)

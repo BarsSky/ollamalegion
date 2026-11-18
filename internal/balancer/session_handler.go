@@ -49,7 +49,7 @@ func (p *Proxy) resolveSessionBackend(r *http.Request, model, sessionID, clientN
 func (p *Proxy) rebalanceIfNeeded(model, targetBackend, sessionID, clientName string, r *http.Request, backendState *BackendState) string {
 	backendState.mu.Lock()
 	active := backendState.ActiveReqs
-	maxReqs := backendState.Backend.MaxConcurrentReqs
+	maxReqs := backendState.Backend.EffectiveMaxConcurrentRequests()
 	backendState.mu.Unlock()
 
 	// R139: нагрузку ЭТОЙ ЖЕ сессии не считаем поводом уводить её на другой

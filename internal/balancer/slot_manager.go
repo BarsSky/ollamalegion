@@ -32,7 +32,11 @@ func (p *Proxy) tryAcquireSlot(backendID string) bool {
 
 	maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 
-	if maxReqs > 0 && state.ActiveReqs >= maxReqs {
+	// R501 / аудит C-3: единая трактовка числа (types.CapacityFromValueR501):
+	// «не задано» (0) и «без лимита» (-1) не ограничивают admission. Раньше это
+	// правило жило только здесь, а соседние пути читали те же числа иначе.
+	if capacity := types.CapacityFromValueR501(maxReqs); capacity.Known && !capacity.Unlimited &&
+		state.ActiveReqs >= capacity.Value {
 		// Все слоты заняты — проверяем, не заняты ли они зомби-сессиями.
 		// Если на бэкенде есть зомби-сессия (HasActiveStream=true, но LastRequestAt
 		// старше порога), принудительно освобождаем слот для нового запроса.
@@ -135,9 +139,14 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 		}
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
-		if maxReqs > 0 && active >= maxReqs {
+		// R501 / аудит C-3: одна трактовка числа вместимости
+		// (types.CapacityFromValueR501): «не задано» (0) — не ограничиваем,
+		// «без лимита» (-1) — тоже. Раньше ноль означал здесь «без лимита», в
+		// backend_selector — «слотов нет», в availabilityFirst — «лимит 1»,
+		// а UI подставлял 10.
+		if cap := types.CapacityFromValueR501(maxReqs); cap.Known && !cap.Unlimited && active >= cap.Value {
 			return false
 		}
 		return true

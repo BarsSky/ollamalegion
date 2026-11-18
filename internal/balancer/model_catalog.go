@@ -629,7 +629,7 @@ func (p *Proxy) findLeastLoadedOnDisk(modelName string, allowedTypes []types.Bac
 		}
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 		if maxReqs <= 0 {
 			continue

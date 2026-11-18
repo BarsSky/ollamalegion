@@ -22,6 +22,28 @@
     return (v && v !== k) ? v : s;
   }
 
+  // R501 / аудит C-3: одна трактовка вместимости в UI.
+  //
+  // Балансер присылает ДВА поля: maxConcurrentRequests (вместимость, которую
+  // применяет, = effective) и effectiveMaxConcurrentRequests (R83-fix, для
+  // баннера «потенциал параллельности не раскрыт»). Приоритет — effective.
+  // Ноль/отсутствие НЕ подменяется выдуманным «10»: неизвестная вместимость
+  // означает «не знаем», а не «десять слотов».
+  function backendCapacityOf(b) {
+    if (!b) { return 0; }
+    var v = b.effectiveMaxConcurrentRequests;
+    if (!(v > 0)) { v = b.maxConcurrentRequests; }
+    return (v > 0) ? v : 0;
+  }
+
+  // backendLoadRatio — загрузка бэкенда (0..∞). Неизвестная вместимость — 0:
+  // бэкенд не считается ни заполненным, ни свободным «по умолчанию».
+  function backendLoadRatio(b) {
+    var c = backendCapacityOf(b);
+    if (!(c > 0)) { return 0; }
+    return (b.activeRequests || 0) / c;
+  }
+
   // --- Фильтр по типу бэкенда (R92, 2026-10-09) -------------------------------
   //
   // ЖИВАЯ ЖАЛОБА: «кнопки смены типа бэкенда не отрабатывают и не рисуются
@@ -882,7 +904,7 @@
       // (б) R493: и только если на нём ЗАГРУЖЕНА эта модель и окно не меньше.
       var alt = (typeof MA.altBackendsFor === 'function')
         ? MA.altBackendsFor(bks, b, 0.5, s.model)
-        : activeBks.filter(function(x) { return x.id !== b.id && (x.activeRequests || 0) / (x.maxConcurrentRequests || 10) < 0.5; });
+        : activeBks.filter(function(x) { return x.id !== b.id && backendLoadRatio(x) < 0.5; });
       if (alt.length > 0) {
         alerts.push({
           level: 'yellow',
@@ -891,7 +913,13 @@
       }
     });
     bks.forEach(function(b) {
-      var m = b.maxConcurrentRequests || 10, l = (b.activeRequests || 0) / m;
+      // R501 / аудит C-3: загрузка и тревога «бэкенд заполнен» считаются по
+      // ЭФФЕКТИВНОЙ вместимости. Раньше здесь стояло `maxConcurrentReqs || 10`:
+      // (а) выдуманный дефолт 10 давал ложную тревогу «заполнен», когда
+      // вместимость неизвестна; (б) статика завышала знаменатель ровно в тех
+      // случаях, где балансер пускает меньше (узел с n_parallel=1 и статикой 4
+      // показывал 25% при полной занятости).
+      var m = backendCapacityOf(b), l = backendLoadRatio(b);
       if (l >= 1.0) alerts.push({ level: 'red', text: T('monitor.alert.backendFull', { backend: b.id, active: b.activeRequests || 0, max: m }) });
     });
     // R494 (2026-11-12, по архиву стенда A10 ×2): «одна модель — разные окна».

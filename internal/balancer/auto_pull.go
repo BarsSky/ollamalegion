@@ -388,7 +388,7 @@ func (apm *AutoPullManager) findBestBackendForPull(model string) string {
 		// Не загружаем на сильно загруженный бэкенд
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 
 		if maxReqs > 0 && float64(active)/float64(maxReqs) > 0.9 {

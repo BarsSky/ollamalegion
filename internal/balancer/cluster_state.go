@@ -253,7 +253,14 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			backendState.mu.Unlock()
 			state.TotalGPUUsage += agentMetrics.GPU.UsagePercent
 		} else {
-			metrics.MaxConcurrentRequests = backendConfig.MaxConcurrentReqs
+			// R501 / аудит C-5: раньше здесь стояло
+			// `metrics.MaxConcurrentRequests = backendConfig.MaxConcurrentReqs` —
+			// и бэкенд БЕЗ агента отдавал статическую вместимость рядом с
+			// эффективной (посчитанной выше той же итерацией). Панель считала
+			// загрузку по статике: узел с n_parallel=1 и статикой 4 выглядел
+			// загруженным на 25% при полной занятости. Оба поля снапшота — это
+			// вместимость, которую балансер РЕАЛЬНО применяет; статика остаётся
+			// только в конфиге (GET /api/v1/backends → maxConcurrentRequestsSource).
 			backendState.mu.Lock()
 			metrics.Ollama.TotalRequests = atomic.LoadInt64(&backendState.TotalRequests)
 			backendState.mu.Unlock()

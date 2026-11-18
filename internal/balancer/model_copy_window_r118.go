@@ -128,7 +128,7 @@ func (p *Proxy) collectModelCopyCandidates(modelName string, exclude map[string]
 		}
 		state.mu.Lock()
 		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
+		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		role := state.Backend.Role
 		state.mu.Unlock()
 		if maxReqs <= 0 {

@@ -1942,6 +1942,21 @@ const ui = (function () {
         refreshTimer = setInterval(() => {
             if (periodicRefreshPaused()) return;
             if (window.DataRefresh && !window.DataRefresh.isAuto()) return;
+            // R512 (2026-11-18): НЕ перерисовывать страницу, пока оператор вводит
+            // текст. Живая жалоба: «обновление держит новую информацию, но не даёт
+            // работать с формами — постоянно их скрывая». Причина: refreshPage для
+            // настроек заново заполняет поля из ответа сервера каждые 5 секунд —
+            // набранный символ затирался, курсор уезжал, секции схлопывались.
+            // Фокус в поле ввода = «прямо сейчас идёт набор», тик пропускается
+            // целиком (и запросы, и перерисовка): следующий тик после ухода из поля
+            // принесёт свежие данные. Логика «что считается вводом» — в
+            // js/modules/refresh-guard.js (там же объяснение, почему не «dirty»-флаг).
+            if (window.RefreshGuard && typeof window.RefreshGuard.isEditingIn === 'function') {
+                var editingPageEl = document.getElementById(currentPage + '-page');
+                if (window.RefreshGuard.isEditingIn(editingPageEl)) {
+                    return;
+                }
+            }
             fetchClusterState().then(function () {
                 if (window.DataRefresh) window.DataRefresh.markFresh();
             }).catch(function (e) {

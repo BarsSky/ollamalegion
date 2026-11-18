@@ -1,6 +1,6 @@
 # Читаемость и разбиение перегруженных файлов (не путать с «двумя мозгами»)
 
-**Дата:** 2026-11-19. **Статус:** 🟡 **R1, R4 и R7 закрыты; в R3 сделана часть (R506/R509/R510/R524)** (R506 0.7.310 — стражи структуры; R509 0.7.313 — `internal/cppbackend` по ответственности; R510 0.7.314 — `handlers_openai.go` и `handlers_backends.go` разбиты по операциям; R507 0.7.311 — одна реализация хелперов). Впереди: R2 (`proxyRequestLlamaCpp` по стадиям), остаток R3 (стрим-писатели `handlers_chat.go`, `handlers_model.go`, `main()`), R5 (277 `_rNNN` → тематические имена), R6 (WebUI-модули).
+**Дата:** 2026-11-19. **Статус:** 🟡 **R1, R4 и R7 закрыты; в R3 сделана часть (R506/R509/R510/R524/R525/R526/R527)** (R506 0.7.310 — стражи структуры; R509 0.7.313 — `internal/cppbackend` по ответственности; R510 0.7.314 — `handlers_openai.go` и `handlers_backends.go` разбиты по операциям; R507 0.7.311 — одна реализация хелперов). Впереди: R2 (`proxyRequestLlamaCpp` по стадиям — **единственная функция >1000 строк**), остаток R3 (`handlers_model.go`, общий модуль стрима), R5 (277 `_rNNN` → тематические имена), R6 (WebUI-модули).
 **Замер на момент R506 (2026-11-19, `scripts/structure_report.ps1`):** функций > 1000 строк — 2,
 > 300 — 41, ≥ 150 — 120; файлов ≥ 1500 строк — 27; `internal/cppbackend/backend.go` — 4117;
 **боевых файлов с `_rNNN` — 277** (список-база `docs/architecture/structure-baseline-r506.txt`).
@@ -169,6 +169,37 @@ rpc-ссылки) + `handlers_backends_list.go` 616 + `handlers_backends_mutate.
 склейка тел в исходном порядке совпадает с исходным телом (нормализованное сравнение); плюс
 `go vet` 0, `gofmt` чисто, `go test` и `-race` по `cmd/cppworker` и `internal/api` зелёные.
 
+**Итог R527 (часть R3, факт).** `cmd/cppworker/handlers_chat.go`:
+`writeChatStreamResponseWithTools` **1426 → 954** — вынесено **начало** стрима, тремя
+функциями того же файла: `startToolsStreamGeneration(run *toolsStreamRun) bool` (361:
+дельты content/thinking, сторожа удержания R482/R485, callback, генерация и кадры
+ошибок), `startToolsStreamKeepalive` (58: кадр «запрос принят» R189 + heartbeat,
+cleanup возвращается функцией) и `logToolsStreamSummary` (121: сводка хода и done-кадр).
+Состояние — не копия: `toolsStreamRun` держит указатели на переменные вызывающей
+функции, `thinkingParser` — ячейкой (`**ReasoningStreamState`), потому что повтор R406
+в финализации заменяет парсер, а callback обязан взять новый.
+**Доказательство неизменности.** Перенос делался не руками: диапазоны вырезались
+текстом, а идентификаторы изменяемого состояния заменялись механически (сканер токенов
+`go/scanner`, поэтому комментарии и строки не тронуты). Обратная проверка: к фрагментам
+`git show HEAD` применено то же преобразование, после чего тела совпали **дословно** —
+`startToolsStreamGeneration` 351 непустая строка, `logToolsStreamSummary` 111 строк
+(различия только ожидаемые: `return` → `return false` на двух путях ошибки, пролог с
+локальными алиасами, алиас парсера в callback и присваивания в структуру). В
+`startToolsStreamKeepalive` изменение ровно одно: cleanup возвращается функцией вместо
+`defer` внутри — тело и комментарии перенесены дословно.
+**Почему финализация НЕ выносилась.** Первый вариант (вынести 911 строк финализации в
+`finishToolsStream`) собирался и проходил `go vet`, но покраснели два сторожа:
+`TestR394_ToolsPathUsesBudgetAwareReason` (AST: ≥3 вызовов `toolsTerminalReasonR394`
+ВНУТРИ `writeChatStreamResponseWithTools`) и `TestR404_Wiring` (точные строки
+`if anyStreamed {`, `reasoningOut != "" && !thinkingStreamed`). Тесты не правились —
+вынесено начало, финализация осталась там, где её проверяют сторожа.
+Замер после R527 (`scripts/structure_report.ps1`, до → после): функций **> 1000 — 2 → 1**
+(осталась `proxyRequestLlamaCpp` 2428), **> 300 — 40 → 41** (сокращённая функция в отчёте
+983 и вынесенный этап 361 — обе выше порога; показатель начнёт падать, когда этапы
+опустятся ниже 300), **≥ 150 — 122 → 123**.
+**Попутно:** `structure_report.ps1` печатал метрику «>1000» пустой, когда под неё
+попадала ровно одна функция (`Where-Object` → одиночный объект без `.Count`); обёрнуто
+в `@()` — на HEAD метрика печатает 2, после правки 1.
 **Итог R526 (часть R3, факт).** `cmd/cppworker/handlers_chat.go`:
 `writeChatStreamResponse` **519 → 283 + 236** — финализация вынесена в
 `finishChatStream(in *chatStreamFinish)` в том же файле (перенос в другой файл
@@ -208,9 +239,10 @@ ollama-поверхность (`handleOllamaTags/PS/Show/Copy/Create/Push`,
 ВСЕ файлы `handlers_openai*.go` пакета. Ожидания не менялись (например «два измерения загрузки» —
 по-прежнему 2); изменился только способ собрать текст.
 
-**Остаток R3:** `writeChatStreamResponseWithTools` (1426) и `writeChatStreamResponse` (519) —
-общий модуль стрима поверх `safeStreamWriter`; `handlers_model.go` по операциям
-(load/reload/unload/params/progress); `main()` 599 → `buildServer/registerRoutes/run`.
+**Остаток R3:** `handlers_model.go` по операциям (load/reload/unload/params/progress);
+`main()` 599 → `buildServer/registerRoutes/run`; общий модуль стрима поверх
+`safeStreamWriter` (R526/R527 разобрали оба писателя по отдельности, но их общая
+часть — терминатор кадра — пока продублирована).
 
 ### R4. `internal/cppbackend/backend.go`: 4117 строк, 103 функции — **СДЕЛАНО (R509)**
 Разделить по ответственности: жизненный цикл инстанса · загрузка/выгрузка · параметры и профили · снимки состояния

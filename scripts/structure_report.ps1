@@ -79,10 +79,13 @@ $funcs | Sort-Object Lines -Descending | Select-Object -First $TopLines |
     ForEach-Object { '{0,6}  {1}:{2}  {3}' -f $_.Lines, $_.Path, $_.Line, $_.Name.Substring(0, [Math]::Min(70, $_.Name.Length)) }
 
 # --- 3. Показатели против целей §5 -------------------------------------------
-$over1000 = ($funcs | Where-Object { $_.Lines -gt 1000 }).Count
-$over300 = ($funcs | Where-Object { $_.Lines -gt 300 }).Count
-$ge150 = $funcs.Count
-$bigFiles = ($files | Where-Object { $_.Lines -ge 1500 }).Count
+# R527: @() обязателен — при РОВНО одном совпадении Where-Object возвращает
+# одиночный объект, у которого нет свойства Count, и метрика печаталась пустой
+# (ровно это и случилось, когда функций >1000 осталась одна).
+$over1000 = @($funcs | Where-Object { $_.Lines -gt 1000 }).Count
+$over300 = @($funcs | Where-Object { $_.Lines -gt 300 }).Count
+$ge150 = @($funcs).Count
+$bigFiles = @($files | Where-Object { $_.Lines -ge 1500 }).Count
 $backendFile = $files | Where-Object { $_.Path -eq 'internal\cppbackend\backend.go' } | Select-Object -First 1
 $backendLines = if ($backendFile) { $backendFile.Lines } else { 0 }
 

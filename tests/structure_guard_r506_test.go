@@ -46,6 +46,17 @@ var structureSkipDirsR506 = map[string]bool{
 // structureProdExtR506 — расширения боевого кода.
 var structureProdExtR506 = map[string]bool{".go": true, ".c": true, ".h": true, ".js": true}
 
+// normalizeStructurePathR506 — прямой слэш НЕЗАВИСИМО от ОС.
+//
+// R506-fix: список-база записан через `/`, но первые версии файла содержали
+// обратные слэши. На Windows `filepath.ToSlash` их меняет, на Linux — нет (это
+// no-op), поэтому все записи выглядели «устаревшими», и CI-job
+// «Test tests/... (integration, -short)» краснел на Linux при зелёном локальном
+// прогоне. Нормализация должна быть одна и без участия ОС.
+func normalizeStructurePathR506(p string) string {
+	return strings.ReplaceAll(strings.TrimSpace(p), `\`, "/")
+}
+
 // loadStructureBaselineR506 — пути из файла-списка (без комментариев).
 func loadStructureBaselineR506(t *testing.T) map[string]bool {
 	t.Helper()
@@ -61,7 +72,7 @@ func loadStructureBaselineR506(t *testing.T) map[string]bool {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		base[filepath.ToSlash(line)] = true
+		base[normalizeStructurePathR506(line)] = true
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatalf("чтение списка-базы: %v", err)
@@ -70,6 +81,22 @@ func loadStructureBaselineR506(t *testing.T) map[string]bool {
 		t.Fatal("список-база пуст: страж вырожден")
 	}
 	return base
+}
+
+// TestR506_NormalizeStructurePathIsOSIndependent — нормализация не должна
+// зависеть от ОС: `filepath.ToSlash` на Linux не меняет обратные слэши, из-за
+// чего список-база «не находил» свои же файлы (CI краснел на Linux).
+func TestR506_NormalizeStructurePathIsOSIndependent(t *testing.T) {
+	cases := map[string]string{
+		`internal\balancer\a_r100.go`: "internal/balancer/a_r100.go",
+		"internal/balancer/b_r100.go": "internal/balancer/b_r100.go",
+		`  pkg\logger\c_r489.go  `:    "pkg/logger/c_r489.go",
+	}
+	for in, want := range cases {
+		if got := normalizeStructurePathR506(in); got != want {
+			t.Errorf("normalizeStructurePathR506(%q) = %q, ожидалось %q", in, got, want)
+		}
+	}
 }
 
 // TestR506_NoNewRoundNamedProdFiles — новых боевых файлов с `_rNNN` быть не должно.
@@ -103,7 +130,7 @@ func TestR506_NoNewRoundNamedProdFiles(t *testing.T) {
 		if relErr != nil {
 			return nil
 		}
-		found = append(found, filepath.ToSlash(rel))
+		found = append(found, normalizeStructurePathR506(rel))
 		return nil
 	})
 	if err != nil {

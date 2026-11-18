@@ -28,7 +28,9 @@ import (
 
 // TestR108_SplitModeReachesBridge — opts.SplitMode обязан попадать в конфиг моста.
 func TestR108_SplitModeReachesBridge(t *testing.T) {
-	const path = "../../internal/cppbackend/backend.go"
+	// R509 (шаг R4): LoadModelWithOpts вынесен из backend.go в backend_load.go —
+	// сторож читает файл, где путь загрузки живёт сейчас. Проверка та же.
+	const path = "../../internal/cppbackend/backend_load.go"
 	src, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("не удалось прочитать %s: %v", path, err)

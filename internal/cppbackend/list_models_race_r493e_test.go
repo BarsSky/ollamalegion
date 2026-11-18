@@ -28,7 +28,9 @@
 package cppbackend
 
 import (
+	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -163,16 +165,17 @@ func TestR493e_StateReadersUseRegistryLock(t *testing.T) {
 // GGUF: проверяется не «наличие функции», а порядок в файле — место, где дефект и
 // был (backend.go:1556 писал LayoutDegraded до замка, и CI это поймал).
 func TestR493e_LoaderWritesToInfoOnlyUnderRegistryLock(t *testing.T) {
-	const path = "backend.go"
-	raw, err := os.ReadFile(path)
+	// R509 (шаг R4): загрузчик вынесен из backend.go в backend_load.go, поэтому
+	// сторож ищет файл с публикацией инстанса по СОДЕРЖИМОМУ, а не по имени файла.
+	// Проверка не ослаблена: те же два якоря, та же проверка окна между ними.
+	src, path, err := findPackageSourceContaining(t, "b.models[name] = inst")
 	if err != nil {
-		t.Fatalf("не читается %s: %v", path, err)
+		t.Fatalf("не найден файл с публикацией инстанса: %v", err)
 	}
-	src := string(raw)
 
 	publish := strings.Index(src, "b.models[name] = inst")
 	if publish < 0 {
-		t.Fatal("не найдена публикация инстанса (`b.models[name] = inst`) — сторож потерял точку отсчёта")
+		t.Fatalf("%s: не найдена публикация инстанса (`b.models[name] = inst`) — сторож потерял точку отсчёта", path)
 	}
 	// Конец окна — начало секции, которую загрузчик выполняет под b.mu.
 	const tailAnchor = "// Обновляем информацию"
@@ -211,4 +214,33 @@ func TestR493e_LoaderWritesToInfoOnlyUnderRegistryLock(t *testing.T) {
 		t.Logf("окно публикации проверено: записей в inst.info нет (кроме прогресса под b.mu), строк %d",
 			len(strings.Split(window, "\n")))
 	}
+}
+
+// findPackageSourceContaining — исходник того файла ПАКЕТА, в котором встречается
+// якорь (R509, шаг R4). Нужен сторожам, которые раньше читали backend.go по имени:
+// после разбиения по ответственности код переехал, а проверяемое свойство — нет.
+func findPackageSourceContaining(t *testing.T, anchor string) (src, path string, err error) {
+	t.Helper()
+	entries, readErr := os.ReadDir(".")
+	if readErr != nil {
+		return "", "", readErr
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names) // детерминированный порядок обхода
+	for _, n := range names {
+		raw, readFileErr := os.ReadFile(n)
+		if readFileErr != nil {
+			continue
+		}
+		if strings.Contains(string(raw), anchor) {
+			return string(raw), n, nil
+		}
+	}
+	return "", "", fmt.Errorf("якорь %q не встречается ни в одном боевом файле пакета", anchor)
 }

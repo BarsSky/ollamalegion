@@ -1,3 +1,41 @@
+## [0.7.313 - R509 / читаемость, шаг R4: `internal/cppbackend` разбит по ответственности, 2026-11-19]
+
+Шаг R4 плана `docs/plans/2026-11-19-readability-refactor.md`. Поведение не менялось: это
+перенос текста, а не правка логики.
+
+**Что было:** `internal/cppbackend/backend.go` — 4450 строк и 103 функции в одном файле
+(поэтому любая правка требовала чтения всего пути загрузки), плюс два файла пакета выше
+порога приёмки: `hf_downloader.go` 1699, `model_manager.go` 1326.
+
+**Что стало.** `backend.go` — **273 строки** (пакет, типы, `ModelInfo`, `Backend`), остальное —
+15 файлов по ответственности: `backend_load_history.go` 183 · `backend_model_instance.go` 106 ·
+`backend_lifecycle.go` 271 · `backend_context.go` 58 · `backend_load.go` 869 (здесь
+`LoadModelWithOpts`) · `backend_vram.go` 305 · `backend_limits.go` 235 · `backend_unload.go` 546 ·
+`backend_inference.go` 513 · `backend_chat_template.go` 126 · `backend_gpu_metrics.go` 162 ·
+`backend_metrics_internal.go` 113 · `backend_system_ram.go` 27 · `backend_gguf.go` 491 ·
+`backend_system_misc.go` 93. `hf_downloader.go` → 290 + `hf_downloader_search.go` 470 +
+`hf_downloader_download.go` 821; `model_manager.go` → 369 + `model_manager_scan.go` 517 +
+`model_manager_resolve.go` 417. **Самый большой файл пакета — 869 строк** (приёмка: ≤800 для
+`backend.go`, ≤1200 для остальных).
+
+**Как доказано, что поведение не изменилось.** Разрезание по границам верхнеуровневых
+объявлений: ни одна строка не переписана. Доказательство — склейка: конкатенация тел новых
+файлов в исходном порядке совпадает с телом исходного файла (нормализованное сравнение;
+расхождение только в пустых строках-разделителях). Плюс `go vet` — 0, `gofmt` — чисто,
+`go test -tags llama_stub ./internal/cppbackend/` — зелёный и **`-race` — зелёный** (52 с).
+Правило R493e сохранено: `inst.info` пишется только под `b.mu`.
+
+**Единственная правка в существующих тестах (и почему её нельзя было избежать).** Два сторожа
+проверяли код ПО ИМЕНИ ФАЙЛА и после разбиения «потеряли точку отсчёта»:
+`TestR493e_LoaderWritesToInfoOnlyUnderRegistryLock` читал `backend.go` (публикация инстанса
+уехала в `backend_load.go`), `TestR380STEWARD_GateResultFeedsBridgeServers` разбирал
+`backend.go` (путь загрузки — там же). Проверяемое свойство не ослаблено: R493e-сторож ищет
+файл с якорем `b.models[name] = inst` по СОДЕРЖИМОМУ пакета (те же два якоря, то же окно между
+ними), R380-сторож разбирает `backend_load.go` (те же AST-утверждения про аргумент моста).
+
+**Замеры после шага** (`scripts/structure_report.ps1`): `cppbackend/backend.go` — **273** (цель
+≤800, OK); файлов ≥1500 строк — **26** (было 27); функций >1000 строк — по-прежнему 2 (это
+`proxyRequestLlamaCpp` и `writeChatStreamResponseWithTools` — шаги R2/R3).
 ## [0.7.312 - R508 / стенд: образы пересобраны, §6 и четыре страницы WebUI проверены живьём, 2026-11-19]
 
 Закрывает «дополнительную» часть задачи: пересборка WebUI и факты о страницах, проверка §6

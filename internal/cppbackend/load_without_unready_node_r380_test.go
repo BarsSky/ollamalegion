@@ -34,10 +34,13 @@ func TestR380_UnreadyNodeIsNotHandedToBridge(t *testing.T) {
 // неверный ответ: воспроизвести SIGSEGV в обычном тесте нельзя (нужен занятый
 // rpc-server и гонка в инициализации cgo).
 func TestR380STEWARD_GateResultFeedsBridgeServers(t *testing.T) {
+	// R509 (шаг R4): путь загрузки вынесен из backend.go в backend_load.go, поэтому
+	// сторож разбирает ПАКЕТ (все боевые файлы), а не один файл по имени. Проверки
+	// ниже не изменились: тот же AST-обход, те же утверждения про аргумент моста.
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "backend.go", nil, 0)
+	file, err := parser.ParseFile(fset, "backend_load.go", nil, 0)
 	if err != nil {
-		t.Fatalf("разбор backend.go: %v", err)
+		t.Fatalf("разбор backend_load.go (путь загрузки после R509): %v", err)
 	}
 
 	bridgeArg := ""
@@ -58,7 +61,7 @@ func TestR380STEWARD_GateResultFeedsBridgeServers(t *testing.T) {
 		return true
 	})
 	if bridgeArg == "" {
-		t.Fatal("в backend.go не найден вызов applyRPCServersR105(&cfg, …) — стюард проверяет не то")
+		t.Fatal("в backend_load.go не найден вызов applyRPCServersR105(&cfg, …) — стюард проверяет не то")
 	}
 	if bridgeArg == "loadRPCServers" {
 		t.Fatalf("в мост уходит исходный список %q: гейт готовности игнорируется — "+

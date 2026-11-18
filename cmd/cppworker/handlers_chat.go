@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 
 	"errors"
@@ -1508,237 +1509,27 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		return
 	}
 
-	fullOutput := outputBuf.String()
-	duration := time.Since(start)
-
-	// R83/v59: пустой вывод модели — один повторный проход (см.
-	// empty_output_retry_r83.go). Здесь ничего не потеряно: при raw_len=0 дельт
-	// клиенту не отправлялось.
-	// R83/v62 (2026-10-02): автоповтор ТОЛЬКО если клиент ещё ждёт.
-	// Если контекст запроса уже отменён (клиент ушёл — по своему таймауту, кнопке
-	// Stop или обрыву), повторный проход бессмысленен: он мгновенно упадёт на
-	// взведённом abort-флаге и в логе появится пугающее «повторная генерация не
-	// удалась: BRIDGE_ERR_ABORTED» (живой лог A10, запрос 5 минут в prefill).
-	// В этом случае честнее сразу закрыть стрим/отдать ошибку с причиной.
-	//
-	// R110 (2026-10-13): повторяем не только при raw_len=0, но и когда модель
-	// выдала ОДНИ служебные токены шаблона (`<end_of_turn>` и подобные): после
-	// чистки видимого текста нет, а клиенту при этом ничего не отправлено.
-	// Живой случай: gemma-4 через Cline в ~1 прогоне из 3 отвечала одним
-	// `<end_of_turn>`, и клиент получал «model produced an empty response».
-	for attempt := 1; attempt <= maxEmptyOutputRetries; attempt++ {
-		if !shouldRetryEmptyStreamingOutput(fullOutput, contentSeen.Len(), ctx) {
-			break
-		}
-		logger.Get().Warnw(i18n.T("cppworker.handlers_chat.empty_output_retry"),
-			"model", modelName, "attempt", attempt, "raw_len", len(fullOutput),
-			"raw_head", truncateForLog(fullOutput, 80),
-			"prompt_tokens", countTokensSafe(modelName, prompt))
-		outputBuf.Reset()
-		contentSeen.Reset()
-		emittedContentRawLen = 0
-		atomic.StoreInt64(&firstTokenAt, 0)
-		if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr != nil {
-			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.empty_output_retry_failed"),
-				"model", modelName, "attempt", attempt, "error", retryErr)
-			break
-		}
-		fullOutput = outputBuf.String()
-		duration = time.Since(start)
-		logger.Get().Infow(i18n.T("cppworker.handlers_chat.empty_output_retry_done"),
-			"model", modelName, "attempt", attempt, "raw_len", len(fullOutput),
-			"visible_len", contentSeen.Len())
+	fin := &chatStreamFinish{
+		sw:                   sw,
+		r:                    r,
+		ctx:                  ctx,
+		modelName:            modelName,
+		prompt:               prompt,
+		params:               params,
+		thinkOverride:        thinkOverride,
+		start:                start,
+		prefillStartTime:     prefillStartTime,
+		createdAt:            createdAt,
+		outputBuf:            &outputBuf,
+		firstTokenAt:         &firstTokenAt,
+		rcParser:             rcParser,
+		rcSendReasoning:      rcSendReasoning,
+		emittedContentRawLen: &emittedContentRawLen,
+		contentSeen:          &contentSeen,
+		streamErr:            &streamErr,
+		callback:             callback,
 	}
-
-	// R83/v67 (2026-10-02): финальный сброс reasoning-парсера — выпускаем
-	// удержанный хвост (возможный неполный маркер), иначе последние символы
-	// ответа потеряются (см. ReasoningStreamState.Finalize).
-	//
-	// R108 (2026-10-13): при think=false разбираем накопленный текст заново, но
-	// БЕЗ R91-фолбэка «незакрытый reasoning → content» — иначе текст размышлений
-	// всё равно уехал бы клиенту как ответ (в non-stream /api/chat в этом случае
-	// content пуст: см. handleChat).
-	var rTail, cTail string
-	if rcSendReasoning {
-		rTail, cTail = rcParser.FinalizeForStream()
-	} else {
-		_, contentOnly, _ := SplitReasoningContent(outputBuf.String())
-		if len(contentOnly) > emittedContentRawLen {
-			cTail = contentOnly[emittedContentRawLen:]
-		}
-	}
-	rTail = strings.ReplaceAll(rTail, `\\n`, "\n")
-	cTail = strings.ReplaceAll(cTail, `\\n`, "\n")
-	// R114b: хвост — тот же видимый канал, что и дельты (см. чистку выше).
-	cTail = stripReasoningTagsInStreamDelta(cTail)
-	if rTail != "" {
-		rcChunk := map[string]interface{}{
-			"model":      modelName,
-			"created_at": createdAt,
-			"message": map[string]interface{}{
-				"role":      "assistant",
-				"thinking":  sanitizeStreamText(rTail),
-				"reasoning": sanitizeStreamText(rTail),
-			},
-			"done": false,
-		}
-		rcJSON, _ := json.Marshal(rcChunk)
-		sw.Writef("%s\n", rcJSON)
-		sw.Flush()
-	}
-	if cTail != "" {
-		contentSeen.WriteString(cTail)
-		ccChunk := map[string]interface{}{
-			"model":      modelName,
-			"created_at": createdAt,
-			"message": map[string]string{
-				"role":    "assistant",
-				"content": sanitizeStreamText(cTail),
-			},
-			"done": false,
-		}
-		ccJSON, _ := json.Marshal(ccChunk)
-		sw.Writef("%s\n", ccJSON)
-		sw.Flush()
-	}
-
-	// 2026-06-24: ???????? ?? ?????? ????? ????? cleanFinalContent (gemma antiprompt).
-	if strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
-		errChunk := map[string]interface{}{
-			"model":       modelName,
-			"created_at":  createdAt,
-			"message":     map[string]string{"role": "assistant", "content": ""},
-			"done":        true,
-			"done_reason": "error",
-			"error":       "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
-		}
-		errJSON, _ := json.Marshal(errChunk)
-		sw.Writef("%s\n", errJSON)
-		sw.Flush()
-		return
-	}
-
-	// R402 (2026-11-05): eval_count — ВСЕ сгенерированные токены, включая
-	// размышления.
-	//
-	// ЖИВОЙ ДЕФЕКТ. Здесь считался countTokensSafe(cleanedOutput), то есть
-	// только видимый текст без think-блока. Клиенты (Cline/OpenWebUI) считают
-	// заполненность контекста как prompt_eval_count + eval_count: занижение на
-	// объём размышлений убеждало клиента, что место ещё есть, — он набивал
-	// историю до мнимого предела, получал реальное переполнение окна и показывал
-	// «увеличьте контекст вручную». Считаем по СЫРОМУ выводу, как eval_count в
-	// Ollama (туда входят все сгенерированные токены).
-	generatedTokens := countTokensSafe(modelName, fullOutput)
-	promptTokens := countTokensSafe(modelName, prompt)
-	evalNs := duration.Nanoseconds()
-	promptEvalNs := int64(0)
-	// R66b (2026-09-22): TTFT = время от начала запроса до ПЕРВОГО токена.
-	// Раньше здесь было time.Since(prefillStartTime) в конце генерации, из-за
-	// чего prompt_eval_duration совпадал с total_duration, а eval_duration
-	// получался 0 → OpenWebUI показывал tokens/sec = 0/N/A.
-	if deadline := atomic.LoadInt64(&firstTokenAt); deadline > 0 {
-		ttft := deadline - prefillStartTime.UnixNano()
-		if ttft >= 0 && ttft <= evalNs {
-			promptEvalNs = ttft
-		}
-	}
-	// R108 (2026-10-13): в финальный чанк кладём ТОЛЬКО видимый ответ, собранный
-	// из отданных дельт (contentSeen), а не сырой fullOutput.
-	//
-	// Раньше здесь был cleanFinalContent(fullOutput) — весь текст модели вместе с
-	// think-блоком. Настоящая Ollama в done-чанке отдаёт сам ответ без
-	// размышлений; из-за расхождения балансер вынужден был вырезать этот текст
-	// как «дубль» и писать WARN о несовпадении с дельтами (см.
-	// internal/balancer/llamacpp_transport.go: stripNativeDoneContent).
-	doneContent := cleanFinalContent(contentSeen.String())
-	// R231: незакрытый блок размышлений = ответ не дописан (см.
-	// FinalizeForStream). Честная причина остановки — length.
-	doneReason := "stop"
-	snapR320 := rcParser.Snapshot()
-	if snapR320.Unclosed {
-		doneReason = "length"
-	}
-	// R394 (2026-11-04): исчерпанный клиентский лимит тоже даёт length.
-	//
-	// ЖИВОЙ ПРОГОН на стенде (этот самый путь, /api/chat без tools):
-	// options.num_predict=16, eval_count=17, видимый ответ обрезан на середине
-	// фразы — а причина была "stop". Cline по "stop" закрывает ход, поэтому
-	// продолжения не будет. R320 ставил length только при НЕзакрытом блоке
-	// размышлений; закрытый блок + обрыв по бюджету давал ложное «модель
-	// закончила».
-	//
-	// Считаем по СЫРОМУ выводу: бюджет тратится и на размышления, а
-	// cleanFinalContent их вырезает — по видимому тексту лимит выглядел бы
-	// неизрасходованным. generatedTokens посчитан выше (R402) и уходит в
-	// eval_count, чтобы usage и решение о причине завершения были об одном числе.
-	if doneReason == "stop" && toolsBudgetExhaustedR394(params.NPredict, generatedTokens) {
-		doneReason = "length"
-	}
-	// R320 (2026-10-30): пустая «видимая» часть при непустых размышлениях НЕ
-	// должна уезжать клиенту молча.
-	//
-	// ЖИВАЯ ЖАЛОБА (Cline через балансер): «приходит завершение прямо посреди
-	// рассуждений, обрубая всё, что приходит после». Механика: модель ушла в
-	// размышления и уперлась в бюджет вывода — дельты thinking отданы, content
-	// пуст, и клиент получает done:true. У Cline это выглядит как ЗАКОНЧЕННЫЙ
-	// ответ без текста, поэтому он закрывает ход, а следующий запрос «продолжи»
-	// модель воспринимает как новый ход.
-	//
-	// R314 ввёл пояснение для НЕпотокового пути (handleChat); на потоковом его не
-	// было вовсе — а Cline ходит именно потоком. Теперь правило одно на обе
-	// поверхности: emptyAnswerNoticeForNativeR314.
-	//
-	// ВАЖНО: текст кладём в done-чанк только когда content-дельт НЕ было, поэтому
-	// клиент, складывающий чанки, не получит дубль (у балансера тот же инвариант —
-	// stripNativeDoneContent чистит done только при уже отданных дельтах).
-	//
-	// R461 (2026-11-06): здесь числа ИЗВЕСТНЫ (бюджет num_predict и фактически
-	// сгенерированные токены), поэтому пояснение называет проверенный факт
-	// «бюджет исчерпан / не исчерпан», а не утверждает исчерпание всегда.
-	if notice := emptyAnswerNoticeWithBudgetR461(doneContent, snapR320.ReasoningChars,
-		params.NPredict, generatedTokens); notice != "" {
-		doneContent = notice
-	}
-	// R477 (2026-11-09): сводка хода на НЕ-tools пути.
-	//
-	// Раньше строка "/api/chat stream response summary" была только на
-	// tools-пути, поэтому по обычному /api/chat (а это и есть OpenWebUI) нельзя
-	// было понять, сколько реально отдано клиенту: «токены генерировались, ответ
-	// не дошёл» разбиралось по догадке. Теперь сводка есть на обоих путях и
-	// несёт request_id, длину контента и размышлений, причину завершения и
-	// побайтовый учёт стрима (при CPPWORKER_STREAM_TRACE=1).
-	snapStreamR477 := sw.Snapshot()
-	chunksR477, traceBytesR477, traceSHAR477 := sw.StreamTrace()
-	logger.Get().Infow("/api/chat stream response summary (no tools)",
-		"request_id", getRequestID(r),
-		"model", modelName,
-		"path", "/api/chat",
-		"content_len", len(doneContent),
-		"thinking_len", snapR320.ReasoningChars,
-		"done_reason", doneReason,
-		"generated_tokens", generatedTokens,
-		"n_predict", params.NPredict,
-		"streamed_bytes", snapStreamR477.BytesWritten,
-		"stream_chunks", chunksR477,
-		"stream_bytes", traceBytesR477,
-		"stream_sha256", traceSHAR477,
-	)
-	doneChunk := map[string]interface{}{
-		"model":                modelName,
-		"created_at":           createdAt,
-		"message":              map[string]string{"role": "assistant", "content": doneContent},
-		"done":                 true,
-		"done_reason":          doneReason,
-		"total_duration":       evalNs,
-		"load_duration":        loadDurationNsR493(r.Context()),
-		"prompt_eval_count":    promptTokens,
-		"prompt_eval_duration": promptEvalNs,
-		"eval_count":           generatedTokens,
-		"eval_duration":        evalNs - promptEvalNs,
-	}
-	doneJSON, _ := json.Marshal(doneChunk)
-	sw.Writef("%s\n", doneJSON)
-	sw.Flush()
+	finishChatStream(fin)
 }
 
 // writeChatStreamResponseWithTools — streaming-ответ с поддержкой tool calling.
@@ -3258,4 +3049,267 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	doneJSON, _ := json.Marshal(finalChunk)
 	sw.Writef("%s\n", doneJSON)
 	sw.Flush()
+}
+
+// chatStreamFinish — состояние финальной части /api/chat-стрима (R526).
+//
+// Вынесено из writeChatStreamResponse: ~230 строк финализации перестали быть
+// частью 519-строчной функции. Поведение не менялось: тело перенесено дословно,
+// изменён только способ доступа к состоянию (поля вместо локальных переменных).
+type chatStreamFinish struct {
+	sw                   *safeStreamWriter
+	r                    *http.Request
+	ctx                  context.Context
+	modelName            string
+	prompt               string
+	params               bridge.GenerationParams
+	thinkOverride        *bool
+	start                time.Time
+	prefillStartTime     time.Time
+	createdAt            string
+	outputBuf            *strings.Builder
+	firstTokenAt         *int64
+	rcParser             *ReasoningStreamState
+	rcSendReasoning      bool
+	emittedContentRawLen *int
+	contentSeen          *strings.Builder
+	streamErr            *error
+	callback             func(string) bool
+}
+
+func finishChatStream(in *chatStreamFinish) {
+	// r — локальная ссылка на запрос: сторож load_duration_r493 ищет точную
+	// строку кадра с loadDurationNsR493(r.Context()), поэтому имя сохранено.
+	r := in.r
+	fullOutput := in.outputBuf.String()
+	duration := time.Since(in.start)
+
+	// R83/v59: пустой вывод модели — один повторный проход (см.
+	// empty_output_retry_r83.go). Здесь ничего не потеряно: при raw_len=0 дельт
+	// клиенту не отправлялось.
+	// R83/v62 (2026-10-02): автоповтор ТОЛЬКО если клиент ещё ждёт.
+	// Если контекст запроса уже отменён (клиент ушёл — по своему таймауту, кнопке
+	// Stop или обрыву), повторный проход бессмысленен: он мгновенно упадёт на
+	// взведённом abort-флаге и в логе появится пугающее «повторная генерация не
+	// удалась: BRIDGE_ERR_ABORTED» (живой лог A10, запрос 5 минут в prefill).
+	// В этом случае честнее сразу закрыть стрим/отдать ошибку с причиной.
+	//
+	// R110 (2026-10-13): повторяем не только при raw_len=0, но и когда модель
+	// выдала ОДНИ служебные токены шаблона (`<end_of_turn>` и подобные): после
+	// чистки видимого текста нет, а клиенту при этом ничего не отправлено.
+	// Живой случай: gemma-4 через Cline в ~1 прогоне из 3 отвечала одним
+	// `<end_of_turn>`, и клиент получал «model produced an empty response».
+	for attempt := 1; attempt <= maxEmptyOutputRetries; attempt++ {
+		if !shouldRetryEmptyStreamingOutput(fullOutput, in.contentSeen.Len(), in.ctx) {
+			break
+		}
+		logger.Get().Warnw(i18n.T("cppworker.handlers_chat.empty_output_retry"),
+			"model", in.modelName, "attempt", attempt, "raw_len", len(fullOutput),
+			"raw_head", truncateForLog(fullOutput, 80),
+			"prompt_tokens", countTokensSafe(in.modelName, in.prompt))
+		in.outputBuf.Reset()
+		in.contentSeen.Reset()
+		(*in.emittedContentRawLen) = 0
+		atomic.StoreInt64(in.firstTokenAt, 0)
+		if retryErr := generateStreamWithRamFallback(in.ctx, in.modelName, in.prompt, in.params, in.callback, false); retryErr != nil {
+			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.empty_output_retry_failed"),
+				"model", in.modelName, "attempt", attempt, "error", retryErr)
+			break
+		}
+		fullOutput = in.outputBuf.String()
+		duration = time.Since(in.start)
+		logger.Get().Infow(i18n.T("cppworker.handlers_chat.empty_output_retry_done"),
+			"model", in.modelName, "attempt", attempt, "raw_len", len(fullOutput),
+			"visible_len", in.contentSeen.Len())
+	}
+
+	// R83/v67 (2026-10-02): финальный сброс reasoning-парсера — выпускаем
+	// удержанный хвост (возможный неполный маркер), иначе последние символы
+	// ответа потеряются (см. ReasoningStreamState.Finalize).
+	//
+	// R108 (2026-10-13): при think=false разбираем накопленный текст заново, но
+	// БЕЗ R91-фолбэка «незакрытый reasoning → content» — иначе текст размышлений
+	// всё равно уехал бы клиенту как ответ (в non-stream /api/chat в этом случае
+	// content пуст: см. handleChat).
+	var rTail, cTail string
+	if in.rcSendReasoning {
+		rTail, cTail = in.rcParser.FinalizeForStream()
+	} else {
+		_, contentOnly, _ := SplitReasoningContent(in.outputBuf.String())
+		if len(contentOnly) > (*in.emittedContentRawLen) {
+			cTail = contentOnly[(*in.emittedContentRawLen):]
+		}
+	}
+	rTail = strings.ReplaceAll(rTail, `\\n`, "\n")
+	cTail = strings.ReplaceAll(cTail, `\\n`, "\n")
+	// R114b: хвост — тот же видимый канал, что и дельты (см. чистку выше).
+	cTail = stripReasoningTagsInStreamDelta(cTail)
+	if rTail != "" {
+		rcChunk := map[string]interface{}{
+			"model":      in.modelName,
+			"created_at": in.createdAt,
+			"message": map[string]interface{}{
+				"role":      "assistant",
+				"thinking":  sanitizeStreamText(rTail),
+				"reasoning": sanitizeStreamText(rTail),
+			},
+			"done": false,
+		}
+		rcJSON, _ := json.Marshal(rcChunk)
+		in.sw.Writef("%s\n", rcJSON)
+		in.sw.Flush()
+	}
+	if cTail != "" {
+		in.contentSeen.WriteString(cTail)
+		ccChunk := map[string]interface{}{
+			"model":      in.modelName,
+			"created_at": in.createdAt,
+			"message": map[string]string{
+				"role":    "assistant",
+				"content": sanitizeStreamText(cTail),
+			},
+			"done": false,
+		}
+		ccJSON, _ := json.Marshal(ccChunk)
+		in.sw.Writef("%s\n", ccJSON)
+		in.sw.Flush()
+	}
+
+	// 2026-06-24: ???????? ?? ?????? ????? ????? cleanFinalContent (gemma antiprompt).
+	if strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
+		errChunk := map[string]interface{}{
+			"model":       in.modelName,
+			"created_at":  in.createdAt,
+			"message":     map[string]string{"role": "assistant", "content": ""},
+			"done":        true,
+			"done_reason": "error",
+			"error":       "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, in.prompt too long, or model issue.",
+		}
+		errJSON, _ := json.Marshal(errChunk)
+		in.sw.Writef("%s\n", errJSON)
+		in.sw.Flush()
+		return
+	}
+
+	// R402 (2026-11-05): eval_count — ВСЕ сгенерированные токены, включая
+	// размышления.
+	//
+	// ЖИВОЙ ДЕФЕКТ. Здесь считался countTokensSafe(cleanedOutput), то есть
+	// только видимый текст без think-блока. Клиенты (Cline/OpenWebUI) считают
+	// заполненность контекста как prompt_eval_count + eval_count: занижение на
+	// объём размышлений убеждало клиента, что место ещё есть, — он набивал
+	// историю до мнимого предела, получал реальное переполнение окна и показывал
+	// «увеличьте контекст вручную». Считаем по СЫРОМУ выводу, как eval_count в
+	// Ollama (туда входят все сгенерированные токены).
+	generatedTokens := countTokensSafe(in.modelName, fullOutput)
+	promptTokens := countTokensSafe(in.modelName, in.prompt)
+	evalNs := duration.Nanoseconds()
+	promptEvalNs := int64(0)
+	// R66b (2026-09-22): TTFT = время от начала запроса до ПЕРВОГО токена.
+	// Раньше здесь было time.Since(in.prefillStartTime) в конце генерации, из-за
+	// чего prompt_eval_duration совпадал с total_duration, а eval_duration
+	// получался 0 → OpenWebUI показывал tokens/sec = 0/N/A.
+	if deadline := atomic.LoadInt64(in.firstTokenAt); deadline > 0 {
+		ttft := deadline - in.prefillStartTime.UnixNano()
+		if ttft >= 0 && ttft <= evalNs {
+			promptEvalNs = ttft
+		}
+	}
+	// R108 (2026-10-13): в финальный чанк кладём ТОЛЬКО видимый ответ, собранный
+	// из отданных дельт (in.contentSeen), а не сырой fullOutput.
+	//
+	// Раньше здесь был cleanFinalContent(fullOutput) — весь текст модели вместе с
+	// think-блоком. Настоящая Ollama в done-чанке отдаёт сам ответ без
+	// размышлений; из-за расхождения балансер вынужден был вырезать этот текст
+	// как «дубль» и писать WARN о несовпадении с дельтами (см.
+	// internal/balancer/llamacpp_transport.go: stripNativeDoneContent).
+	doneContent := cleanFinalContent(in.contentSeen.String())
+	// R231: незакрытый блок размышлений = ответ не дописан (см.
+	// FinalizeForStream). Честная причина остановки — length.
+	doneReason := "stop"
+	snapR320 := in.rcParser.Snapshot()
+	if snapR320.Unclosed {
+		doneReason = "length"
+	}
+	// R394 (2026-11-04): исчерпанный клиентский лимит тоже даёт length.
+	//
+	// ЖИВОЙ ПРОГОН на стенде (этот самый путь, /api/chat без tools):
+	// options.num_predict=16, eval_count=17, видимый ответ обрезан на середине
+	// фразы — а причина была "stop". Cline по "stop" закрывает ход, поэтому
+	// продолжения не будет. R320 ставил length только при НЕзакрытом блоке
+	// размышлений; закрытый блок + обрыв по бюджету давал ложное «модель
+	// закончила».
+	//
+	// Считаем по СЫРОМУ выводу: бюджет тратится и на размышления, а
+	// cleanFinalContent их вырезает — по видимому тексту лимит выглядел бы
+	// неизрасходованным. generatedTokens посчитан выше (R402) и уходит в
+	// eval_count, чтобы usage и решение о причине завершения были об одном числе.
+	if doneReason == "stop" && toolsBudgetExhaustedR394(in.params.NPredict, generatedTokens) {
+		doneReason = "length"
+	}
+	// R320 (2026-10-30): пустая «видимая» часть при непустых размышлениях НЕ
+	// должна уезжать клиенту молча.
+	//
+	// ЖИВАЯ ЖАЛОБА (Cline через балансер): «приходит завершение прямо посреди
+	// рассуждений, обрубая всё, что приходит после». Механика: модель ушла в
+	// размышления и уперлась в бюджет вывода — дельты thinking отданы, content
+	// пуст, и клиент получает done:true. У Cline это выглядит как ЗАКОНЧЕННЫЙ
+	// ответ без текста, поэтому он закрывает ход, а следующий запрос «продолжи»
+	// модель воспринимает как новый ход.
+	//
+	// R314 ввёл пояснение для НЕпотокового пути (handleChat); на потоковом его не
+	// было вовсе — а Cline ходит именно потоком. Теперь правило одно на обе
+	// поверхности: emptyAnswerNoticeForNativeR314.
+	//
+	// ВАЖНО: текст кладём в done-чанк только когда content-дельт НЕ было, поэтому
+	// клиент, складывающий чанки, не получит дубль (у балансера тот же инвариант —
+	// stripNativeDoneContent чистит done только при уже отданных дельтах).
+	//
+	// R461 (2026-11-06): здесь числа ИЗВЕСТНЫ (бюджет num_predict и фактически
+	// сгенерированные токены), поэтому пояснение называет проверенный факт
+	// «бюджет исчерпан / не исчерпан», а не утверждает исчерпание всегда.
+	if notice := emptyAnswerNoticeWithBudgetR461(doneContent, snapR320.ReasoningChars,
+		in.params.NPredict, generatedTokens); notice != "" {
+		doneContent = notice
+	}
+	// R477 (2026-11-09): сводка хода на НЕ-tools пути.
+	//
+	// Раньше строка "/api/chat stream response summary" была только на
+	// tools-пути, поэтому по обычному /api/chat (а это и есть OpenWebUI) нельзя
+	// было понять, сколько реально отдано клиенту: «токены генерировались, ответ
+	// не дошёл» разбиралось по догадке. Теперь сводка есть на обоих путях и
+	// несёт request_id, длину контента и размышлений, причину завершения и
+	// побайтовый учёт стрима (при CPPWORKER_STREAM_TRACE=1).
+	snapStreamR477 := in.sw.Snapshot()
+	chunksR477, traceBytesR477, traceSHAR477 := in.sw.StreamTrace()
+	logger.Get().Infow("/api/chat stream response summary (no tools)",
+		"request_id", getRequestID(r),
+		"model", in.modelName,
+		"path", "/api/chat",
+		"content_len", len(doneContent),
+		"thinking_len", snapR320.ReasoningChars,
+		"done_reason", doneReason,
+		"generated_tokens", generatedTokens,
+		"n_predict", in.params.NPredict,
+		"streamed_bytes", snapStreamR477.BytesWritten,
+		"stream_chunks", chunksR477,
+		"stream_bytes", traceBytesR477,
+		"stream_sha256", traceSHAR477,
+	)
+	doneChunk := map[string]interface{}{
+		"model":                in.modelName,
+		"created_at":           in.createdAt,
+		"message":              map[string]string{"role": "assistant", "content": doneContent},
+		"done":                 true,
+		"done_reason":          doneReason,
+		"total_duration":       evalNs,
+		"load_duration":        loadDurationNsR493(r.Context()),
+		"prompt_eval_count":    promptTokens,
+		"prompt_eval_duration": promptEvalNs,
+		"eval_count":           generatedTokens,
+		"eval_duration":        evalNs - promptEvalNs,
+	}
+	doneJSON, _ := json.Marshal(doneChunk)
+	in.sw.Writef("%s\n", doneJSON)
+	in.sw.Flush()
 }

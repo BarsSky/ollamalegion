@@ -169,6 +169,13 @@ rpc-ссылки) + `handlers_backends_list.go` 616 + `handlers_backends_mutate.
 склейка тел в исходном порядке совпадает с исходным телом (нормализованное сравнение); плюс
 `go vet` 0, `gofmt` чисто, `go test` и `-race` по `cmd/cppworker` и `internal/api` зелёные.
 
+**Итог R526 (часть R3, факт).** `cmd/cppworker/handlers_chat.go`:
+`writeChatStreamResponse` **519 → 283 + 236** — финализация вынесена в
+`finishChatStream(in *chatStreamFinish)` в том же файле (перенос в другой файл
+запрещён: `load_duration_r493_test.go` считает точную строку кадра в
+`handlers_chat.go`). Изменяемые величины передаются указателями, поэтому callback
+и `defer` видят те же значения; в `finishChatStream` сохранён локальный `r := in.r`,
+чтобы строка `loadDurationNsR493(r.Context())` осталась буквально прежней.
 **Итог R525 (часть R3, факт).** `cmd/cppworker/main.go`: `main()` 599 строк разобран
 на этапы — `initWorkerLogging` (~20), `loadWorkerConfig` (~15),
 `logStartupLayoutDecision` (~25), `applyEnvOverrides` (286), `initWorkerBackend` (~12),

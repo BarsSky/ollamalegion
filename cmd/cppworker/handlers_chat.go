@@ -3057,24 +3057,26 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 // частью 519-строчной функции. Поведение не менялось: тело перенесено дословно,
 // изменён только способ доступа к состоянию (поля вместо локальных переменных).
 type chatStreamFinish struct {
-	sw                   *safeStreamWriter
-	r                    *http.Request
+	// Порядок полей — под fieldalignment: крупные значения, затем строки,
+	// затем указатели (иначе govet: «struct with 376 pointer bytes could be 320»).
+	params               bridge.GenerationParams
+	start                time.Time
+	prefillStartTime     time.Time
 	ctx                  context.Context
 	modelName            string
 	prompt               string
-	params               bridge.GenerationParams
-	thinkOverride        *bool
-	start                time.Time
-	prefillStartTime     time.Time
 	createdAt            string
+	callback             func(string) bool
+	sw                   *safeStreamWriter
+	r                    *http.Request
+	thinkOverride        *bool
 	outputBuf            *strings.Builder
 	firstTokenAt         *int64
 	rcParser             *ReasoningStreamState
-	rcSendReasoning      bool
 	emittedContentRawLen *int
 	contentSeen          *strings.Builder
 	streamErr            *error
-	callback             func(string) bool
+	rcSendReasoning      bool
 }
 
 func finishChatStream(in *chatStreamFinish) {

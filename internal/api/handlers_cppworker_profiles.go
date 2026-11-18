@@ -964,17 +964,7 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	// Стек использует ОДИН токен (deployments/.env → LB_API_TOKEN во всех
 	// сервисах), поэтому токен балансера гарантированно подходит cppworker'у.
 	// Тот же порядок поиска уже применяется в nctx_reload_handlers.go:1083-1089.
-	cppToken := backend.CppWorkerApiToken
-	if cppToken == "" {
-		cppToken = strings.TrimSpace(os.Getenv("CPPWORKER_API_TOKEN"))
-	}
-	if cppToken == "" {
-		cppToken = strings.TrimSpace(os.Getenv("LB_API_TOKEN"))
-	}
-	if cppToken != "" {
-		req.Header.Set("X-API-Token", cppToken)
-		req.Header.Set("Authorization", "Bearer "+cppToken)
-	}
+	applyCppWorkerAuth(req, backend)
 
 	httpClient := &http.Client{}
 	resp, err := httpClient.Do(req)
@@ -988,6 +978,17 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 		msg := string(respBody)
 		if len(msg) > 2048 {
 			msg = msg[:2048]
+		}
+		// R517 (§2.7 разбора): RELOAD → LOAD. Если воркер говорит «модель не
+		// загружена» (404 "model not currently loaded"), перезагружать нечего —
+		// надо ГРУЗИТЬ. Раньше это превращалось в skipped, и оператор видел
+		// «применено», хотя модель так и не поднималась; живой сценарий — узел,
+		// где файл модели лежит на диске (R516 теперь разрешает выбрать такой узел).
+		// Прецедент того же правила: internal/balancer/nctx_reload.go:1379-1404.
+		if resp.StatusCode == http.StatusNotFound && isModelNotLoadedMessage(msg) {
+			logger.Get().Warnw("applyModelProfile: reload вернул «модель не загружена» — грузим через /api/models/load",
+				"backend", backend.ID, "model", modelName, "body", msg)
+			return s.loadModelOnCppWorker(backend, body)
 		}
 		return "", fmt.Errorf("cppworker reload returned %d: %s", resp.StatusCode, msg)
 	}
@@ -1004,6 +1005,84 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	}
 	// Тело не JSON или без status — считаем, что операция выполнена.
 	return "reloaded", nil
+}
+
+// applyCppWorkerAuth — заголовки доступа к воркеру (X-API-Token + Bearer).
+//
+// Вынесено в R517, потому что теперь два пути (reload и его fallback load)
+// обязаны отправлять ОДИН И ТОТ ЖЕ набор заголовков. Раньше это было одно место,
+// и fallback молча получил бы 401 на воркере с включённой аутентификацией.
+func applyCppWorkerAuth(req *http.Request, backend types.Backend) {
+	cppToken := backend.CppWorkerApiToken
+	if cppToken == "" {
+		cppToken = strings.TrimSpace(os.Getenv("CPPWORKER_API_TOKEN"))
+	}
+	if cppToken == "" {
+		cppToken = strings.TrimSpace(os.Getenv("LB_API_TOKEN"))
+	}
+	if cppToken != "" {
+		req.Header.Set("X-API-Token", cppToken)
+		req.Header.Set("Authorization", "Bearer "+cppToken)
+	}
+}
+
+// isModelNotLoadedMessage — ответ воркера «перезагружать нечего».
+func isModelNotLoadedMessage(msg string) bool {
+	low := strings.ToLower(msg)
+	return strings.Contains(low, "not currently loaded") ||
+		strings.Contains(low, "not loaded") ||
+		strings.Contains(low, "model not found")
+}
+
+// loadModelOnCppWorker — POST /api/models/load с ТЕМ ЖЕ телом, что у reload (R517).
+//
+// Отличия от reload: нет поля force (у /api/models/load его не существует, а
+// строгий декодер воркера ответит 400 unknown field) и есть ожидание загрузки
+// (?wait=true&waitTimeoutSec=300) — иначе apply вернул бы успех, не дождавшись
+// модели. Тело переиспользуется целиком: второй сборки параметров не заводим,
+// иначе reload и load разъехались бы по набору полей (так уже было с
+// contextPerSeq/enableReasoning — R119).
+func (s *Server) loadModelOnCppWorker(backend types.Backend, body map[string]interface{}) (string, error) {
+	host := backend.Host
+	port := backend.CppWorkerPort
+	if port <= 0 {
+		port = 18092
+	}
+	target := fmt.Sprintf("http://%s:%d/api/models/load?wait=true&waitTimeoutSec=300", host, port)
+	payload := make(map[string]interface{}, len(body))
+	for key, value := range body {
+		if key == "force" {
+			continue
+		}
+		payload[key] = value
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("build load request: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, target, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return "", fmt.Errorf("build load request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Real-IP", "balancer")
+	applyCppWorkerAuth(req, backend)
+
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("load request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := string(respBody)
+		if len(msg) > 2048 {
+			msg = msg[:2048]
+		}
+		return "", fmt.Errorf("cppworker load returned %d: %s", resp.StatusCode, msg)
+	}
+	return "loaded", nil
 }
 
 // profilePresence — R67a (2026-09-23): какие поля тела запроса БЫЛИ переданы,

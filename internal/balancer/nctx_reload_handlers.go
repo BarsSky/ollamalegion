@@ -2133,10 +2133,18 @@ func (p *Proxy) maxVRAMNCtxKnownFromMetrics(backendID string) (int, bool) {
 	}
 	p.metricsMgr.mu.RLock()
 	defer p.metricsMgr.mu.RUnlock()
-	if lm, ok := p.metricsMgr.llamaMetrics[backendID]; ok && lm != nil {
-		return lm.MaxVRAMNCtx, lm.VramKnown
+	lm, ok := p.metricsMgr.llamaMetrics[backendID]
+	if !ok || lm == nil {
+		return 0, false
 	}
-	return 0, false
+	// R520 (2026-11-19): признак «0 — это ДЕЙСТВИТЕЛЬНО нет места» требует ещё и
+	// загруженной модели. Воркер считает exact-fit ПО ЗАГРУЖЕННЫМ моделям
+	// (handleListModels), поэтому на пустом узле max_vram_n_ctx=0 значит «не
+	// считали», а не «нет места». Живой факт: свежая установка стенда (0 моделей,
+	// 7 ГБ свободной VRAM) отдаёт 0 при vram_known=true — первая версия R519
+	// объявляла это «места нет», что было неправдой.
+	known := lm.VramKnown && len(lm.LoadedModels) > 0
+	return lm.MaxVRAMNCtx, known
 }
 
 // resolveModelMaxContext выбирает modelMaxContext для preflight v3 (Round 43).

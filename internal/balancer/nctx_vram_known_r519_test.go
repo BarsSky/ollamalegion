@@ -33,6 +33,14 @@ func r519Proxy(t *testing.T, vramKnown bool, maxVRAMNCtx int) *Proxy {
 	proxy.metricsMgr.llamaMetrics["backend-1"] = &types.LlamaCppMetrics{
 		MaxVRAMNCtx: maxVRAMNCtx,
 		VramKnown:   vramKnown,
+		LoadedModels: []types.LlamaCppModel{{
+			Name:          "Qwen3-4B-Instruct-2507-Q4_K_M",
+			State:         "loaded",
+			ContextLength: 32768,
+			ContextPerSeq: 32768,
+			MaxSlots:      1,
+			Parallel:      1,
+		}},
 	}
 	proxy.metricsMgr.mu.Unlock()
 	return proxy
@@ -78,6 +86,31 @@ func TestR519_UnknownVRAMKeepsOldAdvice(t *testing.T) {
 	}
 	if strings.Contains(msg, "free VRAM is not enough") {
 		t.Fatalf("неизвестная VRAM не должна выдаваться за «места нет»: %s", msg)
+	}
+}
+
+// TestR520_EmptyBackendIsUnknownNotNoRoom — на пустом узле «0» = «не считали».
+//
+// Живой факт: только что развёрнутый стенд (0 моделей, ~7 ГБ свободной VRAM)
+// отдаёт max_vram_n_ctx=0 при vram_known=true. Первая версия R519 объявляла это
+// «свободной VRAM не хватает» — неправда, вводящая оператора в заблуждение.
+func TestR520_EmptyBackendIsUnknownNotNoRoom(t *testing.T) {
+	proxy := r519Proxy(t, true, 0)
+	// Убираем загруженные модели: exact-fit воркер для них не считал.
+	proxy.metricsMgr.mu.Lock()
+	proxy.metricsMgr.llamaMetrics["backend-1"].LoadedModels = nil
+	proxy.metricsMgr.mu.Unlock()
+
+	_, _, msg, status := proxy.preflightNCtxReloadIfNeeded(
+		context.Background(), "backend-1", "Qwen3-4B-Instruct-2507-Q4_K_M", r519Body(), "/api/chat")
+	if status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("статус = %d, want 413 (текст: %s)", status, msg)
+	}
+	if strings.Contains(msg, "free VRAM is not enough") {
+		t.Fatalf("на пустом узле нельзя утверждать «места нет»: %s", msg)
+	}
+	if !strings.Contains(msg, "auto_reload_max_n_ctx") {
+		t.Fatalf("ожидался прежний текст про операторский лимит; получено: %s", msg)
 	}
 }
 

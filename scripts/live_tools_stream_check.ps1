@@ -1,4 +1,4 @@
-﻿# live_tools_stream_check.ps1 — живая проверка tools-стрима после R527.
+# live_tools_stream_check.ps1 — живая проверка tools-стрима после R527.
 #
 # ЧТО ПРОВЕРЯЕТ на РЕАЛЬНОМ запросе через балансер (18080):
 #   1. стрим действительно потоковый: приходит >= 2 NDJSON-кадра с непустым
@@ -6,6 +6,11 @@
 #   2. финальный кадр — done:true с done_reason из {stop, length};
 #   3. служебные маркеры/разметка вызова не утекли в content дельт;
 #   4. в ответе есть хотя бы один content-байт (клиент не получил пустоту).
+#
+# ВАЖНО про короткие ответы. Tools-путь держит последние 32 байта вывода, поэтому
+# ответ короче окна (например «2 + 2 = 4») уходит ОДНИМ кадром — это правильное
+# поведение R424, а не «не потоковый» ответ. Промпт ниже просит связный ответ на
+# несколько предложений: только на нём видно дельты.
 #
 # ЗАПУСК:
 #   pwsh scripts/live_tools_stream_check.ps1 -Model 'Qwen3-4B-Instruct-2507-Q4_K_M'
@@ -39,7 +44,7 @@ $payload = @{
     model    = $Model
     stream   = $true
     messages = @(
-        @{ role = 'user'; content = 'Answer in one short sentence: what is 2+2? Do not use tools.' }
+        @{ role = 'user'; content = 'Explain in three short sentences why a graphics card is faster than a CPU for neural networks. Do not use tools.' }
     )
     tools    = @($tool)
     options  = @{ num_predict = $MaxTokens; temperature = 0.2 }

@@ -141,17 +141,70 @@ func (s *Store) applyFile(data []byte) {
 			"path", s.path, "version", doc.Version, "expected", SchemaVersion)
 		return
 	}
+	// R518: починка шаблонов, у которых params — МАССИВ вместо объекта.
+	// Такие записи создал сид до исправления (seed.go писал json.Marshal(rec.Params))
+	// и они уже лежат в файлах у операторов. Без починки после обновления шаблоны
+	// остались бы «видимыми, но не применяемыми»: сервер отвечает
+	// 400 invalid_params, а usage.usedByProfiles приходит пустым.
+	templates := nonNilTemplates(doc.Templates)
+	repaired := 0
+	for i := range templates {
+		fixed, changed := repairTemplateParams(templates[i].Params)
+		if !changed {
+			continue
+		}
+		templates[i].Params = fixed
+		repaired++
+	}
 	s.mu.Lock()
 	s.doc = Doc{
 		Version:         SchemaVersion,
 		Recommendations: nonNilRecommendations(doc.Recommendations),
-		Templates:       nonNilTemplates(doc.Templates),
+		Templates:       templates,
 	}
 	s.mu.Unlock()
 	logger.Get().Infow("reference: файл хранилища загружен",
 		"path", s.path,
 		"recommendations", len(doc.Recommendations),
-		"templates", len(doc.Templates))
+		"templates", len(templates),
+		"params_repaired", repaired)
+	if repaired > 0 {
+		if warn := s.persistWarningLocked(); warn != "" {
+			logger.Get().Warnw("reference: починенные params шаблонов остались только в памяти",
+				"path", s.path, "repaired", repaired, "warning", warn)
+		} else {
+			logger.Get().Infow("reference: params шаблонов починены (массив → объект)",
+				"path", s.path, "repaired", repaired)
+		}
+	}
+}
+
+// repairTemplateParams — массив params → плоский объект (R518).
+//
+// Возвращает (исправленные params, был ли изменён). Ошибки не фатальны: если
+// содержимое не разбирается ни как объект, ни как массив, запись остаётся как
+// есть — пусть сервер честно ответит invalid_params, чем мы молча потеряем данные.
+func repairTemplateParams(raw json.RawMessage) (json.RawMessage, bool) {
+	if _, err := DecodeParamsObject(raw); err == nil {
+		return raw, false // уже объект — ничего не трогаем
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if !strings.HasPrefix(trimmed, "[") {
+		return raw, false
+	}
+	var arr []Param
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return raw, false
+	}
+	obj, err := ParamsToObject(arr)
+	if err != nil {
+		return raw, false
+	}
+	fixed, err := json.Marshal(obj)
+	if err != nil {
+		return raw, false
+	}
+	return json.RawMessage(fixed), true
 }
 
 // EnsureSeedTemplates — ДОБАВИТЬ недостающие seed-шаблоны в СУЩЕСТВУЮЩЕЕ

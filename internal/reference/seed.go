@@ -100,7 +100,20 @@ func seedTemplates(now string) []Template {
 		if !ok {
 			continue // сид без рекомендации не создаём: шаблон обязан иметь источник
 		}
-		params, err := json.Marshal(rec.Params)
+		// R518 (2026-11-19): Params шаблона — ПЛОСКИЙ ОБЪЕКТ (см. Template.Params
+		// и DecodeParamsObject), а rec.Params — массив {name,value}. Здесь стоял
+		// `json.Marshal(rec.Params)`, то есть в сид уезжал МАССИВ.
+		//
+		// ЖИВОЙ ФАКТ: все три seed-шаблона на стенде имели params как массив, и
+		// применение любого из них отвечало
+		//   400 invalid_params: params must be a JSON object, got an array
+		// а `usage.usedByProfiles` молча приходил пустым (DecodeParamsObject
+		// возвращал ошибку). Шаблоны существовали, но не работали.
+		obj, err := ParamsToObject(rec.Params)
+		if err != nil {
+			continue
+		}
+		params, err := json.Marshal(obj)
 		if err != nil {
 			continue
 		}

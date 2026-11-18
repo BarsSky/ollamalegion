@@ -1,3 +1,35 @@
+## [0.7.314 - R510 / читаемость, шаг R3 (часть): обработчики по операциям, 2026-11-19]
+
+Часть шага R3 плана `docs/plans/2026-11-19-readability-refactor.md`: разбиты два файла
+обработчиков. Только перенос текста, логика не менялась.
+
+**`cmd/cppworker/handlers_openai.go` 2496 → шесть файлов:** `handlers_openai.go` 306 (типы
+запроса и перевод OpenAI→chat), `handlers_openai_chat.go` 595 (`/v1/chat/completions`),
+`handlers_openai_stream.go` 710 (писатели стрима: `writeOpenAIChatStream`,
+`writeToolCallsStream`, `writeStaticTextStream`), `handlers_openai_completions.go` 519
+(`/v1/completions`), `handlers_openai_models.go` 191 (`/v1/models`, `/v1/models/{id}`),
+`handlers_openai_usage.go` 90 (usage-чанк и подсчёт токенов).
+
+**`internal/api/handlers_backends.go` 2363 → четыре файла:** `handlers_backends.go` 624
+(роли, rpc-ссылки, диспетчер), `handlers_backends_list.go` 616 (`listBackends`, `getBackend`,
+перерегистрация), `handlers_backends_mutate.go` 667 (add/update/delete), `handlers_backends_extra.go`
+355 (capacity, launch-config, evacuate, идентичность воркера/агента).
+
+**Доказательство неизменности поведения** — то же, что в R509: разрезание по границам
+верхнеуровневых объявлений, и склейка тел новых файлов в исходном порядке совпадает с телом
+исходного файла (нормализованное сравнение). Плюс `go vet` — 0, `gofmt` — чисто,
+`go test -tags llama_stub ./cmd/cppworker/ ./internal/api/` — зелёные, **`-race`** — зелёный.
+Файлов ≥1500 строк стало **23** (было 25).
+
+**Три сторожа читали `handlers_openai.go` по имени** и «потеряли точку отсчёта»
+(`load_duration_r493`, `reasoning_split_policy_r108`, `terminal_budget_wiring_r402`). Добавлен
+хелпер `readHandlerSourcesR510` (склеивает ВСЕ файлы `handlers_openai*.go` пакета), сторожа
+переведены на него. Ожидания не менялись: «два измерения загрузки на OpenAI-поверхности» —
+по-прежнему 2, запреты на гейт reasoning по имени модели — те же.
+
+**Остаток R3:** `writeChatStreamResponseWithTools` 1426 и `writeChatStreamResponse` 519 →
+общий модуль стрима поверх `safeStreamWriter`; `handlers_model.go` (3476) по операциям;
+`main()` 599 → `buildServer/registerRoutes/run`.
 ## [0.7.313 - R509 / читаемость, шаг R4: `internal/cppbackend` разбит по ответственности, 2026-11-19]
 
 Шаг R4 плана `docs/plans/2026-11-19-readability-refactor.md`. Поведение не менялось: это

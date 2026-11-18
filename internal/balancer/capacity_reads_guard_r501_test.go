@@ -40,11 +40,28 @@ var capacityStaticReadAllowR501 = map[string]string{
 }
 
 // capacityStaticReadAllowAPI_R501 — то же для пакета api: конфиг-ручки.
-var capacityStaticReadAllowAPI_R501 = map[string]bool{
-	"handlers_backends.go":    true, // CRUD лимитов (то, что оператор записывает)
-	"handlers_cluster.go":     true, // merge конфигурации копированием
-	"handlers_agents.go":      true, // регистрация агента
-	"handlers_autosuggest.go": true, // отчёт «что записать в конфиг»
+//
+// R510 (шаг R3): правила заданы ПРЕФИКСАМИ, а не точными именами. Причина живая:
+// `handlers_backends.go` разбит на `handlers_backends{,_list,_mutate,_extra}.go`, и
+// точный allow-список сразу покраснел на законных чтениях статики в CRUD-ручках
+// (это то, что оператор записывает в конфиг), хотя ни одно решение не изменилось.
+// Префикс переживает разбиение, а проверка остаётся той же: чтение статики разрешено
+// ТОЛЬКО в файлах конфиг-ручек.
+var capacityStaticReadAllowAPI_R501 = []string{
+	"handlers_backends",       // CRUD лимитов (то, что оператор записывает)
+	"handlers_cluster.go",     // merge конфигурации копированием
+	"handlers_agents.go",      // регистрация агента
+	"handlers_autosuggest.go", // отчёт «что записать в конфиг»
+}
+
+// apiHandlerAllowedR501 — файл принадлежит конфиг-ручкам (по префиксу).
+func apiHandlerAllowedR501(name string) bool {
+	for _, p := range capacityStaticReadAllowAPI_R501 {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestR501_StaticCapacityNotReadOnRoutingPaths — статику читают только файлы из
@@ -59,11 +76,9 @@ func TestR501_StaticCapacityNotReadOnRoutingPaths(t *testing.T) {
 	pkgs := []pkg{
 		{dir: ".", allow: capacityStaticReadAllowR501},
 		{dir: "../../internal/api", allow: func() map[string]string {
-			m := map[string]string{}
-			for name := range capacityStaticReadAllowAPI_R501 {
-				m[name] = "конфиг-ручка"
-			}
-			return m
+			// Для api-пакета allow-список префиксный (см. apiHandlerAllowedR501):
+			// ключи карты не нужны, проверка идёт через matcher ниже.
+			return nil
 		}()},
 	}
 
@@ -84,7 +99,9 @@ func TestR501_StaticCapacityNotReadOnRoutingPaths(t *testing.T) {
 				t.Fatalf("разбор %s: %v", name, err)
 			}
 			allowed := false
-			if _, ok := p.allow[name]; ok {
+			if p.allow == nil {
+				allowed = apiHandlerAllowedR501(name) // пакет api: префиксы
+			} else if _, ok := p.allow[name]; ok {
 				allowed = true
 			}
 			hits := 0

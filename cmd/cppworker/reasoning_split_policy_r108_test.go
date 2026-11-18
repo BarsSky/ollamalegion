@@ -24,7 +24,6 @@
 package main
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -158,7 +157,7 @@ func TestR108_VisibleContentCleanedOnAllSurfaces(t *testing.T) {
 		fragments []string
 	}{
 		{"handlers_chat.go", []string{"cleanFinalContent(output)"}},
-		{"handlers_openai.go", []string{
+		{"handlers_openai", []string{
 			"cleanFinalContent(visibleOut)",
 			"cleanFinalContent(textValue)",
 			// R430 (2026-11-04): ветка «вызова нет» собирает видимый текст через
@@ -178,11 +177,9 @@ func TestR108_VisibleContentCleanedOnAllSurfaces(t *testing.T) {
 		}},
 	}
 	for _, tc := range cases {
-		src, err := os.ReadFile(tc.file)
-		if err != nil {
-			t.Fatalf("не удалось прочитать %s: %v", tc.file, err)
-		}
-		text := string(src)
+		// R510 (шаг R3): значение — ПРЕФИКС набора файлов (handlers_openai*),
+		// поэтому читаем склейку через readHandlerSourcesR510.
+		text := readHandlerSourcesR510(t, tc.file)
 		for _, frag := range tc.fragments {
 			if !strings.Contains(text, frag) {
 				t.Errorf("%s: не найден вызов %s — видимый ответ на этой поверхности "+
@@ -204,14 +201,11 @@ func TestR108_VisibleContentCleanedOnAllSurfaces(t *testing.T) {
 // Запрещено: гейтить emit/разбор через IsReasoningModel /
 // IsReasoningEnabledForRequest в обработчиках ответа.
 func TestR108_ResponsePathsDoNotGateReasoningByModelName(t *testing.T) {
-	files := []string{"handlers_chat.go", "handlers_generate.go", "handlers_openai.go"}
+	files := []string{"handlers_chat.go", "handlers_generate.go", "handlers_openai"}
 	forbidden := []string{"IsReasoningModel(", "IsReasoningEnabledForRequest("}
 
 	for _, name := range files {
-		src, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatalf("не удалось прочитать %s: %v", name, err)
-		}
+		src := []byte(readHandlerSourcesR510(t, name))
 		// Комментарии не считаем: в них эти имена упоминаются как «так было раньше».
 		text := stripLineComments(string(src))
 		for _, token := range forbidden {

@@ -1,6 +1,6 @@
 # Читаемость и разбиение перегруженных файлов (не путать с «двумя мозгами»)
 
-**Дата:** 2026-11-19. **Статус:** 🟡 **R1, R4 и R7 ЗАКРЫТЫ** (R506 0.7.310 — стражи структуры; R509 0.7.313 — `internal/cppbackend` разбит по ответственности; R507 0.7.311 — одна реализация хелперов). Впереди R2 (`proxyRequestLlamaCpp` по стадиям), R3 (`cmd/cppworker`), R5 (277 `_rNNN` → тематические имена), R6 (WebUI-модули).
+**Дата:** 2026-11-19. **Статус:** 🟡 **R1, R4 и R7 закрыты; в R3 сделана часть** (R506 0.7.310 — стражи структуры; R509 0.7.313 — `internal/cppbackend` по ответственности; R510 0.7.314 — `handlers_openai.go` и `handlers_backends.go` разбиты по операциям; R507 0.7.311 — одна реализация хелперов). Впереди: R2 (`proxyRequestLlamaCpp` по стадиям), остаток R3 (стрим-писатели `handlers_chat.go`, `handlers_model.go`, `main()`), R5 (277 `_rNNN` → тематические имена), R6 (WebUI-модули).
 **Замер на момент R506 (2026-11-19, `scripts/structure_report.ps1`):** функций > 1000 строк — 2,
 > 300 — 41, ≥ 150 — 120; файлов ≥ 1500 строк — 27; `internal/cppbackend/backend.go` — 4117;
 **боевых файлов с `_rNNN` — 277** (список-база `docs/architecture/structure-baseline-r506.txt`).
@@ -151,12 +151,32 @@ foreach ($x in $f | ? Extension -in '.go','.h' | ? { $_.Name -notmatch '_test' }
 **Приёмка:** ни одна функция файла не > 300 строк; существующие golden/SSE-тесты зелёные без правок; трасса стадий
 (`stage_r477`) печатает те же стадии в том же порядке на одном и том же запросе до/после.
 
-### R3. `cmd/cppworker`: стрим-писатели и хендлеры
+### R3. `cmd/cppworker`: стрим-писатели и хендлеры — **частично сделано (R510)**
 - `writeChatStreamResponseWithTools` (1426) и `writeChatStreamResponse` (519) → общий модуль стрима поверх
   `safeStreamWriter` (этап 7 плана R459–R478 сделан частично: «один писатель потока»).
 - `handlers_model.go` (3476) разделить по операциям: `load` / `reload` / `unload` / `params` / `progress`.
 - `main()` (599) → `buildServer()`, `registerRoutes()`, `run()`.
 **Приёмка:** `go test ./cmd/cppworker/...` зелёные; «ровно один терминатор» (golden NDJSON/SSE) — байт-в-байт.
+**Итог R510 (часть R3, факт).** Разбиты два файла с обработчиками — по операциям, без
+правки логики: `cmd/cppworker/handlers_openai.go` 2496 → `handlers_openai.go` 306
+(типы и перевод запроса) + `handlers_openai_chat.go` 595 + `handlers_openai_stream.go` 710
+(писатели стрима) + `handlers_openai_completions.go` 519 + `handlers_openai_models.go` 191 +
+`handlers_openai_usage.go` 90; `internal/api/handlers_backends.go` 2363 → 624 (роли и
+rpc-ссылки) + `handlers_backends_list.go` 616 + `handlers_backends_mutate.go` 667 +
+`handlers_backends_extra.go` 355. Файлов ≥1500 строк стало 23 (было 25).
+
+Доказательство неизменности поведения то же, что в R4: разрезание по границам объявлений и
+склейка тел в исходном порядке совпадает с исходным телом (нормализованное сравнение); плюс
+`go vet` 0, `gofmt` чисто, `go test` и `-race` по `cmd/cppworker` и `internal/api` зелёные.
+
+Сторожа, читавшие `handlers_openai.go` по имени (`load_duration_r493`, `reasoning_split_policy_r108`,
+`terminal_budget_wiring_r402`), переведены на новый хелпер `readHandlerSourcesR510` — он склеивает
+ВСЕ файлы `handlers_openai*.go` пакета. Ожидания не менялись (например «два измерения загрузки» —
+по-прежнему 2); изменился только способ собрать текст.
+
+**Остаток R3:** `writeChatStreamResponseWithTools` (1426) и `writeChatStreamResponse` (519) —
+общий модуль стрима поверх `safeStreamWriter`; `handlers_model.go` по операциям
+(load/reload/unload/params/progress); `main()` 599 → `buildServer/registerRoutes/run`.
 
 ### R4. `internal/cppbackend/backend.go`: 4117 строк, 103 функции — **СДЕЛАНО (R509)**
 Разделить по ответственности: жизненный цикл инстанса · загрузка/выгрузка · параметры и профили · снимки состояния

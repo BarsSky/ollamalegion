@@ -37,17 +37,17 @@ func readMainSourceR402(t *testing.T, name string) string {
 // TestR402_NoCallbackCounterForBudget — решение об усечении не имеет права
 // опираться на sw.TokensSent().
 func TestR402_NoCallbackCounterForBudget(t *testing.T) {
-	openai := readMainSourceR402(t, "handlers_openai.go")
+	openai := readHandlerSourcesR510(t, "handlers_openai")
 	if strings.Contains(openai, "TokensSent() >= int64(params.NPredict)") {
-		t.Fatal("handlers_openai.go: бюджет снова считается по callback'ам " +
+		t.Fatal("handlers_openai*: бюджет снова считается по callback'ам " +
 			"(sw.TokensSent()) — это класс R394: callback'ов меньше, чем токенов")
 	}
 	if !strings.Contains(openai, "toolsBudgetExhaustedR394(params.NPredict, generatedTokens)") {
-		t.Fatal("handlers_openai.go: усечение обязано считаться через " +
+		t.Fatal("handlers_openai*: усечение обязано считаться через " +
 			"toolsBudgetExhaustedR394(params.NPredict, generatedTokens) по сырому выводу")
 	}
 	if !regexp.MustCompile(`generatedTokens\s*:=\s*countTokensSafe\(modelName,\s*fullOutput\)`).MatchString(openai) {
-		t.Fatal("handlers_openai.go: generatedTokens должен считаться токенизатором по fullOutput")
+		t.Fatal("handlers_openai*: generatedTokens должен считаться токенизатором по fullOutput")
 	}
 
 	gen := readMainSourceR402(t, "handlers_generate.go")

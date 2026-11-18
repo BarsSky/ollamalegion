@@ -27,8 +27,8 @@ import (
 func setupHandlerR60_57TestBackend(t *testing.T) {
 	t.Helper()
 	cfg := cppbackend.Config{
-		ModelsDir:       t.TempDir(),
-		DefaultCtxSize:  4096,
+		ModelsDir:        t.TempDir(),
+		DefaultCtxSize:   4096,
 		DefaultBatchSize: 512,
 	}
 	backend = cppbackend.NewBackend(cfg)

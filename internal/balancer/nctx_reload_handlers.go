@@ -1040,18 +1040,37 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		// настройки. Когда физический потолок неизвестен (0 = poller ещё не
 		// опросил бэкенд) — не выдумываем число и говорим только про
 		// операторский лимит, как раньше.
-		physicalMax := p.getMaxVRAMNCtxFromMetrics(backendID)
+		// R519 (2026-11-19): «0» у max_vram_n_ctx означает ДВЕ разные вещи, и
+		// раньше они склеивались в «неизвестно».
+		//
+		// Воркер отдаёт max_vram_n_ctx=0 в двух случаях: (а) он ещё не измерил
+		// VRAM (vram_known=false) — тогда честно «неизвестно»; (б) VRAM измерена,
+		// но свободной не хватает даже на минимальное окно (vram_known=true,
+		// типично — модель уже занимает карту). Живой факт стенда: при загруженной
+		// 4B моделью /api/models отдаёт max_vram_n_ctx=0 и vram_known=true, а
+		// балансер в отказе советовал «Raise LB_NCTX_RELOAD_MAX_N_CTX» — совет,
+		// который ничего не создаст: места в VRAM нет.
+		physicalMax, physicalKnown := p.maxVRAMNCtxKnownFromMetrics(backendID)
 		binding := effCeil
 		if physicalMax > 0 && physicalMax < binding {
 			binding = physicalMax
+		}
+		if physicalKnown && physicalMax == 0 {
+			binding = 0
 		}
 		logger.Get().Warnw(i18n.T("balancer.nctx_reload_handlers.requested_above_limit_no_reload_warn"),
 			"backend", backendID, "model", modelName,
 			"requested_n_ctx", requestedNCtx,
 			"auto_reload_max_n_ctx", effCeil,
 			"max_vram_n_ctx", physicalMax,
+			"vram_known", physicalKnown,
 			"binding_limit", binding,
 			"hint", i18n.T("balancer.nctx_reload_handlers.requested_above_limit_hint"))
+		if physicalKnown && physicalMax == 0 {
+			return bodyBuf, false,
+				formatNCtxVRAMExhaustedRefusal(requestedNCtx, effCeil, modelName),
+				http.StatusRequestEntityTooLarge
+		}
 		return bodyBuf, false,
 			formatNCtxCeilingRefusal(requestedNCtx, effCeil, physicalMax, modelName),
 			http.StatusRequestEntityTooLarge
@@ -1690,6 +1709,21 @@ func formatNCtxCeilingRefusal(requested, operatorMax, physicalMax int, modelName
 		requested, operatorMax, modelName)
 }
 
+// formatNCtxVRAMExhaustedRefusal — отказ, когда VRAM измерена и свободного места
+// НЕТ ВООБЩЕ (max_vram_n_ctx=0 при vram_known=true). R519.
+//
+// Отличие от formatNCtxCeilingRefusal: там «физический предел меньше операторского»,
+// и совет поднять настройку бессмыслен. Здесь предела-числа нет вовсе: свободной
+// VRAM не хватает даже на минимальное окно сверх загруженного. Поэтому не называем
+// выдуманное число и не советуем «поднять лимит» — только освободить память.
+func formatNCtxVRAMExhaustedRefusal(requested, operatorMax int, modelName string) string {
+	return fmt.Sprintf("requested num_ctx=%d cannot be served: free VRAM is not enough for any window "+
+		"growth right now (max_vram_n_ctx=0 with VRAM measured; operator limit auto_reload_max_n_ctx=%d is not "+
+		"the binding constraint). Model %q keeps its loaded window and the balancer cannot grow it automatically. "+
+		"Free VRAM: unload other models, lower gpu layers, use kv cache q8_0/q4_0, or lower the model's parallel "+
+		"value (slots divide the window, so parallel=1 gives one session the whole window).",
+		requested, operatorMax, modelName)
+}
 func (p *Proxy) preflightNCtxReloadIfNeededSync(
 	ctx context.Context,
 	backendID, modelName string,
@@ -2085,6 +2119,24 @@ func (p *Proxy) getMaxVRAMNCtxFromMetrics(backendID string) int {
 		return lm.MaxVRAMNCtx
 	}
 	return 0
+}
+
+// maxVRAMNCtxKnownFromMetrics — то же значение + признак «VRAM измерена» (R519).
+//
+// Нужен, потому что 0 у max_vram_n_ctx означает и «неизвестно» (vram_known=false),
+// и «свободной VRAM не хватает ни на какое окно» (vram_known=true). Отказ по этим
+// двум случаям обязан звучать по-разному: во втором советовать поднять
+// LB_NCTX_RELOAD_MAX_N_CTX бесполезно.
+func (p *Proxy) maxVRAMNCtxKnownFromMetrics(backendID string) (int, bool) {
+	if p == nil || p.metricsMgr == nil {
+		return 0, false
+	}
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+	if lm, ok := p.metricsMgr.llamaMetrics[backendID]; ok && lm != nil {
+		return lm.MaxVRAMNCtx, lm.VramKnown
+	}
+	return 0, false
 }
 
 // resolveModelMaxContext выбирает modelMaxContext для preflight v3 (Round 43).

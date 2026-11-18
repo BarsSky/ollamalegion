@@ -76,6 +76,18 @@ type llamaCppMetricsPoller struct {
 	// закончилось: тест, который после остановки поллера подменял
 	// p.modelCatalog, ловил data race на -race (CI: TestPlacementPlanR96_*).
 	catalogWg sync.WaitGroup
+
+	// R528 (2026-11-18): фоновое обновление идентичности воркера
+	// (refreshWorkerIdentityR493) идёт отдельной горутиной и пишет в
+	// state.Backend под state.mu. Без учёта в WaitGroup Stop()+WaitStopped()
+	// НЕ гарантировали, что эти записи закончились: читатель, берущий снимок
+	// бэкенда без state.mu (image_lock_followup_test.go:191), ловил data race
+	// на -race:
+	//   Read at ... TestGPUIndexLock_ExplicitGPUZeroConflictsWithItself
+	//   Previous write at ... setNonEmptyR493 <- refreshWorkerIdentityR493
+	// Ровно та же история уже была с каталогом моделей (R245) — лечится так же:
+	// WaitStopped обязан дождаться и этих горутин.
+	identityWg sync.WaitGroup
 }
 
 // newLlamaCppMetricsPoller создаёт poller с интервалом по умолчанию 30 секунд.
@@ -138,8 +150,20 @@ func (p *llamaCppMetricsPoller) WaitStopped(d time.Duration) bool {
 	}
 	// R245: дождаться и фонового обновления каталога (см. catalogWg): иначе
 	// возврат из WaitStopped не означает, что p.modelCatalog больше не читают.
+	// R528: и фонового обновления идентичности воркера (см. identityWg): иначе
+	// поздняя запись в state.Backend гоняется с читателями снимка.
+	if !waitGroupWithin(&p.catalogWg, deadline) {
+		return false
+	}
+	return waitGroupWithin(&p.identityWg, deadline)
+}
+
+// waitGroupWithin — дождаться группы до дедлайна. Вынесено, чтобы два ожидания
+// в WaitStopped (каталог и идентичность) не дублировали код и одинаково
+// уважали один и тот же бюджет времени.
+func waitGroupWithin(wg *sync.WaitGroup, deadline time.Time) bool {
 	waitCh := make(chan struct{})
-	go func() { p.catalogWg.Wait(); close(waitCh) }()
+	go func() { wg.Wait(); close(waitCh) }()
 	select {
 	case <-waitCh:
 		return true
@@ -210,10 +234,16 @@ func (p *llamaCppMetricsPoller) pollAll() {
 		// узла: живой случай — образ gpu-r261112-2146, а /api/v1/backends показывал
 		// 261110-1925.
 		//
-		// ОТДЕЛЬНОЙ горутиной и БЕЗ wg: узел может не ответить (5-секундный
-		// таймаут), и тогда ожидание идентичности удлиняло бы цикл метрик — этим
-		// уже ломался тайминг тестов (CI поймал на R6047: ровно 5.01 с).
-		go p.refreshWorkerIdentityR493(b)
+		// ОТДЕЛЬНОЙ горутиной и БЕЗ wg цикла метрик: узел может не ответить
+		// (5-секундный таймаут), и тогда ожидание идентичности удлиняло бы цикл
+		// метрик — этим уже ломался тайминг тестов (CI поймал на R6047: ровно
+		// 5.01 с). R528: но в identityWg горутина учитывается, чтобы
+		// Stop()+WaitStopped() действительно ждали окончания записи в бэкенд.
+		p.identityWg.Add(1)
+		go func(bi backendInfo) {
+			defer p.identityWg.Done()
+			p.refreshWorkerIdentityR493(bi)
+		}(b)
 	}
 	wg.Wait()
 

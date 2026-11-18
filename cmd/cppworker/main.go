@@ -259,88 +259,10 @@ func logStartupLayoutDecision(log *zap.SugaredLogger, cfg cppbackend.Config, rpc
 }
 
 // applyEnvOverrides — env-переопределения при старте (R525).
-func applyEnvOverrides(cfgPtr *cppbackend.Config, log *zap.SugaredLogger) {
+
+// applyLayoutEnvOverrides — tensor_split/split_mode/main-gpu/llama-build и журнал раскладки (R525).
+func applyLayoutEnvOverrides(cfgPtr *cppbackend.Config, log *zap.SugaredLogger) {
 	cfg := *cfgPtr
-	// Если --port не передан явно (равен default 18092), а CPPWORKER_PORT
-	// задан в env с отличным значением — применяем env.
-	if !isFlagSet("port") {
-		if envPort := os.Getenv("CPPWORKER_PORT"); envPort != "" {
-			if p, err := strconv.Atoi(envPort); err == nil && p > 0 && p <= 65535 {
-				*port = p
-				log.Infow("applied CPPWORKER_PORT from env (flag default not overridden)", "port", p)
-			}
-		}
-	}
-	// RAM fallback feature flags из env (если флаги не переданы явно).
-	// R60.18 F4: единый helper — вызывается и на startup, и на /config/reload
-	// (handlers_config.go) с одинаковым приоритетом CLI flag > env > default.
-	applyRAMFallbackFromEnvWithSkip(ramFallbackNCtx, ramFallbackGpuLayers, ramFallbackMaxNCtx,
-		isFlagSet("ram-fallback-n-ctx"), isFlagSet("ram-fallback-gpu-layers"), isFlagSet("ram-fallback-max-n-ctx"))
-	// ram-fallback-allow-tools из env (если флаг не передан явно).
-	if !isFlagSet("ram-fallback-allow-tools") {
-		if envVal := os.Getenv("CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS"); envVal != "" {
-			*ramFallbackAllowTools = parseBoolEnv(envVal)
-			log.Infow("applied CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS from env",
-				"ram_fallback_allow_tools", *ramFallbackAllowTools)
-		}
-	}
-	// Применяем флаг к глобальной переменной (используется в inference.go).
-	tryRamFallbackReloadAllowTools = *ramFallbackAllowTools
-	// auto-offload из env (если флаг не передан явно).
-	if !isFlagSet("auto-offload") {
-		if envVal := os.Getenv("CPPWORKER_AUTO_OFFLOAD"); envVal != "" {
-			*autoOffload = parseBoolEnv(envVal)
-			log.Infow("applied CPPWORKER_AUTO_OFFLOAD from env", "auto_offload", *autoOffload)
-		}
-	}
-	// auto-tune-nctx из env (если флаг не передан явно).
-	if !isFlagSet("auto-tune-nctx") {
-		if envVal := os.Getenv("CPPWORKER_AUTO_TUNE_NCTX"); envVal != "" {
-			*autoTuneNCtx = parseBoolEnv(envVal)
-			log.Infow("applied CPPWORKER_AUTO_TUNE_NCTX from env", "auto_tune_nctx", *autoTuneNCtx)
-		}
-	}
-	// CPPWORKER_AUTO_KV_CACHE: auto-select optimal kvCacheType in fallback_no_meta.
-	// When true (default), tries q4_0→q8_0→f16 based on available VRAM.
-	// Set to false to always use f16. No CLI flag — env-only.
-	if envVal := os.Getenv("CPPWORKER_AUTO_KV_CACHE"); envVal != "" {
-		autoKVCacheEnabled = parseBoolEnv(envVal)
-		log.Infow("applied CPPWORKER_AUTO_KV_CACHE from env", "auto_kv_cache", autoKVCacheEnabled)
-	}
-
-	// WriteTimeout/ReadTimeout — через env (флаги имеют приоритет).
-	//
-	// R83/v67 (2026-10-02): оба по умолчанию 0 (без таймаута). Duration-кап на
-	// ответ сервера — это ровно тот класс таймаутов, который «мешает корректной
-	// работе»: WriteTimeout=30m обрывал генерацию (и догрузку модели, которую
-	// клиент ждёт в том же соединении) ровно посередине. Ненулевое значение
-	// теперь возможно только осознанно — через флаг или env, и это пишется в лог
-	// как WARNING, чтобы «почему оборвалось» больше не искали вслепую.
-	if !isFlagSet("write-timeout") {
-		if envVal := os.Getenv("CPPWORKER_WRITE_TIMEOUT"); envVal != "" {
-			if d, err := time.ParseDuration(envVal); err == nil && d >= 0 {
-				*writeTimeout = d
-				log.Infow("applied CPPWORKER_WRITE_TIMEOUT from env", "write_timeout", d.String())
-			}
-		}
-	}
-	if !isFlagSet("read-timeout") {
-		if envVal := os.Getenv("CPPWORKER_READ_TIMEOUT"); envVal != "" {
-			if d, err := time.ParseDuration(envVal); err == nil && d >= 0 {
-				*readTimeout = d
-				log.Infow("applied CPPWORKER_READ_TIMEOUT from env", "read_timeout", d.String())
-			}
-		}
-	}
-	if *writeTimeout > 0 {
-		log.Warnw(i18n.T("cppworker.main.write_timeout_enabled"),
-			"write_timeout", writeTimeout.String())
-	}
-	if *readTimeout > 0 {
-		log.Warnw(i18n.T("cppworker.main.read_timeout_enabled"),
-			"read_timeout", readTimeout.String())
-	}
-
 	// Phase 8 P.4 (2026-07-11): multi-GPU tensor_split + split_mode.
 	// CPPWORKER_TENSOR_SPLIT — comma-separated proportions, e.g. "0.5,0.5"
 	// for 2-GPU box, "0.7,0.3" for uneven split. Empty = auto.
@@ -459,6 +381,92 @@ func applyEnvOverrides(cfgPtr *cppbackend.Config, log *zap.SugaredLogger) {
 			"servers", cfg.RPCServers)
 	}
 
+	*cfgPtr = cfg
+}
+
+func applyEnvOverrides(cfgPtr *cppbackend.Config, log *zap.SugaredLogger) {
+	cfg := *cfgPtr
+	// Если --port не передан явно (равен default 18092), а CPPWORKER_PORT
+	// задан в env с отличным значением — применяем env.
+	if !isFlagSet("port") {
+		if envPort := os.Getenv("CPPWORKER_PORT"); envPort != "" {
+			if p, err := strconv.Atoi(envPort); err == nil && p > 0 && p <= 65535 {
+				*port = p
+				log.Infow("applied CPPWORKER_PORT from env (flag default not overridden)", "port", p)
+			}
+		}
+	}
+	// RAM fallback feature flags из env (если флаги не переданы явно).
+	// R60.18 F4: единый helper — вызывается и на startup, и на /config/reload
+	// (handlers_config.go) с одинаковым приоритетом CLI flag > env > default.
+	applyRAMFallbackFromEnvWithSkip(ramFallbackNCtx, ramFallbackGpuLayers, ramFallbackMaxNCtx,
+		isFlagSet("ram-fallback-n-ctx"), isFlagSet("ram-fallback-gpu-layers"), isFlagSet("ram-fallback-max-n-ctx"))
+	// ram-fallback-allow-tools из env (если флаг не передан явно).
+	if !isFlagSet("ram-fallback-allow-tools") {
+		if envVal := os.Getenv("CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS"); envVal != "" {
+			*ramFallbackAllowTools = parseBoolEnv(envVal)
+			log.Infow("applied CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS from env",
+				"ram_fallback_allow_tools", *ramFallbackAllowTools)
+		}
+	}
+	// Применяем флаг к глобальной переменной (используется в inference.go).
+	tryRamFallbackReloadAllowTools = *ramFallbackAllowTools
+	// auto-offload из env (если флаг не передан явно).
+	if !isFlagSet("auto-offload") {
+		if envVal := os.Getenv("CPPWORKER_AUTO_OFFLOAD"); envVal != "" {
+			*autoOffload = parseBoolEnv(envVal)
+			log.Infow("applied CPPWORKER_AUTO_OFFLOAD from env", "auto_offload", *autoOffload)
+		}
+	}
+	// auto-tune-nctx из env (если флаг не передан явно).
+	if !isFlagSet("auto-tune-nctx") {
+		if envVal := os.Getenv("CPPWORKER_AUTO_TUNE_NCTX"); envVal != "" {
+			*autoTuneNCtx = parseBoolEnv(envVal)
+			log.Infow("applied CPPWORKER_AUTO_TUNE_NCTX from env", "auto_tune_nctx", *autoTuneNCtx)
+		}
+	}
+	// CPPWORKER_AUTO_KV_CACHE: auto-select optimal kvCacheType in fallback_no_meta.
+	// When true (default), tries q4_0→q8_0→f16 based on available VRAM.
+	// Set to false to always use f16. No CLI flag — env-only.
+	if envVal := os.Getenv("CPPWORKER_AUTO_KV_CACHE"); envVal != "" {
+		autoKVCacheEnabled = parseBoolEnv(envVal)
+		log.Infow("applied CPPWORKER_AUTO_KV_CACHE from env", "auto_kv_cache", autoKVCacheEnabled)
+	}
+
+	// WriteTimeout/ReadTimeout — через env (флаги имеют приоритет).
+	//
+	// R83/v67 (2026-10-02): оба по умолчанию 0 (без таймаута). Duration-кап на
+	// ответ сервера — это ровно тот класс таймаутов, который «мешает корректной
+	// работе»: WriteTimeout=30m обрывал генерацию (и догрузку модели, которую
+	// клиент ждёт в том же соединении) ровно посередине. Ненулевое значение
+	// теперь возможно только осознанно — через флаг или env, и это пишется в лог
+	// как WARNING, чтобы «почему оборвалось» больше не искали вслепую.
+	if !isFlagSet("write-timeout") {
+		if envVal := os.Getenv("CPPWORKER_WRITE_TIMEOUT"); envVal != "" {
+			if d, err := time.ParseDuration(envVal); err == nil && d >= 0 {
+				*writeTimeout = d
+				log.Infow("applied CPPWORKER_WRITE_TIMEOUT from env", "write_timeout", d.String())
+			}
+		}
+	}
+	if !isFlagSet("read-timeout") {
+		if envVal := os.Getenv("CPPWORKER_READ_TIMEOUT"); envVal != "" {
+			if d, err := time.ParseDuration(envVal); err == nil && d >= 0 {
+				*readTimeout = d
+				log.Infow("applied CPPWORKER_READ_TIMEOUT from env", "read_timeout", d.String())
+			}
+		}
+	}
+	if *writeTimeout > 0 {
+		log.Warnw(i18n.T("cppworker.main.write_timeout_enabled"),
+			"write_timeout", writeTimeout.String())
+	}
+	if *readTimeout > 0 {
+		log.Warnw(i18n.T("cppworker.main.read_timeout_enabled"),
+			"read_timeout", readTimeout.String())
+	}
+
+	applyLayoutEnvOverrides(cfgPtr, log)
 	// R123 (2026-10-16, пункт 2 разбора стенда): УЗЕЛ РАСКЛАДКИ ВНУТРИ cppworker.
 	//
 	// Раньше донором был отдельный контейнер (deployments/docker-compose.rpc-node.yml:

@@ -152,86 +152,13 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	preflightCtx, _ := growthNumbersSlotR447(r.Context())
 	preflightBody, preflightOK, preflightMsg, preflightStatus := p.preflightNCtxReloadIfNeeded(
 		preflightCtx, backendID, modelFromCtx, bodyBuf, originalPath)
-	if preflightOK {
-		bodyBuf = preflightBody // preflight удалил num_ctx из body (cppworker возьмёт new n_ctx)
-		// R301 (2026-10-29): подменённое preflight'ом тело обязано ДОЙТИ до воркера.
-		//
-		// ЖИВОЙ ДЕФЕКТ (стенд fcef935c): вердикт R301 отработал верно
-		// (log: served_with_loaded_window=true, required=16384, loaded=8192),
-		// но воркер всё равно получил num_ctx=16384 и ответил кодом 2:
-		// «requested n_ctx=16384 exceeds model's effective n_ctx=8192».
-		// Причина — ВТОРОЙ источник тела: нативный путь кладёт исходные байты в
-		// translatedBody (см. :84) и именно их отправляет (:259). Патч bodyBuf
-		// никуда не попадал, то есть решение принималось, логировалось — и
-		// терялось. На нативном пути перевода нет, поэтому достаточно взять
-		// ровно то тело, что вернул preflight.
-		if nativePath {
-			translatedBody = bodyBuf
-		} else if patched := patchNumCtxInBody(translatedBody, ExtractNumCtxFromBody(bodyBuf)); patched != nil {
-			// Переведённое (OpenAI) тело — другой формат: правим num_ctx тем же
-			// значением, что preflight поставил в Ollama-теле (если оно там есть).
-			translatedBody = patched
-		}
-		logger.Get().Debugw("proxyRequestLlamaCpp: preflight n_ctx reload applied",
-			"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyBuf),
-			"native_path", nativePath, "upstream_body_len", len(translatedBody))
-	} else if preflightMsg != "" || preflightStatus != http.StatusOK {
-		// R118.7 (2026-10-14): окно физически недостижимо (cppworker отвечал 422
-		// n_ctx_infeasible) — клиенту понятный 413, а не «async-reload» 503,
-		// который он будет повторять бесконечно.
-		if preflightStatus == http.StatusRequestEntityTooLarge {
-			logger.Get().Infow(i18n.T("balancer.llamacpp_transport.window_infeasible_413_info"),
-				"backend", backendID, "model", modelFromCtx, "msg", preflightMsg)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-NCtx-Reload-Decision", "infeasible")
-			body := []byte(fmt.Sprintf(`{"error":%q,"decision":"n_ctx_infeasible"}`, preflightMsg))
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
-			_, _ = w.Write(body)
-			return nil
-		}
-		// R119 (2026-10-15): модели НЕТ на бэкенде (cppworker ответил 404 на
-		// попытку загрузки) — клиенту терминальный 404 с причиной и списком
-		// доступных моделей. 503 здесь означал бы «повтори», и клиент уходил в
-		// retry-цикл до своего таймаута («Internal Server Error»).
-		//
-		// awaitModelMissing закрывает гонку: загрузка отсутствующей модели падает
-		// за миллисекунды, а запись в реестр появляется чуть позже решения
-		// preflight'а — короткое ожидание делает САМЫЙ ПЕРВЫЙ запрос терминальным.
-		if p.awaitModelMissing(backendID, modelFromCtx, 500*time.Millisecond) {
-			reason, available, _ := p.modelMissingFor(backendID, modelFromCtx)
-			logger.Get().Warnw(i18n.T("balancer.llamacpp_transport.model_missing_404_info"),
-				"backend", backendID, "model", modelFromCtx,
-				"msg", preflightMsg, "available_models", len(available))
-			writeModelMissingResponseFor(w, originalPath, modelFromCtx, reason, available)
-			return nil
-		}
-		// preflight вернул needsProxy=false: асинхронный reload запущен в фоне.
-		// Отдаём клиенту HTTP 503 Service Unavailable + Retry-After: 30.
-		// Клиент повторит запрос через 30 секунд — реалистичное время reload'а.
-		// Round 23 (2026-08-04): Retry-After 5 → 30 (reload 30-60с на GPU; 5с
-		// заставляло Cline/OpenWebUI повторять 10-12 раз за reload, накапливая
-		// 503 и путая retry-логику).
-		logger.Get().Infow("proxyRequestLlamaCpp: preflight triggered async n_ctx reload, returning 503 to client",
-			"backend", backendID, "model", modelFromCtx,
-			"msg", preflightMsg, "status", preflightStatus)
-		// R299 (2026-10-29): тело отказа — ОДИН формат (deferredReason +
-		// requiredTokens/loadedWindowTokens/activeStreams/reloadPending) вместо
-		// самописного `{"decision":"async_reload","retry_after_seconds":30}`.
-		// Живой факт: клиент получал тело, которого нет ни у одного другого
-		// отказа, и в тексте «active streams=0» без указания, что перезагрузка
-		// идёт. X-NCtx-Reload-Decision оставлен для совместимости.
-		//
-		// R301.2: заголовок обязан говорить правду. Этот же выход используется
-		// стриминговым вердиктом R301 (окно не растёт — перезагрузка НЕ
-		// запускалась); живая проверка показала «async-reload» рядом с
-		// reloadPending=false. Различаем по факту: идёт ли перезагрузка.
-		decision := "async-reload"
-		if p.nctxReload == nil || !p.nctxReload.IsReloadPending(backendID, modelFromCtx) {
-			decision = "context-growth"
-		}
-		w.Header().Set("X-NCtx-Reload-Decision", decision)
-		writePreflightDeferredR299Ctx(w, p, preflightCtx, backendID, modelFromCtx, bodyBuf, originalPath, preflightMsg, 30)
+	// R530 (R2 читаемости): применение вердикта preflight вынесено в
+	// applyPreflightOutcome — там ответ клиенту (413/404/503) и правка тела
+	// запроса. handled=true означает, что ответ уже отправлен.
+	bodyBuf, translatedBody, preflightHandled := p.applyPreflightOutcome(
+		w, preflightCtx, backendID, modelFromCtx, originalPath, nativePath,
+		preflightBody, preflightOK, preflightMsg, preflightStatus, bodyBuf, translatedBody)
+	if preflightHandled {
 		return nil
 	}
 
@@ -253,38 +180,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// простаивает — план применяется по-настоящему (см. также
 	// reloadDedupRegistry.BeginExternalReload и autoTuneAppliedMismatch).
 	// Не блокирует запрос — reload в фоне. Circuit breaker защищает от storm.
-	defer func() {
-		if modelFromCtx == "" {
-			return
-		}
-		var freeVRAM, freeRAM, totalVRAM uint64
-		if p.metricsMgr != nil {
-			// Берём hardware info из cluster state.
-			// R230: GPUMetrics/System метрики в МБ, triggerAutoTuneReload ждёт
-			// байты — конвертируем (иначе «свободно 0 GB»).
-			clusterState := p.GetClusterState()
-			for _, b := range clusterState.Backends {
-				if b.ID == backendID {
-					totalVRAM = mbToBytes(b.GPU.MemoryTotal)
-					if b.GPU.MemoryFree > 0 {
-						freeVRAM = mbToBytes(b.GPU.MemoryFree)
-					}
-					freeRAM = mbToBytes(b.System.MemoryFree)
-					break
-				}
-			}
-		}
-		autoTuneRes := p.triggerAutoTuneReload(backendID, modelFromCtx, freeVRAM, freeRAM, totalVRAM)
-		if autoTuneRes != nil && autoTuneRes.Triggered {
-			logger.Get().Infow("proxyRequestLlamaCpp: AutoTune async reload triggered",
-				"backend", backendID, "model", modelFromCtx,
-				"reason", autoTuneRes.Plan.Reason)
-		} else if autoTuneRes != nil && autoTuneRes.SkippedReason != "" {
-			logger.Get().Debugw("proxyRequestLlamaCpp: AutoTune check",
-				"backend", backendID, "model", modelFromCtx,
-				"skipped_reason", autoTuneRes.SkippedReason)
-		}
-	}()
+	// R530 (R2 читаемости): тело отложенной проверки AutoTune вынесено в
+	// autoTuneOnReturn; имя модели передаётся указателем — оно уточняется в
+	// цикле (R422), а defer читает его В МОМЕНТ выполнения.
+	defer autoTuneOnReturn(p, backendID, &modelFromCtx)()
 
 	fullURL := targetURL + llamacppPath
 	// R60.9 (2026-09-07): для /api/models/unload cppworker требует ?name= в
@@ -2605,35 +2504,6 @@ func extractUpstreamDoneChunk(data string) (bool, map[string]interface{}, string
 	return true, msg, fr
 }
 
-// extractUpstreamGenerateDoneChunk — для /api/generate cppworker возвращает
-// финальный чанк с finish_reason. Накапливает text (если есть) в plainContent.
-// Возвращает true, если чанк содержит finish_reason.
-func extractUpstreamGenerateDoneChunk(data string, plainContent *string) bool {
-	if plainContent == nil {
-		return false
-	}
-	var chunk map[string]interface{}
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return false
-	}
-	choices, ok := chunk["choices"].([]interface{})
-	if !ok || len(choices) == 0 {
-		return false
-	}
-	choice, ok := choices[0].(map[string]interface{})
-	if !ok {
-		return false
-	}
-	fr, ok := choice["finish_reason"].(string)
-	if !ok || fr == "" || fr == "null" {
-		return false
-	}
-	if t, ok := choice["text"].(string); ok && t != "" {
-		*plainContent += t
-	}
-	return true
-}
-
 // getEffectiveStreamTimeoutSec — R53.6 (2026-08-24) helper для логирования.
 // Возвращает фактический stream timeout в секундах, который будет применён
 // к upstream запросу. Используется только в logging при streamTimeout firing
@@ -2784,4 +2654,153 @@ func nativeDoneContentStrippingEnabled() bool {
 		return false
 	}
 	return true
+}
+
+// autoTuneOnReturn — отложенная проверка AutoTune в конце хода (R529/R530).
+//
+// Возвращает замыкание для defer. Имя модели передаётся УКАЗАТЕЛЕМ: оно
+// уточняется в цикле чтения (R422 — модель узнаётся из первого содержательного
+// чанка), а эта проверка выполняется уже после возврата и обязана видеть
+// уточнённое имя, иначе AutoTune получит пустое/старое.
+func autoTuneOnReturn(p *Proxy, backendID string, modelName *string) func() {
+	return func() {
+		modelFromCtx := ""
+		if modelName != nil {
+			modelFromCtx = *modelName
+		}
+		if modelFromCtx == "" {
+			return
+		}
+		var freeVRAM, freeRAM, totalVRAM uint64
+		if p.metricsMgr != nil {
+			// Берём hardware info из cluster state.
+			// R230: GPUMetrics/System метрики в МБ, triggerAutoTuneReload ждёт
+			// байты — конвертируем (иначе «свободно 0 GB»).
+			clusterState := p.GetClusterState()
+			for _, b := range clusterState.Backends {
+				if b.ID == backendID {
+					totalVRAM = mbToBytes(b.GPU.MemoryTotal)
+					if b.GPU.MemoryFree > 0 {
+						freeVRAM = mbToBytes(b.GPU.MemoryFree)
+					}
+					freeRAM = mbToBytes(b.System.MemoryFree)
+					break
+				}
+			}
+		}
+		autoTuneRes := p.triggerAutoTuneReload(backendID, modelFromCtx, freeVRAM, freeRAM, totalVRAM)
+		if autoTuneRes != nil && autoTuneRes.Triggered {
+			logger.Get().Infow("proxyRequestLlamaCpp: AutoTune async reload triggered",
+				"backend", backendID, "model", modelFromCtx,
+				"reason", autoTuneRes.Plan.Reason)
+		} else if autoTuneRes != nil && autoTuneRes.SkippedReason != "" {
+			logger.Get().Debugw("proxyRequestLlamaCpp: AutoTune check",
+				"backend", backendID, "model", modelFromCtx,
+				"skipped_reason", autoTuneRes.SkippedReason)
+		}
+	}
+}
+
+// applyPreflightOutcome — применить вердикт preflight n_ctx и, если ход
+// невозможен, ответить клиенту (R118.7 413, R119 404, R299/R301.2 503).
+//
+// Вынесено из proxyRequestLlamaCpp (R530, R2 читаемости) дословно: порядок
+// проверок, тексты отказов и заголовки прежние. handled=true — ответ уже
+// отправлен, вызывающая функция обязана выйти с nil.
+func (p *Proxy) applyPreflightOutcome(
+	w http.ResponseWriter,
+	preflightCtx context.Context,
+	backendID, modelFromCtx, originalPath string,
+	nativePath bool,
+	preflightBody []byte,
+	preflightOK bool,
+	preflightMsg string,
+	preflightStatus int,
+	bodyBuf, translatedBody []byte,
+) (newBodyBuf, newTranslatedBody []byte, handled bool) {
+	newBodyBuf, newTranslatedBody = bodyBuf, translatedBody
+
+	if preflightOK {
+		newBodyBuf = preflightBody // preflight удалил num_ctx из body (cppworker возьмёт new n_ctx)
+		// R301 (2026-10-29): подменённое preflight'ом тело обязано ДОЙТИ до воркера.
+		//
+		// ЖИВОЙ ДЕФЕКТ (стенд fcef935c): вердикт R301 отработал верно
+		// (log: served_with_loaded_window=true, required=16384, loaded=8192),
+		// но воркер всё равно получил num_ctx=16384 и ответил кодом 2:
+		// «requested n_ctx=16384 exceeds model's effective n_ctx=8192».
+		// Причина — ВТОРОЙ источник тела: нативный путь кладёт исходные байты в
+		// translatedBody (см. :84) и именно их отправляет (:259). Патч bodyBuf
+		// никуда не попадал, то есть решение принималось, логировалось — и
+		// терялось. На нативном пути перевода нет, поэтому достаточно взять
+		// ровно то тело, что вернул preflight.
+		if nativePath {
+			newTranslatedBody = newBodyBuf
+		} else if patched := patchNumCtxInBody(newTranslatedBody, ExtractNumCtxFromBody(newBodyBuf)); patched != nil {
+			// Переведённое (OpenAI) тело — другой формат: правим num_ctx тем же
+			// значением, что preflight поставил в Ollama-теле (если оно там есть).
+			newTranslatedBody = patched
+		}
+		logger.Get().Debugw("proxyRequestLlamaCpp: preflight n_ctx reload applied",
+			"backend", backendID, "model", modelFromCtx, "new_body_len", len(newBodyBuf),
+			"native_path", nativePath, "upstream_body_len", len(newTranslatedBody))
+	} else if preflightMsg != "" || preflightStatus != http.StatusOK {
+		// R118.7 (2026-10-14): окно физически недостижимо (cppworker отвечал 422
+		// n_ctx_infeasible) — клиенту понятный 413, а не «async-reload» 503,
+		// который он будет повторять бесконечно.
+		if preflightStatus == http.StatusRequestEntityTooLarge {
+			logger.Get().Infow(i18n.T("balancer.llamacpp_transport.window_infeasible_413_info"),
+				"backend", backendID, "model", modelFromCtx, "msg", preflightMsg)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-NCtx-Reload-Decision", "infeasible")
+			body := []byte(fmt.Sprintf(`{"error":%q,"decision":"n_ctx_infeasible"}`, preflightMsg))
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write(body)
+			return newBodyBuf, newTranslatedBody, true
+		}
+		// R119 (2026-10-15): модели НЕТ на бэкенде (cppworker ответил 404 на
+		// попытку загрузки) — клиенту терминальный 404 с причиной и списком
+		// доступных моделей. 503 здесь означал бы «повтори», и клиент уходил в
+		// retry-цикл до своего таймаута («Internal Server Error»).
+		//
+		// awaitModelMissing закрывает гонку: загрузка отсутствующей модели падает
+		// за миллисекунды, а запись в реестр появляется чуть позже решения
+		// preflight'а — короткое ожидание делает САМЫЙ ПЕРВЫЙ запрос терминальным.
+		if p.awaitModelMissing(backendID, modelFromCtx, 500*time.Millisecond) {
+			reason, available, _ := p.modelMissingFor(backendID, modelFromCtx)
+			logger.Get().Warnw(i18n.T("balancer.llamacpp_transport.model_missing_404_info"),
+				"backend", backendID, "model", modelFromCtx,
+				"msg", preflightMsg, "available_models", len(available))
+			writeModelMissingResponseFor(w, originalPath, modelFromCtx, reason, available)
+			return newBodyBuf, newTranslatedBody, true
+		}
+		// preflight вернул needsProxy=false: асинхронный reload запущен в фоне.
+		// Отдаём клиенту HTTP 503 Service Unavailable + Retry-After: 30.
+		// Клиент повторит запрос через 30 секунд — реалистичное время reload'а.
+		// Round 23 (2026-08-04): Retry-After 5 → 30 (reload 30-60с на GPU; 5с
+		// заставляло Cline/OpenWebUI повторять 10-12 раз за reload, накапливая
+		// 503 и путая retry-логику).
+		logger.Get().Infow("proxyRequestLlamaCpp: preflight triggered async n_ctx reload, returning 503 to client",
+			"backend", backendID, "model", modelFromCtx,
+			"msg", preflightMsg, "status", preflightStatus)
+		// R299 (2026-10-29): тело отказа — ОДИН формат (deferredReason +
+		// requiredTokens/loadedWindowTokens/activeStreams/reloadPending) вместо
+		// самописного `{"decision":"async_reload","retry_after_seconds":30}`.
+		// Живой факт: клиент получал тело, которого нет ни у одного другого
+		// отказа, и в тексте «active streams=0» без указания, что перезагрузка
+		// идёт. X-NCtx-Reload-Decision оставлен для совместимости.
+		//
+		// R301.2: заголовок обязан говорить правду. Этот же выход используется
+		// стриминговым вердиктом R301 (окно не растёт — перезагрузка НЕ
+		// запускалась); живая проверка показала «async-reload» рядом с
+		// reloadPending=false. Различаем по факту: идёт ли перезагрузка.
+		decision := "async-reload"
+		if p.nctxReload == nil || !p.nctxReload.IsReloadPending(backendID, modelFromCtx) {
+			decision = "context-growth"
+		}
+		w.Header().Set("X-NCtx-Reload-Decision", decision)
+		writePreflightDeferredR299Ctx(w, p, preflightCtx, backendID, modelFromCtx, newBodyBuf, originalPath, preflightMsg, 30)
+		return newBodyBuf, newTranslatedBody, true
+	}
+	return newBodyBuf, newTranslatedBody, false
 }

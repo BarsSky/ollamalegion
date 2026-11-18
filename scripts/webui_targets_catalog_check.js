@@ -57,10 +57,21 @@ async function main() {
     }, { user: ADMIN_USER, pass: ADMIN_PASSWORD });
     record('вход администратора', loginStatus === 200, 'HTTP ' + loginStatus);
 
-    const facts = await page.evaluate(async () => {
+    // ВАЖНО: webui/js/modules/auth.js оборачивает fetch и НЕ отправляет запрос,
+    // пока состояние входа в самой странице не подтверждено (/auth/me). Поэтому
+    // после логина перезагружаем документ: иначе запросы ниже получают локальный
+    // 401 «запрос не отправлен без сессии» и проверки читают пустоту.
+    await page.goto(BASE_URL + '/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(1500);
+
+    // Админские API требуют токен из WEBUI_CONFIG: одна сессия (cookie) их не
+    // открывает — это защита R223, а не отсутствие прав у нашего логина.
+    const apiToken = await page.evaluate(() => (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN) || '');
+    const facts = await page.evaluate(async (token) => {
+        const headers = token ? { 'X-API-Token': token } : {};
         const [cat, loaded] = await Promise.all([
-            fetch('/api/v1/cppworker/model-catalog').then((r) => r.json()).catch(() => ({})),
-            fetch('/api/v1/cluster/models/loaded').then((r) => r.json()).catch(() => ({}))
+            fetch('/api/v1/cppworker/model-catalog', { headers }).then((r) => r.json()).catch(() => ({})),
+            fetch('/api/v1/cluster/models/loaded', { headers }).then((r) => r.json()).catch(() => ({}))
         ]);
         return {
             catalogBackendId: cat.backendId || '',
@@ -68,7 +79,7 @@ async function main() {
             loadedCount: loaded.count || 0,
             loadedNames: (loaded.models || []).map((m) => m.name)
         };
-    });
+    }, apiToken);
     record('каталог называет узел (R516)', !!facts.catalogBackendId, 'backendId=' + facts.catalogBackendId);
     record('каталог отдаёт файлы моделей', facts.files.length > 0, 'файлов: ' + facts.files.length);
     record('на стенде нет загруженных моделей (самый честный случай)', facts.loadedCount === 0,

@@ -201,21 +201,6 @@ rpc-ссылки) + `handlers_backends_list.go` 616 + `handlers_backends_mutate.
 склейка тел в исходном порядке совпадает с исходным телом (нормализованное сравнение); плюс
 `go vet` 0, `gofmt` чисто, `go test` и `-race` по `cmd/cppworker` и `internal/api` зелёные.
 
-**Итог R529 (R2, шаг 1, факт).** `proxyRequestLlamaCpp` **2428 → 887** строк:
-начало пути инференса оставлено в основной функции (выбор бэкенда, preflight,
-отправка, открытие ответа), а хвост разбит на две функции того же файла:
-`finishLlamaCppStream` (1228 — основной цикл «SSE → NDJSON / SSE → SSE», стадия
-`client_write`) и `finalizeLlamaCppStream` (465 — хвост удержания R279,
-авто-продолжение R60.21, done-кадр, сводки, кадры ошибок). Состояние прохода —
-`llamaCppRun` (42 поля) и `llamaCppFinalize` (22); тела перенесены дословно,
-наверху функций только алиасы. `modelFromCtx` уточняется в цикле (R422) и нужен
-`defer`-у AutoTune в основной функции — поэтому возвращается через указатель.
-Доказательство: обратное сравнение с `git show 4e1ac646` — 1119 непустых строк
-`finishLlamaCppStream` (до вызова) и 429 строк `finalizeLlamaCppStream` совпали
-дословно. Замер: `>1000` осталась одна функция — сам цикл (1228); `>300` 40 → 42;
-`>=150` 122 → 124. Следующий шаг — вынести цикл и разобрать его по кадрам, чтобы
-`>1000` стало 0.
-
 **Итог R527 (часть R3, факт).** `cmd/cppworker/handlers_chat.go`:
 `writeChatStreamResponseWithTools` **1426 → 954** (AST) — вынесено **начало** стрима,
 семи функциями того же файла: `startToolsStreamGeneration(run *toolsStreamRun) bool`

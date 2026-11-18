@@ -48,6 +48,19 @@ func ContextPerSlot(totalNCtx, slots int) int {
 //
 // Возвращает (total, perSeqActual): второе — фактическое окно на клиента для
 // логов и /api/models (0, если считать не из чего).
+// LoadWindowNCtx — R522 (§8.3.3): итоговое СУММАРНОЕ окно, с которым модель
+// загрузится, и число слотов — для гейта ДО загрузки.
+//
+// ЕДИНСТВЕННАЯ формула пересчёта «окно на клиента → суммарное» живёт в
+// EffectiveContextSize; здесь только резолв слотов (тот же resolveNParallel, что
+// в LoadModelWithOpts). Второй копии расчёта быть не должно: именно расхождение
+// «гейт проверил 32768, загрузка взяла 131072» и привело к CUDA OOM из архива
+// 2026-11-18.
+func LoadWindowNCtx(contextSize, contextPerSeq, parallel, defaultParallel int) (total, slots int) {
+	slots = resolveNParallel(parallel, defaultParallel)
+	total, _ = EffectiveContextSize(contextSize, contextPerSeq, slots)
+	return total, parallelSlotsFor(slots)
+}
 func EffectiveContextSize(contextSize, perSeq, slots int) (int, int) {
 	slots = parallelSlotsFor(slots)
 	if perSeq > 0 {

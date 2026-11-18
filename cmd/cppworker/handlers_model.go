@@ -283,7 +283,17 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	if !checkFlashAttnKVCacheR367(w, modelName, opts.FlashAttnType, opts.KVCacheType) {
 		return
 	}
-	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize, opts.KVCacheType, opts.UseMmap) {
+	// R522 (§8.3.3): гейт — на ФИНАЛЬНОЕ окно (пересчёт «на клиента» → суммарное).
+	gateNCtx, gateSlots := loadWindowForGate(opts)
+	if gateNCtx != opts.ContextSize {
+		logger.Get().Warnw("R522: гейт n_ctx проверяет ФИНАЛЬНОЕ окно, а не исходное",
+			"name", modelName,
+			"context_size_as_is", opts.ContextSize,
+			"context_per_seq", opts.ContextPerSeq,
+			"slots", gateSlots,
+			"gate_total_n_ctx", gateNCtx)
+	}
+	if !checkNCtxBeforeLoad(w, modelName, gateNCtx, opts.KVCacheType, opts.UseMmap) {
 		return
 	}
 
@@ -855,7 +865,17 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	if !checkFlashAttnKVCacheR367(w, modelName, opts.FlashAttnType, opts.KVCacheType) {
 		return
 	}
-	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize, opts.KVCacheType, opts.UseMmap) {
+	// R522 (§8.3.3): та же проверка финального окна, что и в handleLoadModel.
+	gateNCtx, gateSlots := loadWindowForGate(opts)
+	if gateNCtx != opts.ContextSize {
+		logger.Get().Warnw("R522: гейт n_ctx проверяет ФИНАЛЬНОЕ окно, а не исходное",
+			"name", modelName,
+			"context_size_as_is", opts.ContextSize,
+			"context_per_seq", opts.ContextPerSeq,
+			"slots", gateSlots,
+			"gate_total_n_ctx", gateNCtx)
+	}
+	if !checkNCtxBeforeLoad(w, modelName, gateNCtx, opts.KVCacheType, opts.UseMmap) {
 		return
 	}
 
@@ -2396,7 +2416,17 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	if !checkFlashAttnKVCacheR367(w, req.Name, opts.FlashAttnType, opts.KVCacheType) {
 		return
 	}
-	if !checkNCtxBeforeLoad(w, req.Name, opts.ContextSize, opts.KVCacheType, opts.UseMmap) {
+	// R522 (§8.3.3): reload-путь обязан проверять то же финальное окно.
+	gateNCtx, gateSlots := loadWindowForGate(opts)
+	if gateNCtx != opts.ContextSize {
+		logger.Get().Warnw("R522: гейт n_ctx проверяет ФИНАЛЬНОЕ окно, а не исходное",
+			"name", req.Name,
+			"context_size_as_is", opts.ContextSize,
+			"context_per_seq", opts.ContextPerSeq,
+			"slots", gateSlots,
+			"gate_total_n_ctx", gateNCtx)
+	}
+	if !checkNCtxBeforeLoad(w, req.Name, gateNCtx, opts.KVCacheType, opts.UseMmap) {
 		return
 	}
 

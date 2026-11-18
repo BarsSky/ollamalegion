@@ -84,8 +84,17 @@ type windowInputR493 struct {
 	Requested     int // окно, которое клиент запросил явно (0 = не просил)
 	Loaded        int // окно ОДНОГО слота сейчас (0 = неизвестно)
 	Slots         int // число слотов модели (для потолка R466; 0/1 = один)
-	Ceiling       int // потолок окна НА КЛИЕНТА (0 = неизвестен)
-	Active        int // сколько стримов идёт сейчас на этом бэкенде/модели
+	// Ceiling — СУММАРНЫЙ физический потолок окна модели
+	// (min(GGUF, contextLengthMax профиля, LB_NCTX_RELOAD_MAX_N_CTX)), 0 = неизвестен.
+	//
+	// R504 / аудит N-13: это СУММАРНЫЙ потолок, а не «на клиента». Доля клиента
+	// считается ОДИН раз — derivedWindowCapR466(Ceiling, Slots) — и уже она
+	// сравнивается с Needed и ограничивает Target. Раньше отказ и цель сравнивали
+	// Needed (на клиента) с Ceiling (суммарным), а R466-урезание делило тот же
+	// Ceiling на слоты: одна величина жила в двух единицах, и при 2 слотах цель
+	// 131072 на клиента означала перезагрузку на 262144 — ВЫШЕ потолка (N-1).
+	Ceiling int
+	Active  int // сколько стримов идёт сейчас на этом бэкенде/модели
 	// ReloadPending — перезагрузка этой модели уже идёт.
 	ReloadPending bool
 }
@@ -116,6 +125,14 @@ type windowDecisionR493 struct {
 // (R447: «retry in 60 seconds» рядом с `retryAfterSec: 30` — это дефект).
 func (d windowDecisionR493) RetryAfter() int { return d.RetryAfterSec }
 
+// normalizedSlotsR504 — число слотов для текста причины: 0/1 — один слот.
+func normalizedSlotsR504(slots int) int {
+	if slots <= 1 {
+		return 1
+	}
+	return slots
+}
+
 // decideWindowR493 — ЕДИНСТВЕННОЕ место, где решается «растим / обслуживаем
 // загруженным / ждём / расти нельзя».
 func decideWindowR493(in windowInputR493) windowDecisionR493 {
@@ -131,6 +148,15 @@ func decideWindowR493(in windowInputR493) windowDecisionR493 {
 		return d
 	}
 
+	// R504 / аудит N-13/N-1: одна единица. Потолок физический и СУММАРНЫЙ, все
+	// сравнения ниже — про окно НА КЛИЕНТА, поэтому доля клиента считается здесь
+	// РОВНО ОДИН раз. Двойного деления быть не должно: это и есть ловушка аудита
+	// («починить по комментарию» → разделить дважды и отказать там, где влезает).
+	ceilingPerClient := derivedWindowCapR466(in.Ceiling, in.Slots)
+	if ceilingPerClient < 0 {
+		ceilingPerClient = 0
+	}
+
 	// R466 (2026-11-06): завышенная НАША оценка не отменяет рост.
 	//
 	// needed = оценка промпта + бюджет вывода, оценка — по символам (без
@@ -139,9 +165,9 @@ func decideWindowR493(in windowInputR493) windowDecisionR493 {
 	// Явно запрошенное клиентом окно сверх потолка — это его требование, а не
 	// наша догадка: остаётся как есть и честно отказывается ниже.
 	if in.Requested <= 0 && in.Needed > in.Loaded {
-		if capped, cut := capDerivedWindowR466(in.Needed, in.Ceiling, in.Slots); cut && capped > in.Loaded {
-			in.Needed = capped
-			d.Needed = capped
+		if ceilingPerClient > 0 && in.Needed > ceilingPerClient && ceilingPerClient > in.Loaded {
+			in.Needed = ceilingPerClient
+			d.Needed = ceilingPerClient
 			d.Capped = true
 		}
 	}
@@ -213,13 +239,18 @@ func decideWindowR493(in windowInputR493) windowDecisionR493 {
 	// Потолок: если запросу нужно БОЛЬШЕ физического/операторского предела, рост
 	// бессмыслен — перезагрузка на потолок запрос всё равно не обслужит, а стоит
 	// выгрузки 27B. Проверяется по «нужному», а не по урезанной цели.
-	if in.Ceiling > 0 && in.Needed > in.Ceiling {
+	//
+	// R504 / аудит N-13: сравнение идёт с ДОЛЕЙ клиента, а в причине названы оба
+	// числа — суммарный потолок и число слотов. Иначе оператор видит «потолок
+	// 131072» рядом с отказом на 100000 и не понимает, почему.
+	if ceilingPerClient > 0 && in.Needed > ceilingPerClient {
 		d.Kind = windowRefuseR493
-		d.Why = fmt.Sprintf("нужно %d, потолок авто-роста %d", in.Needed, in.Ceiling)
+		d.Why = fmt.Sprintf("нужно %d на клиента, потолок на клиента %d (суммарный потолок %d, слотов %d)",
+			in.Needed, ceilingPerClient, in.Ceiling, normalizedSlotsR504(in.Slots))
 		return d
 	}
 
-	target, grow := growthTargetR493(in.Needed, in.Loaded, in.Ceiling)
+	target, grow := growthTargetR493(in.Needed, in.Loaded, ceilingPerClient)
 	if !grow {
 		// Цель роста не больше загруженного окна: перезагружать нечего, а «вниз»
 		// окно не опускается никогда (R493-12h). Если клиент просил больше

@@ -688,7 +688,7 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 ) *ReloadPlan {
 	cfg := c.Config()
 	return c.decideReloadBackend(backendID, bridgeErr, requestedNCtxOverride,
-		ReloadCeiling{Effective: cfg.AutoReloadMaxNCtx, Env: cfg.AutoReloadMaxNCtx})
+		ReloadCeiling{Effective: cfg.AutoReloadMaxNCtx, Env: cfg.AutoReloadMaxNCtx}, 1)
 }
 
 // DecideReloadBackendWithCeiling — R267: то же решение, но потолок авто-роста
@@ -700,13 +700,41 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 // cfg.AutoReloadMaxNCtx напрямую, и типовой агентский путь (prompt_too_long)
 // идёт именно через него. Теперь решатель не имеет собственного мнения о
 // потолке: ему передают то же число, что и обработчику.
+//
+// R504 / аудит N-2: метод считает слоты как 1 (историческое поведение). Поток
+// запроса идёт через DecideReloadBackendForModel — там слоты известны, и
+// требование воркера (на слот) пересчитывается в суммарное окно.
 func (c *NCtxReloadCoordinator) DecideReloadBackendWithCeiling(
 	backendID string,
 	bridgeErr *NCtxBridgeError,
 	requestedNCtxOverride int,
 	ceiling ReloadCeiling,
 ) *ReloadPlan {
-	return c.decideReloadBackend(backendID, bridgeErr, requestedNCtxOverride, ceiling)
+	return c.decideReloadBackend(backendID, bridgeErr, requestedNCtxOverride, ceiling, 1)
+}
+
+// DecideReloadBackendForModel — R504 (аудит N-2): решение с числом СЛОТОВ модели.
+//
+// ЗАЧЕМ. Воркер сообщает требование НА СЛОТ (prompt + n_predict против окна слота),
+// а `contextSize` в перезагрузке — СУММАРНОЕ окно модели. Раньше требование
+// уходило в contextSize как есть: при parallel=2 балансер поднимал модель на
+// 131072 там, где слоту нужно было 131072 — слот получал 65536, и следующий
+// запрос снова получал 413 (бесконечный цикл «reload без выигрыша»).
+//
+// Слоты берутся из хинтов reload'а (ReloadHints.Parallel: профиль модели или
+// фактическое число у загруженной модели), поэтому сигнатура и получила имя
+// модели — без неё хинты не найти.
+func (c *NCtxReloadCoordinator) DecideReloadBackendForModel(
+	backendID, modelName string,
+	bridgeErr *NCtxBridgeError,
+	requestedNCtxOverride int,
+	ceiling ReloadCeiling,
+) *ReloadPlan {
+	slots := 1
+	if h := c.ReloadHintsFor(backendID, modelName); h.Parallel > 1 {
+		slots = h.Parallel
+	}
+	return c.decideReloadBackend(backendID, bridgeErr, requestedNCtxOverride, ceiling, slots)
 }
 
 func (c *NCtxReloadCoordinator) decideReloadBackend(
@@ -714,8 +742,12 @@ func (c *NCtxReloadCoordinator) decideReloadBackend(
 	bridgeErr *NCtxBridgeError,
 	requestedNCtxOverride int,
 	ceiling ReloadCeiling,
+	slotsIn int,
 ) *ReloadPlan {
 	cfg := c.Config()
+	// Единицы: bridgeErr.* — НА СЛОТ, ceiling.Effective и NewNCtx — СУММАРНЫЕ.
+	// Пересчёт делается здесь один раз, чтобы в решении не смешивались единицы.
+	slots := normalizedSlotsR504(slotsIn)
 
 	// Kill-switch
 	if !cfg.AutoReloadNCtx {
@@ -767,16 +799,22 @@ func (c *NCtxReloadCoordinator) decideReloadBackend(
 
 		// Check configured max limit. R267: ceiling — эффективный потолок
 		// (env, поднятый до заявленного окна оператора), а не сырое env-значение.
-		if ceiling.Effective > 0 && required > ceiling.Effective {
+		//
+		// R504 / аудит N-2: ceiling СУММАРНЫЙ, required — НА СЛОТ. Сравнивать их
+		// напрямую значит пропускать перезагрузку, которая слоту ничего не даёт.
+		requiredTotal := perClientToTotal(required, slots)
+		if ceiling.Effective > 0 && requiredTotal > ceiling.Effective {
 			return c.makeRejectPlan(backendID, bridgeErr, required,
-				ceiling.limitReason(required, bridgeErr.MaxVRAMNCtx),
+				fmt.Sprintf("%s (нужно %d на слот × %d слота = %d суммарно)",
+					ceiling.limitReason(requiredTotal, bridgeErr.MaxVRAMNCtx),
+					required, slots, requiredTotal),
 				"prompt_exceeds_context", ceiling)
 		}
 
 		// Allow reload even if required > max_vram_n_ctx (with current gpuLayers).
 		// The adaptive strategy (queryAdaptiveStrategy in DoReload) will reduce
 		// gpuLayers to free VRAM for the larger KV-cache.
-		newNCtx := roundUpPow2(required)
+		newNCtx := roundUpPow2(requiredTotal)
 		clampedBy := ""
 		if ceiling.Effective > 0 && newNCtx > ceiling.Effective {
 			newNCtx = ceiling.Effective
@@ -787,8 +825,8 @@ func (c *NCtxReloadCoordinator) decideReloadBackend(
 			Decision:         DecisionReload,
 			NewNCtx:          newNCtx,
 			EffectiveCeiling: ceiling.Effective,
-			Reason: fmt.Sprintf("prompt_too_long: actual_tokens=%d n_predict=%d required=%d target=%d max_vram=%d",
-				bridgeErr.ActualTokens, bridgeErr.NPredict, required, newNCtx, bridgeErr.MaxVRAMNCtx),
+			Reason: fmt.Sprintf("prompt_too_long: actual_tokens=%d n_predict=%d required_per_seq=%d slots=%d required_total=%d target=%d max_vram=%d",
+				bridgeErr.ActualTokens, bridgeErr.NPredict, required, slots, requiredTotal, newNCtx, bridgeErr.MaxVRAMNCtx),
 		}
 		if clampedBy != "" {
 			plan.LimitedBy = clampedBy
@@ -880,18 +918,22 @@ func (c *NCtxReloadCoordinator) decideReloadBackend(
 		// >= required, считаем что пользователь явно готов на gpu_layers<all.
 		safeMaxQ4 := int(float64(maxVRAMNCtx) * safety * 4)
 		if required <= safeMaxQ4 {
-			newNCtx := roundUpPow2(required)
-			if newNCtx < required {
-				newNCtx = required
+			// R504 / аудит N-2: цель перезагрузки — СУММАРНОЕ окно, требование
+			// воркера — на слот. Иначе слот получает цель/slots и снова 413.
+			requiredTotal := perClientToTotal(required, slots)
+			newNCtx := roundUpPow2(requiredTotal)
+			if newNCtx < requiredTotal {
+				newNCtx = requiredTotal
 			}
 			logger.Get().Infow("nctx_reload: required exceeds f16 safe_max but fits q4_0, accepting",
 				"backend", backendID,
-				"required", required, "safe_max_f16", safeMax, "safe_max_q4", safeMaxQ4)
+				"required_per_seq", required, "slots", slots, "required_total", requiredTotal,
+				"safe_max_f16", safeMax, "safe_max_q4", safeMaxQ4)
 			return &ReloadPlan{
 				Decision: DecisionReload,
 				NewNCtx:  newNCtx,
-				Reason: fmt.Sprintf("required=%d fits q4_0 (safe_max_f16=%d, q4_0=%d); adaptive loader will pick q4_0",
-					required, safeMax, safeMaxQ4),
+				Reason: fmt.Sprintf("required_per_seq=%d (slots=%d, total=%d) fits q4_0 (safe_max_f16=%d, q4_0=%d); adaptive loader will pick q4_0",
+					required, slots, requiredTotal, safeMax, safeMaxQ4),
 			}
 		}
 		return c.makeRejectPlan(backendID, bridgeErr, required,
@@ -901,14 +943,21 @@ func (c *NCtxReloadCoordinator) decideReloadBackend(
 	}
 
 	// 4096 ? 4096, 5000 ? 8192, 8000 ? 8192, 12000 ? 16384
-	newNCtx := roundUpPow2(required)
+	//
+	// R504 / аудит N-2: цель — СУММАРНОЕ окно (его получает воркер как
+	// contextSize и делит между слотами), поэтому требование на слот
+	// пересчитывается в суммарное ДО округления. `safeMax` — предел НА СЛОТ
+	// (его считает bridge по max_vram_n_ctx), значит и сравнивать с ним надо в
+	// тех же единицах: суммарный предел = safeMax × slots.
+	requiredTotal := perClientToTotal(required, slots)
+	newNCtx := roundUpPow2(requiredTotal)
 
-	if newNCtx < required {
-		newNCtx = required
+	if newNCtx < requiredTotal {
+		newNCtx = requiredTotal
 	}
 
-	if newNCtx > safeMax {
-		newNCtx = safeMax
+	if safeMaxTotal := perClientToTotal(safeMax, slots); newNCtx > safeMaxTotal {
+		newNCtx = safeMaxTotal
 	}
 
 	// R267: тот же эффективный потолок, что и в ветке prompt_too_long —

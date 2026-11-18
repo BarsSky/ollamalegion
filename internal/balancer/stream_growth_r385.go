@@ -140,12 +140,20 @@ func (p *Proxy) streamGrowthPlanR385(backendID, model string, needed int) stream
 	// min(GGUF, contextLengthMax профиля, операторский LB_NCTX_RELOAD_MAX_N_CTX).
 	// Для ручной перезагрузки (R297) WindowFeasibility остаётся как был: там окно
 	// задаёт оператор, и его же заявленное значение разумно считать пределом.
-	ceiling := p.physicalNumCtxCeiling(model, backendID)
+	//
+	// R504 / аудит N-13/N-1: потолок СУММАРНЫЙ, а needed/loaded/target — НА
+	// КЛИЕНТА. Доля клиента считается один раз (derivedWindowCapR466), и уже она
+	// ограничивает цель: иначе target*slots превышал суммарный потолок (живой
+	// дефект N-1: 27B, parallel=2, потолок 131072 → перезагрузка на 262144).
+	ceilingTotal := p.physicalNumCtxCeiling(model, backendID)
+	slots := p.loadedSlotsNCtx(backendID, model)
+	ceiling := derivedWindowCapR466(ceilingTotal, slots)
 	loaded := p.loadedPerSeqNCtx(backendID, model)
 	target, grow := growthTargetR493(needed, loaded, ceiling)
 	if !grow {
 		if ceiling > 0 && needed > ceiling {
-			return refuse(fmt.Sprintf("нужно %d, потолок авто-роста %d", needed, ceiling))
+			return refuse(fmt.Sprintf("нужно %d на клиента, потолок на клиента %d (суммарный потолок %d, слотов %d)",
+				needed, ceiling, ceilingTotal, normalizedSlotsR504(slots)))
 		}
 		// Не отказ: выровненное нужное окно уже внутри загруженного. Именно этот
 		// случай в архиве 09:53 и перезагружал 27B ВНИЗ на 94–207 токенов.

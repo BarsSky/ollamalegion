@@ -83,7 +83,11 @@ func (p *Proxy) handleNCtxReload(
 			Env:       cfg.AutoReloadMaxNCtx,
 		}
 	}
-	plan := p.nctxReload.DecideReloadBackendWithCeiling(backendID, bridgeErr, requestedOverride, effectiveCeiling)
+	// R504 / аудит N-2: решателю передаётся МОДЕЛЬ, чтобы он знал число слотов:
+	// воркер сообщает требование на слот, а contextSize в перезагрузке суммарный.
+	// Без этого при parallel=2 модель поднималась ровно на окно слота, и клиент
+	// получал тот же 413 по кругу.
+	plan := p.nctxReload.DecideReloadBackendForModel(backendID, modelName, bridgeErr, requestedOverride, effectiveCeiling)
 	logger.Get().Debugw("nctx_reload: DecideReloadBackend result",
 		"backend", backendID, "model", modelName,
 		"decision", plan.Decision.String(),

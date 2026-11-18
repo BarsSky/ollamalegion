@@ -63,6 +63,33 @@ func countModelTokensByLoadedInfo(modelName, text string) int {
 // решение clamp без поднятого llama.cpp (см. inference_internal_test.go, B3b).
 var loadedModelNCtxFn = loadedModelNCtx
 
+// perSeqWindowR504 — окно ОДНОГО слота из метаданных модели.
+//
+// R504 / аудит N-14. `ContextSize` (n_ctx) — СУММАРНОЕ окно модели: воркер делит
+// его между параллельными слотами (`n_ctx_seq = PAD(n_ctx / n_parallel, 256)`).
+// Использовать суммарное как окно ЗАПРОСА — значит обещать слоту вдвое больше,
+// чем у него есть: при parallel=2 и n_ctx=16384 промпт на 12000 проходит проверку
+// (12000 < 16384), а слот получает 8192 — и запрос падает уже ПОСЛЕ HTTP 200
+// (клиент видит `finish_reason=error` и пустой ответ; ловит только классификация
+// декода в C-bridge).
+//
+// Поэтому берём `ContextPerSeq` (R83: воркер сам публикует окно на слот), а если
+// его нет (старая сборка) — делим сами. Деление с округлением ВНИЗ: реальное окно
+// слота — PAD(per, 256), то есть не меньше частного, поэтому недосчёт на <256
+// токенов безопаснее пересчёта.
+func perSeqWindowR504(contextSize, contextPerSeq, parallel int) int {
+	if contextPerSeq > 0 {
+		return contextPerSeq
+	}
+	if contextSize <= 0 {
+		return 0
+	}
+	if parallel > 1 {
+		return contextSize / parallel
+	}
+	return contextSize
+}
+
 func loadedModelNCtx(modelName string) int {
 	if backend == nil {
 		return 0
@@ -71,10 +98,7 @@ func loadedModelNCtx(modelName string) int {
 	if err != nil {
 		return 0
 	}
-	if info.ContextSize > 0 {
-		return info.ContextSize
-	}
-	return 0
+	return perSeqWindowR504(info.ContextSize, info.ContextPerSeq, info.Parallel)
 }
 
 // ============================================================

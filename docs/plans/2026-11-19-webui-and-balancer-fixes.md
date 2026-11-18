@@ -352,8 +352,8 @@ curl -s -H "X-API-Token: <t>" "http://127.0.0.1:18081/api/v1/cluster/models/load
 | **R495 S3 (`score` учитывает классификатор)** | ❌ **не сделано** | в `scoring.go` нет ни `bottleneck`, ни `loadPressure` |
 | S1: MB→байты в AutoTune | ✅ | `autoTuneHardwareBytesR498(...)` (`handlers_autotune_admin.go:220`) |
 | S1: KV ×2 и четвёртая формула KV | ✅ | локальная таблица удалена, всё через `memfit.KVBytesPerElement` / `kvBytesPerTokenR498` |
-| **S1/T-1: first-byte 180 с** | ❌ **не сделано** | `first_byte_default_r189.go:28` = 180; `docker-compose.stack.yml:387` `:-180` |
-| **S1/T-2/T-3: дефолты авто-загрузки** | ❌ **не сделано** | `autoLoadWaitDefaultSec = 180`, `autoLoadBudgetCeiling = 24ч` (один `-1` — два смысла) |
+| **S1/T-1: first-byte таймаут** | ✅ **сделано (R498 + R523)**: граница считается по размеру модели (`EstimateFirstByteTimeoutFromModelSize`), одна политика на ВСЕХ четырёх путях; плоские 180 с убраны из политики (R523: `getModelFirstByteTimeout` больше не возвращает 0) |
+| **S1/T-2/T-3: дефолты авто-загрузки** | ✅ **сделано (R498)**: у `-1` один смысл на обоих путях (`autoLoadBudgetCeiling` 24 ч, потолок бездействия, а не лимит загрузки); тиры по размеру модели (`autoload_wait.go:106-135`) |
 | S2: пороги из конфига | ✅ | `slot_manager.go:206/254/273` читают `limits.*` |
 | S2: `modelLoadingCost`, тюнер весов, `LB_QUEUE_*` | ✅ | `scoring.go:256`; тюнер удалён (`TestR499_WeightTunerIsGone`), `LB_QUEUE_*` удалены |
 | S3: одна вместимость под флагом | ✅ | `capacity_reads_guard_r501_test.go`, `capacity_s3_r501_test.go` |

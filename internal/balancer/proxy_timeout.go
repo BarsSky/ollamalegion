@@ -342,19 +342,26 @@ func (p *Proxy) getModelRequestTimeout(modelName string) time.Duration {
 // config/config.json.
 // getModelFirstByteTimeout — сколько ждать ПЕРВЫЙ БАЙТ (HTTP-заголовки) от бэкенда.
 //
-// R83-доктрина (2026-10-01): по умолчанию 0 = БЕЗ таймаута. Приоритет:
-//  1. LB_STREAMING_NEVER_TIMEOUT=1 → 0;
-//  2. LB_FIRST_BYTE_TIMEOUT_SEC=N — явный opt-in;
+// R523 (§7 плана, S1/T-1): ЕДИНАЯ политика на всех путях. Приоритет:
+//  1. LB_STREAMING_NEVER_TIMEOUT=1 → 0 (осознанно ждать бесконечно);
+//  2. LB_FIRST_BYTE_TIMEOUT_SEC=N — явный opt-in оператора;
 //  3. per-model profile (`firstByteTimeoutSec`) — осознанное решение по модели;
-//  4. иначе 0.
+//  4. оценка по размеру модели (`EstimateFirstByteTimeoutFromModelSize`) — та же,
+//     что уже действует в llamacpp_transport.go на пути с холодной загрузкой:
+//     300 с для лёгких, 600–900 с для 2–5 ГБ, до 1800–2400 с для 12–24 ГБ,
+//     900 с при неизвестном размере.
 //
-// ЧТО УБРАНО. Эвристика по размеру GGUF (`EstimateFirstByteTimeoutFromModelSize`:
-// 300s для medium, 600s для 2–5 GB, 900s при неизвестном размере) и глобальный
-// `balancing.firstByteTimeout` больше не применяются автоматически. Живой случай
-// 2026-10-01: Cline с промптом 22 547 токенов на gemma-4 (4.2 GB) — prefill
-// занимал больше 300 с, и запрос обрывался до первого токена. Медленный prefill
-// на partial offload — норма для этого железа, а не ошибка; обрывать его нельзя.
-// Эвристики остаются только в диагностике (ModelLatencyTracker.Recommended*).
+// ЧТО БЫЛО. Здесь возвращался 0 («без границы»), и это расходилось с R498: на
+// одном пути стояла оценка (1800 с для 16 ГБ), на четырёх других — бесконечность
+// (llamacpp_handlers_inference.go:347,615, proxy_request_openai_auto_stream.go:105,
+// llamacpp_transport.go:373). Один и тот же запрос обрывался или не обрывался в
+// зависимости от поверхности — именно такие расхождения и собирает аудит S1.
+//
+// ПОЧЕМУ НЕ ПЛОСКИЕ 180 с. Живой факт: холодная загрузка 16–27B на стенде
+// занимает 140–485 с, и воркер отдаёт заголовки только после загрузки. Плоские
+// 180 с обрывали её на середине (это и был дефект T-1), поэтому граница масштабируется
+// по размеру модели. Отключить её по-прежнему можно: LB_STREAMING_NEVER_TIMEOUT=1
+// или LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC=0.
 func (p *Proxy) getModelFirstByteTimeout(modelName string) time.Duration {
 	if isStreamingNeverTimeout() {
 		return 0
@@ -367,7 +374,8 @@ func (p *Proxy) getModelFirstByteTimeout(modelName string) time.Duration {
 			return time.Duration(profile.FirstByteTimeoutSec) * time.Second
 		}
 	}
-	return 0
+	// R523: та же оценка, что на пути с холодной загрузкой (R498). Второй политики нет.
+	return p.defaultFirstByteTimeoutForModelR498(modelName)
 }
 
 // getGlobalStreamTimeout — глобальный total-таймаут стриминга.

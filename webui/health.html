@@ -37,17 +37,27 @@
   <link rel="stylesheet" href="css/pages.css?v=R425">
   <link rel="stylesheet" href="css/layout.css?v=R425">
   <style>
+    /* R514 (2026-11-19): рамки этой страницы НЕ РИСОВАЛИСЬ ВООБЩЕ.
+       В семи объявлениях `border` стояла переменная `--border-color`, которая
+       определена только в css/monitor-app.css (там она равна `--border`),
+       а health.html подключает font-awesome/themes/base/components/pages/layout.
+       Невалидное значение внутри `border: 1px solid ...` отбрасывает ВСЁ
+       объявление, поэтому карточки, секции, разделители таблиц и кнопки были
+       без границ. Заменено на `var(--border)` из themes.css.
+       Сторож от этого класса дефекта - webui/tests/health-css-tokens.test.js:
+       каждая переменная, которую использует страница, обязана быть определена
+       в подключённых ею стилях. */
     /* F.γ-specific styles (inline чтобы не плодить css). */
     .health-page { padding: 24px; max-width: 1400px; margin: 0 auto; }
     .health-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
     .health-header h1 { margin: 0; font-size: 24px; display: flex; align-items: center; gap: 10px; }
     .health-header .actions { display: flex; gap: 8px; align-items: center; }
-    .health-header .actions button { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); cursor: pointer; font-size: 13px; }
+    .health-header .actions button { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary); cursor: pointer; font-size: 13px; }
     .health-header .actions button:hover { background: var(--bg-hover); }
     .health-header .actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 
     .health-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .health-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 10px; padding: 18px; }
+    .health-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
     .health-card .label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
     .health-card .value { font-size: 32px; font-weight: 700; color: var(--text-primary); line-height: 1; }
     .health-card .value.good { color: var(--success, #22c55e); }
@@ -67,12 +77,12 @@
     .health-score-fill.warn { background: var(--warning, #f59e0b); }
     .health-score-fill.bad { background: var(--danger, #ef4444); }
 
-    .health-section { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+    .health-section { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
     .health-section h2 { margin: 0 0 16px 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
     .health-section h2 .count { font-size: 12px; font-weight: 400; color: var(--text-secondary); }
 
     .health-table { width: 100%; border-collapse: collapse; }
-    .health-table th, .health-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border-color); font-size: 13px; }
+    .health-table th, .health-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
     .health-table th { color: var(--text-secondary); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
     .health-table td.mono { font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; }
     .health-table tr:hover { background: var(--bg-hover); }
@@ -83,7 +93,7 @@
     .backend-status.unhealthy { background: rgba(239,68,68,0.15); color: var(--danger, #ef4444); }
     .backend-status.unknown { background: rgba(107,114,128,0.15); color: var(--text-secondary); }
 
-    .error-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border-color); }
+    .error-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border); }
     .error-row:last-child { border-bottom: none; }
     .error-row .source-badge { flex: 0 0 90px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; text-align: center; }
     .error-row .source-badge.healthcheck { background: rgba(239,68,68,0.15); color: var(--danger, #ef4444); }
@@ -136,7 +146,7 @@
           <span class="dot"></span>
           <span id="connText" data-i18n="health.connecting">Connecting…</span>
         </div>
-        <select id="intervalSelect" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary)">
+        <select id="intervalSelect" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-primary)">
           <option value="2000">2s</option>
           <option value="5000" selected>5s</option>
           <option value="10000">10s</option>
@@ -144,7 +154,7 @@
         </select>
         <button id="pauseBtn" onclick="togglePause()" data-i18n="health.pause">⏸ Pause</button>
         <button id="refreshBtn" onclick="loadNow()" class="primary" data-i18n="health.refresh">🔄 Refresh</button>
-        <a href="/" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);text-decoration:none;font-size:13px" data-i18n="health.back">← Dashboard</a>
+        <a href="/" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-primary);text-decoration:none;font-size:13px" data-i18n="health.back">← Dashboard</a>
         <!-- R60.14 (2026-09-07): language picker. health.html uses its own
              inline I18N system (line 122) so we wire onchange to I18N.setLang.
              Same ollamalegion_lang localStorage key — synced with index.html + monitor.html. -->

@@ -42,6 +42,12 @@ issues:
     # перенос, а не правка. Переставить поля — отдельный шаг (иначе разбиение файлов
     # смешивается с изменением структур): долг записан в docs/architecture/debts.ru.md
     # (12y) вместе со списком структур. Остальные файлы пакета проверяются как раньше.
+    # R510 (шаг R3): тот же приём для двух разбитых файлов обработчиков — структуры
+    # перенесены как есть (`handlers_openai*` и `handlers_backends*`).
+    - path: (cmd/cppworker/handlers_openai|internal/api/handlers_backends).*\.go$
+      linters:
+        - govet
+      text: fieldalignment
     - path: internal/cppbackend/(backend_gguf|backend_load_history|backend_model_instance|hf_downloader_search|model_manager_resolve)\.go$
       linters:
         - govet

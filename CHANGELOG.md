@@ -1,3 +1,35 @@
+## [0.7.327 - R524: R3 читаемости — ollama-поверхность вынесена из handlers_model.go отдельным файлом, 2026-11-18]
+
+Структурный шаг R3 (`docs/plans/2026-11-19-readability-refactor.md`): **поведение не
+менялось**, перенесён только файл.
+
+**Что было.** `cmd/cppworker/handlers_model.go` — 3664 строки и 28 функций: загрузка
+модели, выгрузка, список моделей и вся ollama-поверхность (`/api/tags`, `/api/ps`,
+`/api/show`, copy/create/push) с её помощниками. Такой файл читается хуже, чем
+несколько по назначению.
+
+**Сделано.** Функции `handleOllamaTags`, `handleOllamaPS`, `handleOllamaShow`,
+`writeOllamaShowLoadedResponse`, `writeOllamaShowMetadataResponse`,
+`handleOllamaCopy`, `handleOllamaCreate`, `handleOllamaPush` и помощники
+(`modelDigest`, `quantizationForPSModel`, `modelParameterSize`,
+`estimateVRAMSizeForModel`, `quantizationOrUnknown`, `resolveModelPath`,
+`reloadSplitMode`) перенесены дословно в `handlers_model_ollama.go` (790 строк).
+`handlers_model.go` — **3664 → 2897**.
+
+**Доказательство «поведение не менялось».** Перенесённый текст сравнён с версией из
+`git show HEAD` после нормализации пробелов: **sha256 совпал**
+(`098082aaddba5b61…`, 762 строки до и после). `gofmt` чисто, `go build`/`go vet
+-tags llama_stub ./...` — чисто, `cmd/cppworker` тесты — зелёные (включая сторож
+`rpc_split_mode_wiring_r108_test.go`).
+
+**Ограничение, найденное по ходу (важно для следующих шагов).** Перенос
+`writeChatStreamResponseWithTools` из `handlers_chat.go` в отдельный файл **нельзя
+сделать без правки существующих тестов**: `load_duration_r493_test.go:64` и
+`r478_reasoning_scope_test.go:47` читают `handlers_chat.go` по имени файла и ищут
+в нём конкретные строки. Поэтому для этой функции допустим только разбор ВНУТРИ
+файла (вынесение этапов в функции того же файла), а критерий «0 функций >1000»
+достигается именно так — записано в план читаемости.
+
 ## [0.7.326 - R523: first-byte таймаут — одна политика на всех путях (эстиматор, не 180 с и не «бесконечно»), 2026-11-18]
 
 Закрывает последний пункт S1 аудита из §7 плана (T-1/T-2/T-3) — и попутно находит,

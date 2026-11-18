@@ -1,6 +1,6 @@
 # Читаемость и разбиение перегруженных файлов (не путать с «двумя мозгами»)
 
-**Дата:** 2026-11-19. **Статус:** 🟡 **R1, R4 и R7 закрыты; в R3 сделана часть** (R506 0.7.310 — стражи структуры; R509 0.7.313 — `internal/cppbackend` по ответственности; R510 0.7.314 — `handlers_openai.go` и `handlers_backends.go` разбиты по операциям; R507 0.7.311 — одна реализация хелперов). Впереди: R2 (`proxyRequestLlamaCpp` по стадиям), остаток R3 (стрим-писатели `handlers_chat.go`, `handlers_model.go`, `main()`), R5 (277 `_rNNN` → тематические имена), R6 (WebUI-модули).
+**Дата:** 2026-11-19. **Статус:** 🟡 **R1, R4 и R7 закрыты; в R3 сделана часть (R506/R509/R510/R524)** (R506 0.7.310 — стражи структуры; R509 0.7.313 — `internal/cppbackend` по ответственности; R510 0.7.314 — `handlers_openai.go` и `handlers_backends.go` разбиты по операциям; R507 0.7.311 — одна реализация хелперов). Впереди: R2 (`proxyRequestLlamaCpp` по стадиям), остаток R3 (стрим-писатели `handlers_chat.go`, `handlers_model.go`, `main()`), R5 (277 `_rNNN` → тематические имена), R6 (WebUI-модули).
 **Замер на момент R506 (2026-11-19, `scripts/structure_report.ps1`):** функций > 1000 строк — 2,
 > 300 — 41, ≥ 150 — 120; файлов ≥ 1500 строк — 27; `internal/cppbackend/backend.go` — 4117;
 **боевых файлов с `_rNNN` — 277** (список-база `docs/architecture/structure-baseline-r506.txt`).
@@ -168,6 +168,25 @@ rpc-ссылки) + `handlers_backends_list.go` 616 + `handlers_backends_mutate.
 Доказательство неизменности поведения то же, что в R4: разрезание по границам объявлений и
 склейка тел в исходном порядке совпадает с исходным телом (нормализованное сравнение); плюс
 `go vet` 0, `gofmt` чисто, `go test` и `-race` по `cmd/cppworker` и `internal/api` зелёные.
+
+**Итог R524 (часть R3, факт).** `handlers_model.go` 3664 → **2897**:
+ollama-поверхность (`handleOllamaTags/PS/Show/Copy/Create/Push`,
+`writeOllamaShow*`, `modelDigest`, `quantizationForPSModel`, `modelParameterSize`,
+`estimateVRAMSizeForModel`, `quantizationOrUnknown`, `resolveModelPath`,
+`reloadSplitMode`) перенесена дословно в `handlers_model_ollama.go` (790 строк).
+Доказательство: sha256 нормализованного текста перенесённого фрагмента совпал с
+версией из `git show HEAD` (762 строки до и после); `gofmt` чисто, `go build`/`go vet`
+чисто, тесты `cmd/cppworker` зелёные.
+
+**ОГРАНИЧЕНИЕ, найденное в R524 (определяет способ добить критерий).** Перенос
+`writeChatStreamResponseWithTools` из `handlers_chat.go` в отдельный файл **запрещён
+правилом «без правки существующих тестов»**: `load_duration_r493_test.go:64` и
+`r478_reasoning_scope_test.go:47` читают `handlers_chat.go` по имени файла и ищут в
+нём конкретные строки (кадры `load_duration`, тело функции по заголовку). Поэтому
+критерий «0 функций >1000» для этой функции достигается только разбором ВНУТРИ файла
+(вынесение этапов в функции того же файла), а не переносом. Для `handlers_model.go`
+такого ограничения нет — там сторож требует лишь две строки (`defSplitMode := -1`,
+`defSplitMode2 := -1`), обе остаются в `handleLoadModel`/`handleLoadWithParams`.
 
 Сторожа, читавшие `handlers_openai.go` по имени (`load_duration_r493`, `reasoning_split_policy_r108`,
 `terminal_budget_wiring_r402`), переведены на новый хелпер `readHandlerSourcesR510` — он склеивает

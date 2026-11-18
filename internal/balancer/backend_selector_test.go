@@ -141,7 +141,7 @@ func TestSelectByResources(t *testing.T) {
 			UseEnhancedScoring: false,
 			Prewarm:            types.PrewarmConfig{TriggerLoadThreshold: 0.80},
 		}},
-		queueMgr: NewQueueManager(nil, 10, 1, 30),
+		queueMgr: NewQueueManager(nil, 10),
 	}
 
 	p.metricsMgr.mu.Lock()
@@ -344,7 +344,7 @@ func TestSelectBackendExcluding(t *testing.T) {
 			UseEnhancedScoring: false,
 			Prewarm:            types.PrewarmConfig{TriggerLoadThreshold: 0.80},
 		}},
-		queueMgr: NewQueueManager(nil, 10, 1, 30),
+		queueMgr: NewQueueManager(nil, 10),
 	}
 
 	p.metricsMgr.mu.Lock()
@@ -389,7 +389,7 @@ func TestSelectFreeBackendAny(t *testing.T) {
 		},
 		metricsMgr: NewMetricsManager(),
 		config:     &types.LoadBalancerConfig{},
-		queueMgr:   NewQueueManager(nil, 10, 1, 30),
+		queueMgr:   NewQueueManager(nil, 10),
 	}
 
 	p.backends["b1"].mu.Lock()

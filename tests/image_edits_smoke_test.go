@@ -164,9 +164,7 @@ func setupImageEditsSmoke(t *testing.T) (*httptest.Server, *imageEditsWorkerMock
 			UseEnhancedScoring: false,
 			OperatingMode:      "standard",
 			RequestTimeout:     5,
-			QueueTimeout:       2,
 			QueueMaxSize:       10,
-			QueueWorkers:       1,
 		},
 		Backends: []types.Backend{
 			{

@@ -154,9 +154,7 @@ func newImageTestProxy(t *testing.T, imagePort int) *Proxy {
 		},
 		Balancing: types.BalancingSettings{
 			RequestTimeout: 10,
-			QueueTimeout:   5,
 			QueueMaxSize:   50,
-			QueueWorkers:   2,
 			OperatingMode:  "standard",
 		},
 	}

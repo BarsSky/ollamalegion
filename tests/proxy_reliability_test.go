@@ -168,7 +168,7 @@ func TestProxyEmbed_ModelNotFoundThenAutoPull(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{
 			RequestTimeout: 5,
-			QueueTimeout: 10, QueueMaxSize: 10, QueueWorkers: 1,
+			QueueMaxSize: 10, 
 			SessionStickiness: false,
 		},
 		Resources: types.ResourceLimits{
@@ -228,9 +228,7 @@ func TestProxyEmbed_MultiBackend(t *testing.T) {
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,
-			QueueTimeout:      60,
 			QueueMaxSize:      100,
-			QueueWorkers:      4,
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 95},
@@ -386,8 +384,8 @@ func TestProxyGenerate_FirstRequestWarmup_Success(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{
 			ModelAffinity: true,
-			SessionStickiness: true, RequestTimeout: 30, QueueTimeout: 60,
-			QueueMaxSize: 100, QueueWorkers: 4,
+			SessionStickiness: true, RequestTimeout: 30, 
+			QueueMaxSize: 100, 
 			SyncModelLoad: types.SyncModelLoadConfig{
 				Enabled: true,
 				Timeout: "5s",
@@ -769,7 +767,7 @@ func TestIntegration_BackendFailover(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{
 			SessionStickiness: false,
-			RequestTimeout: 5, QueueTimeout: 10, QueueMaxSize: 10, QueueWorkers: 1,
+			RequestTimeout: 5, QueueMaxSize: 10, 
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90},
@@ -1084,7 +1082,7 @@ func TestResponseIntegrity_TimeoutHandling(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{
 			RequestTimeout: 1, // 1 секунда таймаут
-			QueueTimeout: 2, QueueMaxSize: 10, QueueWorkers: 1,
+			QueueMaxSize: 10, 
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90},

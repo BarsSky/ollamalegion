@@ -54,9 +54,7 @@ type BalancingSettings struct {
 	// n_ctx) и рекомендует fix. R54.4 добавит авто-применение. Manual override:
 	// per-model profile "autoTune": false отключает для конкретной модели.
 	AutoTune       bool `json:"autoTune"`       // default true
-	QueueTimeout   int  `json:"queueTimeout"`   // секунды
 	QueueMaxSize   int  `json:"queueMaxSize"`   // макс. размер очереди
-	QueueWorkers   int  `json:"queueWorkers"`   // количество workers очереди
 	SessionTTL     int  `json:"sessionTTL"`     // секунды (0 = дефолт 900)
 	SessionIdleTTL int  `json:"sessionIdleTTL"` // секунды простоя до удаления сессии (0 = дефолт 300 / 5 мин)
 

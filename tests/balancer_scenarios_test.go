@@ -35,8 +35,6 @@ func newTestConfig(backends []types.Backend) *types.LoadBalancerConfig {
 			FirstByteTimeout:     2,
 			StreamingIdleTimeout: 60,
 			QueueMaxSize:         100,
-			QueueWorkers:         4,
-			QueueTimeout:         60,
 			HealthCheckInterval:  10,
 			ModelAffinity:        true,
 		},
@@ -293,7 +291,6 @@ func TestScenario5_RPS(t *testing.T) {
 	})
 	cfg.Balancing.FirstByteTimeout = 120
 	cfg.Balancing.RequestTimeout = 120
-	cfg.Balancing.QueueTimeout = 120
 
 	proxy := balancer.NewProxy(cfg)
 	proxy.UpdateMetrics("gpu-1", &types.BackendMetrics{
@@ -430,7 +427,6 @@ func TestScenario10_Concurrent(t *testing.T) {
 		{ID: "gpu-1", Name: "G1", Host: "127.0.0.1", OllamaPort: mustParsePort(b.URL), Weight: 1, MaxConcurrentReqs: 50, Status: types.StatusHealthy},
 	})
 	cfg.Balancing.FirstByteTimeout = 30
-	cfg.Balancing.QueueWorkers = 8
 
 	proxy := balancer.NewProxy(cfg)
 	proxy.UpdateMetrics("gpu-1", &types.BackendMetrics{
@@ -555,7 +551,6 @@ func TestScenario_Queue_FIFO_Dispatch(t *testing.T) {
 	})
 	cfg.Balancing.FirstByteTimeout = 30
 	cfg.Balancing.QueueMaxSize = 10
-	cfg.Balancing.QueueTimeout = 60
 
 	proxy := balancer.NewProxy(cfg)
 	proxy.UpdateMetrics("gpu-1", &types.BackendMetrics{
@@ -850,7 +845,6 @@ func TestScenario_Backpressure_503(t *testing.T) {
 	})
 	cfg.Balancing.FirstByteTimeout = 120
 	cfg.Balancing.QueueMaxSize = 5
-	cfg.Balancing.QueueTimeout = 120
 
 	proxy := balancer.NewProxy(cfg)
 	proxy.UpdateMetrics("gpu-1", &types.BackendMetrics{

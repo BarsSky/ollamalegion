@@ -33,9 +33,7 @@ func setupBalancerScenario(t *testing.T) *Proxy {
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			QueueMaxSize:      100,
-			QueueWorkers:      2,
 			RequestTimeout:    30,
-			QueueTimeout:      60,
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 95},

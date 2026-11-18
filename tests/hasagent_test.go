@@ -41,8 +41,6 @@ func setupHasAgentTestEnvironment(t *testing.T) (*httptest.Server, *balancer.Pro
 			MetricsInterval:     5,
 			RequestTimeout:      30,
 			QueueMaxSize:        100,
-			QueueWorkers:        4,
-			QueueTimeout:        60,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 95, MaxVRAMUsagePercent: 95, MaxTemperature: 90},

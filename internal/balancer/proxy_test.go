@@ -82,9 +82,7 @@ func createTestConfig() *types.LoadBalancerConfig {
 			ModelAffinity:     false,
 			SessionStickiness: false,
 			RequestTimeout:    30,
-			QueueTimeout:      10,
 			QueueMaxSize:      100,
-			QueueWorkers:      4,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{
@@ -137,7 +135,7 @@ func TestQueueManagerProcessedCount(t *testing.T) {
 	t.Parallel()
 
 	// 0 workers чтобы избежать panic с nil proxy
-	queueMgr := NewQueueManager(nil, 10, 0, 5*time.Second)
+	queueMgr := NewQueueManager(nil, 10)
 	defer queueMgr.Stop()
 
 	// Начальное значение (R66d: processed — atomic int64, читаем атомарно)

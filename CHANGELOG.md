@@ -1,3 +1,35 @@
+## [0.7.305 - R500 / аудит S2 (часть 2): LB_QUEUE_WORKERS/TIMEOUT удалены, 2026-11-19]
+
+Закрывает S-5 из §1.3 аудита и завершает **S2**. Пул worker'ов очереди удалён ещё в
+R78; `LB_QUEUE_WORKERS`/`LB_QUEUE_TIMEOUT` продолжали читаться из env, попадать в
+конфиг и отдаваться в `/queue/stats` ключами `workers`/`timeout_sec` — то есть
+выглядели работающими, хотя не включали ничего.
+
+**Удалено:** поля `QueueWorkers`/`QueueTimeout` из `types.BalancingSettings`;
+чтение env и дефолты (`internal/config`); ключи `queueTimeout`/`queueWorkers` из
+GET `/api/v1/cluster/config`, из экспорта и импорта конфига; ключи `workers` и
+`timeout_sec` из `/queue/stats` вместе с полями `QueueManager`; параметры
+`numWorkers`/`timeout` у `NewQueueManager`; записи из `.env.example`,
+`docker-compose.stack.yml` (проброс env) и из списка переменных для архива
+диагностики (`diag_summary_r476.go`).
+
+**Тесты:** два «зомби»-теста, проверявшие удалённое поведение, удалены
+(`TestResources_Scenario_QueueTimeout`, `TestQueueing_StreamingQueueTimeout`) —
+тест, который после удаления полей ничего не утверждает, хуже отсутствующего.
+Остальные (~60 литералов `QueueWorkers:`/`QueueTimeout:` в 38 файлах) убраны; в
+тестах, где эти поля задавались рядом с рабочими, ничего не изменилось.
+
+**Чем проверено:** полный набор `go test -tags llama_stub ./internal/...
+./cmd/... ./tests/... ./pkg/...` — зелёный; `go vet` — 0; `check_docs_claims` —
+расхождений нет. **Мутация:** вернуть `LB_QUEUE_WORKERS` в `.env.example` без
+потребителя → страж `TestR499_EveryEnvExampleVarHasConsumer` краснеет (имя в
+списке), после восстановления — зелёный. Сторож R274 (`EnvPassthrough`) сам указал
+на обе переменные после удаления — список диагностики пришлось вычистить, иначе он
+продолжал считать их «читаемыми кодом».
+
+**Итог S2:** S-1 (тюнер весов удалён), S-2 (пороги из конфига), S-3 (температура
+получила потребителя), S-4 (`modelLoadingCost` читается), S-5 (queue-переменные
+удалены), S-7 (`applied` только после применения) + страж переменных.
 ## [0.7.304 - R499 / аудит S2 (часть 1): потребитель или удаление, 2026-11-19]
 
 Шаг **S2** плана `docs/plans/2026-11-19-consistency-audit.md`: настройка либо

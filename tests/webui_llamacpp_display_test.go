@@ -37,7 +37,6 @@ func setupWebUITestServer(t *testing.T, engine types.BackendEngine, mode string)
 			UseEnhancedScoring: true,
 			OperatingMode:      mode,
 			QueueMaxSize:       100,
-			QueueTimeout:       60,
 		},
 		Backends: []types.Backend{
 			{

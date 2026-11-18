@@ -41,7 +41,6 @@ func TestProxyServeHTTP_RpcCoordinatorIntercepts(t *testing.T) {
 	emptyConfig := func() *types.LoadBalancerConfig {
 		c := createTestConfig()
 		c.Backends = nil
-		c.Balancing.QueueTimeout = 0 // disable queue — fail fast without 10s wait
 		return c
 	}
 

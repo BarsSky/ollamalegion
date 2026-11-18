@@ -253,9 +253,7 @@ func setupProxyWithSlowLoadMock(t *testing.T, mock *mockOllamaWithSlowLoad, requ
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    requestTimeout,
-			QueueTimeout:      60,
 			QueueMaxSize:      100,
-			QueueWorkers:      4,
 			AutoPull: types.AutoPullConfig{
 				Enabled:       true,
 				MaxConcurrent: 3,
@@ -460,9 +458,7 @@ func TestProxy_ModelNotAvailable_AutoPullRetry(t *testing.T) {
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,
-			QueueTimeout:      60,
 			QueueMaxSize:      100,
-			QueueWorkers:      4,
 			AutoPull: types.AutoPullConfig{
 				Enabled:       true,
 				MaxConcurrent: 3,

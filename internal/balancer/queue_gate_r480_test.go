@@ -72,8 +72,8 @@ func newR480SelectorProxy(t *testing.T, slots int) *Proxy {
 				Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy, MaxConcurrentReqs: slots, Weight: 1},
 		},
 		Balancing: types.BalancingSettings{
-			QueueMaxSize: 100, QueueWorkers: 1,
-			QueueTimeout: 30, HealthCheckInterval: 10, MetricsInterval: 5,
+			QueueMaxSize: 100, 
+			HealthCheckInterval: 10, MetricsInterval: 5,
 			SessionStickiness: true,
 		},
 	}

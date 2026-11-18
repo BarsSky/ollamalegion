@@ -85,7 +85,6 @@ func TestResources_Scenario_QueueOverflow(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{
 			QueueMaxSize:   10,
-			QueueTimeout:   1,
 			RequestTimeout: 30,
 		},
 		Resources: types.ResourceLimits{
@@ -98,7 +97,6 @@ func TestResources_Scenario_QueueOverflow(t *testing.T) {
 
 	// Just verify the config was accepted.
 	assert.Equal(t, 10, conf.Balancing.QueueMaxSize)
-	assert.Equal(t, 1, conf.Balancing.QueueTimeout)
 }
 
 // TestResources_Scenario_MaxConcurrentReqs —
@@ -245,22 +243,6 @@ func TestResources_Scenario_SlowBackend_Timeout(t *testing.T) {
 		return
 	}
 	resp.Body.Close()
-}
-
-// TestResources_Scenario_QueueTimeout —
-// queue timeout expired → 503.
-func TestResources_Scenario_QueueTimeout(t *testing.T) {
-	t.Parallel()
-	conf := &types.LoadBalancerConfig{
-		Balancing: types.BalancingSettings{
-			QueueTimeout: 5, // 5 seconds
-		},
-	}
-	proxy := newProxyWithCleanup(t, conf)
-	proxy.SetQueueManagerProxy()
-	defer proxy.queueMgr.Stop()
-
-	assert.Equal(t, 5, conf.Balancing.QueueTimeout)
 }
 
 // TestResources_Scenario_AdaptiveTimeout_Recalculate —

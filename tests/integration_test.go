@@ -59,9 +59,7 @@ func setupTestEnvironment(t *testing.T) (*httptest.Server, *api.Server, *balance
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
 			RequestTimeout:      30,
-			QueueTimeout:        60,
 			QueueMaxSize:        100,
-			QueueWorkers:        4,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{
@@ -720,8 +718,6 @@ func TestE2E_ProxyStreaming(t *testing.T) {
 			RequestTimeout:       30,
 			StreamingIdleTimeout: 60,
 			QueueMaxSize:         50,
-			QueueWorkers:         4,
-			QueueTimeout:         60,
 		},
 	}
 

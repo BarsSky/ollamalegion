@@ -639,8 +639,6 @@ func TestLoadScenario_QueueBackpressure(t *testing.T) {
 		// Прокси с маленькой очередью (3 слота)
 		proxyServer, _ := SetupExpandedProxy(t, mock, func(cfg *types.LoadBalancerConfig) {
 			cfg.Balancing.QueueMaxSize = 3
-			cfg.Balancing.QueueWorkers = 1 // 1 worker для медленной обработки
-			cfg.Balancing.QueueTimeout = 5 // 5 сек таймаут
 		})
 		defer proxyServer.Close()
 
@@ -699,8 +697,6 @@ func TestLoadScenario_QueueBackpressure(t *testing.T) {
 		// Очень маленькая очередь
 		proxyServer, _ := SetupExpandedProxy(t, mock, func(cfg *types.LoadBalancerConfig) {
 			cfg.Balancing.QueueMaxSize = 2
-			cfg.Balancing.QueueWorkers = 1
-			cfg.Balancing.QueueTimeout = 2
 		})
 		defer proxyServer.Close()
 
@@ -764,8 +760,6 @@ func TestLoadScenario_QueueBackpressure(t *testing.T) {
 
 		proxyServer, _ := SetupExpandedProxy(t, mock, func(cfg *types.LoadBalancerConfig) {
 			cfg.Balancing.QueueMaxSize = 10
-			cfg.Balancing.QueueWorkers = 1
-			cfg.Balancing.QueueTimeout = 1 // 1 секунда — запрос будет ждать в очереди 1с
 			cfg.Balancing.RequestTimeout = 30
 		})
 		defer proxyServer.Close()
@@ -898,7 +892,7 @@ func TestLoadScenario_ErrorHandling(t *testing.T) {
 			},
 			Balancing: types.BalancingSettings{
 				RequestTimeout: 30,
-				QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
+				QueueMaxSize: 100, 
 			},
 			Resources: types.ResourceLimits{
 				GPU:    types.GPULimits{MaxUsagePercent: 90},
@@ -1145,7 +1139,6 @@ func TestLoadScenario_EdgeCases(t *testing.T) {
 
 		// Устанавливаем короткий таймаут очереди, чтобы тест не зависал на 60с
 		proxyServer, proxy := SetupExpandedProxy(t, mock, func(cfg *types.LoadBalancerConfig) {
-			cfg.Balancing.QueueTimeout = 5 // 5 секунд таймаут очереди
 		})
 		defer proxyServer.Close()
 

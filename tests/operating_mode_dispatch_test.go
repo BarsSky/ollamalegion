@@ -187,9 +187,7 @@ func TestOperatingMode_DispatchQueue_Standard(t *testing.T) {
 	cfg := newTestConfig([]types.Backend{
 		{ID: "gpu-1", Name: "G1", Host: "127.0.0.1", OllamaPort: mustParsePort(be.URL), Weight: 1, MaxConcurrentReqs: 10, Status: types.StatusHealthy},
 	})
-	cfg.Balancing.QueueWorkers = 2
 	cfg.Balancing.QueueMaxSize = 10
-	cfg.Balancing.QueueTimeout = 5
 
 	proxy := balancer.NewProxy(cfg)
 	proxy.UpdateMetrics("gpu-1", &types.BackendMetrics{
@@ -227,7 +225,6 @@ func TestOperatingMode_DispatchQueue_Replication(t *testing.T) {
 	cfg.Balancing.ModelReplication = types.ModelReplicationConfig{
 		Enabled: true,
 	}
-	cfg.Balancing.QueueWorkers = 2
 	cfg.Balancing.QueueMaxSize = 10
 
 	proxy := balancer.NewProxy(cfg)

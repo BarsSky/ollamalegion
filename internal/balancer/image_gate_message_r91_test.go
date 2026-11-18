@@ -70,7 +70,7 @@ func TestTextNeighbourIDs_GPUUUIDMatchesAcrossHostNames(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{
 			RequestTimeout: 10,
-			QueueTimeout: 5, QueueMaxSize: 50, QueueWorkers: 2, OperatingMode: "standard",
+			QueueMaxSize: 50, OperatingMode: "standard",
 		},
 	}
 	p := newProxyWithCleanup(t, cfg)
@@ -128,7 +128,7 @@ func TestImageGate_DenialWithoutTextNeighbourStaysShort(t *testing.T) {
 		}},
 		Balancing: types.BalancingSettings{
 			RequestTimeout: 10,
-			QueueTimeout: 5, QueueMaxSize: 50, QueueWorkers: 2, OperatingMode: "standard",
+			QueueMaxSize: 50, OperatingMode: "standard",
 		},
 	}
 	p := newProxyWithCleanup(t, cfg)

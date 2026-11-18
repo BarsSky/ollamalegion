@@ -234,9 +234,7 @@ func setupImageSmoke(t *testing.T, withImage bool) (*httptest.Server, *imageWork
 			UseEnhancedScoring: false,
 			OperatingMode:      "standard",
 			RequestTimeout:     5,
-			QueueTimeout:       2,
 			QueueMaxSize:       10,
-			QueueWorkers:       1,
 		},
 		Backends: backends,
 	}

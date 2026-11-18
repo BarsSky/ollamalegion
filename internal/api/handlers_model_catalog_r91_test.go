@@ -73,7 +73,7 @@ func newCatalogAPIServer(t *testing.T, stub *catalogFileStub) *Server {
 		}},
 		Balancing: types.BalancingSettings{
 			HealthCheckInterval: 10,
-			MetricsInterval: 5, RequestTimeout: 30, QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
+			MetricsInterval: 5, RequestTimeout: 30, QueueMaxSize: 100, 
 		},
 		API:  types.APISettings{RateLimit: 500, RateBurst: 1000},
 		Auth: types.AuthConfig{Enabled: false},

@@ -699,9 +699,7 @@ func TestProxyOllama_RetryOnBackendFailure(t *testing.T) {
 		Balancing: types.BalancingSettings{
 			SessionStickiness: false,
 			RequestTimeout:    5,
-			QueueTimeout:      10,
 			QueueMaxSize:      10,
-			QueueWorkers:      1,
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90},

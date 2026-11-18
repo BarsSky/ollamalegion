@@ -75,8 +75,6 @@ func createProxy2(t *testing.T, fakes []*fakeOllama) *balancer.Proxy {
 			ModelAffinity:     true,
 			SessionStickiness: false,
 			QueueMaxSize:      5,
-			QueueWorkers:      1,
-			QueueTimeout:      5,
 			RequestTimeout:    10,
 			Scoring: types.ScoringWeights{
 				ModelAlreadyLoaded: 0.15,

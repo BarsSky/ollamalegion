@@ -21,8 +21,10 @@ package balancer
 //     (всегда пусты: реальные ожидающие живут в admission-очереди, их видно в
 //     `/api/v1/queue/stats` → `admission`).
 //
-// `numWorkers`/`timeout` остаются только для совместимости API-ответов
-// (`workers`, `timeout_sec`) — пула worker'ов больше нет.
+// R499 / аудит S-5 (2026-11-19): `numWorkers`/`timeout` УДАЛЕНЫ. Пул worker'ов
+// исчез ещё в R78, а эти два поля жили только для ключей `workers`/`timeout_sec`
+// в /queue/stats: настройки LB_QUEUE_WORKERS/LB_QUEUE_TIMEOUT ничего не включали,
+// но выглядели рабочими.
 
 import (
 	"net/http"
@@ -53,12 +55,8 @@ type QueueManager struct {
 	dispatchAffinity int64
 	dispatchLoad     int64
 	dispatchConfig   int64
-	// timeout — исторический queueTimeout (в API как timeout_sec).
-	timeout time.Duration
-	// maxSize — порог backpressure единой очереди; numWorkers — legacy-значение
-	// для ответа API (`workers`).
-	maxSize    int
-	numWorkers int
+	// maxSize — порог backpressure единой очереди.
+	maxSize int
 
 	pendingMu    sync.RWMutex
 	processingMu sync.RWMutex
@@ -85,8 +83,6 @@ type QueueStats struct {
 	MaxSize            int                 `json:"max_size"`
 	Processed          int64               `json:"processed_total"`
 	WaitTimeAvgMs      int64               `json:"avg_wait_time_ms"`
-	Workers            int                 `json:"workers"`
-	TimeoutSec         int                 `json:"timeout_sec"`
 	DispatchByAffinity int64               `json:"dispatch_by_affinity"`
 	DispatchByLoad     int64               `json:"dispatch_by_load"`
 	DispatchByConfig   int64               `json:"dispatch_by_config"`
@@ -129,14 +125,12 @@ type queueBackendWaitStats struct {
 
 // NewQueueManager - создание хранилища статистики очереди.
 //
-// Сигнатура сохранена ради конфига (`queueMaxSize`, `queueWorkers`,
-// `queueTimeout`) и существующих вызовов/тестов; пул worker'ов не создаётся —
-// ожидание слотов обеспечивает admission-очередь (R73).
-func NewQueueManager(_ *Proxy, maxSize int, numWorkers int, timeout time.Duration) *QueueManager {
+// R499 / аудит S-5: параметры `numWorkers`/`timeout` удалены вместе с полями.
+// Пул worker'ов не создаётся — ожидание слотов обеспечивает admission-очередь
+// (R73), а настройки LB_QUEUE_WORKERS/LB_QUEUE_TIMEOUT удалены из конфига.
+func NewQueueManager(_ *Proxy, maxSize int) *QueueManager {
 	return &QueueManager{
-		maxSize:    maxSize,
-		numWorkers: numWorkers,
-		timeout:    timeout,
+		maxSize: maxSize,
 	}
 }
 

@@ -253,9 +253,7 @@ func setupLlamaCppProxy(t *testing.T, backendSrvURL string) (*httptest.Server, *
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,
-			QueueTimeout:      60,
 			QueueMaxSize:      100,
-			QueueWorkers:      4,
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 95},
@@ -434,7 +432,7 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioB_OllamaDirect(t *testing.T) {
 		Balancing: types.BalancingSettings{
 			ModelAffinity: true,
 			SessionStickiness: true, RequestTimeout: 30,
-			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
+			QueueMaxSize: 100, 
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 95},
@@ -556,7 +554,7 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioC_ExpandedMockStyle(t *testing.T) {
 		Balancing: types.BalancingSettings{
 			ModelAffinity: true,
 			SessionStickiness: true, RequestTimeout: 30,
-			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
+			QueueMaxSize: 100, 
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 95},

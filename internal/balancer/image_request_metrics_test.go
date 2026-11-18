@@ -427,7 +427,7 @@ func TestImageRequestMetrics_NoBackendIsRejectedNotSilent(t *testing.T) {
 		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", StatePath: t.TempDir() + "/state.json"},
 		Balancing: types.BalancingSettings{
 			OperatingMode: "standard",
-			RequestTimeout: 5, QueueTimeout: 2, QueueMaxSize: 10, QueueWorkers: 1,
+			RequestTimeout: 5, QueueMaxSize: 10, 
 		},
 	})
 	surface := httptest.NewServer(NewOpenAISurface(p))

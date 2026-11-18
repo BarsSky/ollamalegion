@@ -375,8 +375,6 @@ func (p *Proxy) GetQueueStats() QueueStats {
 	// которое инкрементировалось под qm.mu, и -race ловил это как гонку
 	// (Read at cluster_state.go:247 vs Write in QueueManager.recordCompleted).
 	processed := atomic.LoadInt64(&p.queueMgr.processed)
-	workers := p.queueMgr.numWorkers
-	timeout := p.queueMgr.timeout
 	// NOTE: не держим p.queueMgr.mu — эти поля либо init-only (numWorkers,
 	// timeout), либо atomic (processed).
 	// Round 34 bug: я случайно добавил p.queueMgr.mu.Unlock() без matching
@@ -417,8 +415,6 @@ func (p *Proxy) GetQueueStats() QueueStats {
 		MaxSize:            p.queueMgr.maxSize,
 		Processed:          processed,
 		WaitTimeAvgMs:      avgWaitMs,
-		Workers:            workers,
-		TimeoutSec:         int(timeout.Seconds()),
 		DispatchByAffinity: atomic.LoadInt64(&p.queueMgr.dispatchAffinity),
 		DispatchByLoad:     atomic.LoadInt64(&p.queueMgr.dispatchLoad),
 		DispatchByConfig:   atomic.LoadInt64(&p.queueMgr.dispatchConfig),

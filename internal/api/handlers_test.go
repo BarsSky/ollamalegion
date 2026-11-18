@@ -54,9 +54,7 @@ func createTestServer(t *testing.T) (*httptest.Server, *Server, *balancer.Proxy)
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
 			RequestTimeout:      30,
-			QueueTimeout:        60,
 			QueueMaxSize:        100,
-			QueueWorkers:        4,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{
@@ -644,9 +642,7 @@ func TestHandlersWithAuthentication(t *testing.T) {
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
 			RequestTimeout:      30,
-			QueueTimeout:        60,
 			QueueMaxSize:        100,
-			QueueWorkers:        4,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{
@@ -762,9 +758,7 @@ func TestClusterHandler_EmptyState(t *testing.T) {
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
 			RequestTimeout:      30,
-			QueueTimeout:        60,
 			QueueMaxSize:        100,
-			QueueWorkers:        4,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{

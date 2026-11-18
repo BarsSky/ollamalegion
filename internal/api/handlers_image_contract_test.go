@@ -92,8 +92,8 @@ func createImageContractTestServer(
 		},
 		Balancing: types.BalancingSettings{
 			HealthCheckInterval: 10,
-			MetricsInterval: 5, RequestTimeout: 30, QueueTimeout: 60,
-			QueueMaxSize: 100, QueueWorkers: 4,
+			MetricsInterval: 5, RequestTimeout: 30, 
+			QueueMaxSize: 100, 
 		},
 		API:  types.APISettings{RateLimit: 1000, RateBurst: 2000},
 		Auth: types.AuthConfig{Enabled: false},

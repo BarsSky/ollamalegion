@@ -96,7 +96,7 @@ func TestGetUnloadCandidates(t *testing.T) {
 		},
 		metricsMgr: NewMetricsManager(),
 		config:     &types.LoadBalancerConfig{},
-		queueMgr:   NewQueueManager(nil, 10, 1, 30),
+		queueMgr:   NewQueueManager(nil, 10),
 	}
 
 	p.metricsMgr.mu.Lock()
@@ -151,7 +151,7 @@ func TestGetUnloadCandidates_ActiveModels(t *testing.T) {
 		},
 		metricsMgr: NewMetricsManager(),
 		config:     &types.LoadBalancerConfig{},
-		queueMgr:   NewQueueManager(nil, 10, 1, 30),
+		queueMgr:   NewQueueManager(nil, 10),
 	}
 
 	p.metricsMgr.mu.Lock()
@@ -191,7 +191,7 @@ func TestGetUnloadCandidates_UnhealthyBackend(t *testing.T) {
 		},
 		metricsMgr: NewMetricsManager(),
 		config:     &types.LoadBalancerConfig{},
-		queueMgr:   NewQueueManager(nil, 10, 1, 30),
+		queueMgr:   NewQueueManager(nil, 10),
 	}
 
 	p.metricsMgr.mu.Lock()
@@ -225,7 +225,7 @@ func TestGetUnloadCandidates_WarmingModel(t *testing.T) {
 		},
 		metricsMgr: NewMetricsManager(),
 		config:     &types.LoadBalancerConfig{},
-		queueMgr:   NewQueueManager(nil, 10, 1, 30),
+		queueMgr:   NewQueueManager(nil, 10),
 	}
 
 	p.metricsMgr.mu.Lock()
@@ -261,7 +261,7 @@ func TestUnloadModel(t *testing.T) {
 		},
 		metricsMgr: NewMetricsManager(),
 		config:     &types.LoadBalancerConfig{},
-		queueMgr:   NewQueueManager(nil, 10, 1, 30),
+		queueMgr:   NewQueueManager(nil, 10),
 	}
 
 	us := NewUnloadScheduler(p)
@@ -302,7 +302,7 @@ func TestUnloadSchedulerStartStop(t *testing.T) {
 	p := &Proxy{
 		config:     &types.LoadBalancerConfig{},
 		metricsMgr: NewMetricsManager(),
-		queueMgr:   NewQueueManager(nil, 10, 1, 30),
+		queueMgr:   NewQueueManager(nil, 10),
 	}
 	us := NewUnloadScheduler(p)
 	us.checkInterval = 50 * time.Millisecond
@@ -320,7 +320,7 @@ func TestUnloadSchedulerStartStop(t *testing.T) {
 }
 
 func TestSetEnabled(t *testing.T) {
-	p := &Proxy{config: &types.LoadBalancerConfig{}, metricsMgr: NewMetricsManager(), queueMgr: NewQueueManager(nil, 10, 1, 30)}
+	p := &Proxy{config: &types.LoadBalancerConfig{}, metricsMgr: NewMetricsManager(), queueMgr: NewQueueManager(nil, 10)}
 	us := NewUnloadScheduler(p)
 	us.checkInterval = 50 * time.Millisecond
 
@@ -348,7 +348,7 @@ func TestSetEnabled(t *testing.T) {
 func TestActiveModelsMap(t *testing.T) {
 	p := &Proxy{
 		config:   &types.LoadBalancerConfig{},
-		queueMgr: NewQueueManager(nil, 10, 1, 30),
+		queueMgr: NewQueueManager(nil, 10),
 	}
 
 	p.queueMgr.processingMu.Lock()

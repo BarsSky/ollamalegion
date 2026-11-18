@@ -116,7 +116,6 @@ func TestLoadBalancerConfigStructure(t *testing.T) {
 			MetricsInterval:     5,
 			RequestTimeout:      30,
 			QueueMaxSize:        100,
-			QueueWorkers:        4,
 		},
 		API: types.APISettings{
 			RateLimit: 100,
@@ -162,7 +161,6 @@ func TestLoadBalancerConfigStructure(t *testing.T) {
 	assert.Equal(t, 5, config.Balancing.MetricsInterval)
 	assert.Equal(t, 30, config.Balancing.RequestTimeout)
 	assert.Equal(t, 100, config.Balancing.QueueMaxSize)
-	assert.Equal(t, 4, config.Balancing.QueueWorkers)
 	assert.Equal(t, 100.0, config.API.RateLimit)
 	assert.Equal(t, 200.0, config.API.RateBurst)
 	assert.False(t, config.Auth.Enabled)

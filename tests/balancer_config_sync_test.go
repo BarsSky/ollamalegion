@@ -31,7 +31,6 @@ func TestOperatingModePropagation(t *testing.T) {
 		Balancing: types.BalancingSettings{
 			OperatingMode: "standard",
 			QueueMaxSize:  100,
-			QueueTimeout:  300,
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 85},

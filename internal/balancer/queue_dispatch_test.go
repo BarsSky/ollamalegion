@@ -79,8 +79,6 @@ func TestCanAcceptRequest(t *testing.T) {
 			Prewarm:             types.PrewarmConfig{TriggerLoadThreshold: 0.80},
 			SyncModelLoad:       types.SyncModelLoadConfig{Enabled: true, Timeout: "30s"},
 			QueueMaxSize:        10,
-			QueueWorkers:        2,
-			QueueTimeout:        60,
 			ResourceReservation: types.ResourceReservationConfig{GPUHeadroomPercent: 0.10},
 		},
 		Resources: types.ResourceLimits{

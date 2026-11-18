@@ -959,7 +959,7 @@ func TestOpenWebUI_NDJSON_ContentType(t *testing.T) {
 		Balancing: types.BalancingSettings{
 			ModelAffinity: true,
 			SessionStickiness: true, RequestTimeout: 30,
-			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
+			QueueMaxSize: 100, 
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 95},

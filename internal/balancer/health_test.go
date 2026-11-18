@@ -50,9 +50,7 @@ func createTestHealthChecker(t *testing.T) (*HealthChecker, *Proxy) {
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
 			RequestTimeout:      30,
-			QueueTimeout:        60,
 			QueueMaxSize:        100,
-			QueueWorkers:        4,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{
@@ -321,9 +319,7 @@ func TestHealthChecker_Threshold(t *testing.T) {
 			HealthCheckInterval: 1,
 			MetricsInterval:     5,
 			RequestTimeout:      30,
-			QueueTimeout:        60,
 			QueueMaxSize:        100,
-			QueueWorkers:        4,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{

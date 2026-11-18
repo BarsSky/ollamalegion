@@ -48,8 +48,6 @@ func newUnifiedQueueProxyR73(t *testing.T, maxConcurrent int) *Proxy {
 		}},
 		Balancing: types.BalancingSettings{
 			QueueMaxSize:        100,
-			QueueWorkers:        1,
-			QueueTimeout:        30,
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
 		},
@@ -361,7 +359,7 @@ func TestServeHTTP_UnifiedQueue_OllamaPath_R73(t *testing.T) {
 		}},
 		Balancing: types.BalancingSettings{
 			QueueMaxSize: 100,
-			QueueWorkers: 1, QueueTimeout: 30,
+			
 		},
 	}
 	proxy := newProxyWithCleanup(t, cfg)

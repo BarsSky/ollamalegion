@@ -127,9 +127,7 @@ func createNoAgentProxy(t *testing.T, mocks []*noAgentMockOllama, algorithm type
 			ModelAffinity:      false, // Отключаем — требует метрик от агента
 			SessionStickiness:  true,
 			RequestTimeout:     30,
-			QueueTimeout:       60,
 			QueueMaxSize:       100,
-			QueueWorkers:       4,
 			UseEnhancedScoring: false, // Отключаем — требует GPU метрик
 			// R60.18 F2: StreamingMaxDuration removed (dead field, see docs/archive/rounds/r60.18-env-flags-audit.ru.md)
 			// Все агент-зависимые модули отключены по умолчанию
@@ -263,9 +261,7 @@ func TestNoAgent_RoundRobin(t *testing.T) {
 			ModelAffinity:      false,
 			SessionStickiness:  false, // Отключаем для чистого round-robin
 			RequestTimeout:     30,
-			QueueTimeout:       60,
 			QueueMaxSize:       100,
-			QueueWorkers:       4,
 			UseEnhancedScoring: false,
 		},
 		Resources: types.ResourceLimits{
@@ -396,9 +392,8 @@ func TestNoAgent_QueueWhenAllBusy(t *testing.T) {
 			ModelAffinity:      false,
 			SessionStickiness:  false,
 			RequestTimeout:     30,
-			QueueTimeout:       5, // короткий таймаут для теста
+			// короткий таймаут для теста
 			QueueMaxSize:       10,
-			QueueWorkers:       1,
 			UseEnhancedScoring: false,
 		},
 		Resources: types.ResourceLimits{
@@ -528,9 +523,7 @@ func TestNoAgent_RetryOnBackendFailure(t *testing.T) {
 			ModelAffinity:     false,
 			SessionStickiness: false,
 			RequestTimeout:    5,
-			QueueTimeout:      10,
 			QueueMaxSize:      10,
-			QueueWorkers:      1,
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90},
@@ -760,9 +753,7 @@ func TestNoAgent_StreamingProxy(t *testing.T) {
 			ModelAffinity:     false,
 			SessionStickiness: false,
 			RequestTimeout:    30,
-			QueueTimeout:      60,
 			QueueMaxSize:      100,
-			QueueWorkers:      4,
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90},

@@ -39,7 +39,7 @@ func newDisableTestProxy(t *testing.T) *Proxy {
 		config: &types.LoadBalancerConfig{Balancing: types.BalancingSettings{
 			Prewarm: types.PrewarmConfig{TriggerLoadThreshold: 0.80},
 		}},
-		queueMgr:  NewQueueManager(nil, 10, 1, 30),
+		queueMgr:  NewQueueManager(nil, 10),
 		statePath: filepath.Join(t.TempDir(), "state.json"),
 	}
 
@@ -257,7 +257,7 @@ func TestR250_DisabledSurvivesStateRoundTrip(t *testing.T) {
 			Balancing: types.BalancingSettings{Prewarm: types.PrewarmConfig{TriggerLoadThreshold: 0.80}},
 		},
 		metricsMgr: NewMetricsManager(),
-		queueMgr:   NewQueueManager(nil, 10, 1, 30),
+		queueMgr:   NewQueueManager(nil, 10),
 		statePath:  p.statePath,
 	}
 	for i := range fresh.config.Backends {

@@ -61,7 +61,7 @@ func TestFirstByteTimeout_RetryOnHungStream(t *testing.T) {
 		Balancing: types.BalancingSettings{
 			ModelAffinity: true, SessionStickiness: true,
 			FirstByteTimeout: 2, StreamingIdleTimeout: 60, RequestTimeout: 30,
-			QueueTimeout: 300, QueueMaxSize: 100, QueueWorkers: 4, SessionTTL: 900,
+			QueueMaxSize: 100, SessionTTL: 900,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 85},
@@ -116,7 +116,7 @@ func TestTwoClientsSameIP_DifferentSessions(t *testing.T) {
 		Balancing: types.BalancingSettings{
 			ModelAffinity: true, SessionStickiness: true,
 			FirstByteTimeout: 30, StreamingIdleTimeout: 120, RequestTimeout: 30,
-			QueueTimeout: 300, QueueMaxSize: 100, QueueWorkers: 4, SessionTTL: 900,
+			QueueMaxSize: 100, SessionTTL: 900,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90}, CPU: types.CPULimits{MaxUsagePercent: 80}, Memory: types.MemoryLimits{MaxUsagePercent: 85},
@@ -226,7 +226,7 @@ func TestLoadBalancing_MultipleClients(t *testing.T) {
 		Balancing: types.BalancingSettings{
 			ModelAffinity: true, SessionStickiness: true,
 			FirstByteTimeout: 30, StreamingIdleTimeout: 120, RequestTimeout: 30,
-			QueueTimeout: 30, QueueMaxSize: 100, QueueWorkers: 6, SessionTTL: 900,
+			QueueMaxSize: 100, SessionTTL: 900,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{MaxUsagePercent: 90}, CPU: types.CPULimits{MaxUsagePercent: 80}, Memory: types.MemoryLimits{MaxUsagePercent: 85},
@@ -438,9 +438,9 @@ func TestLoadBalancing_SameClientQueueFIFO(t *testing.T) {
 			FirstByteTimeout:     5,
 			StreamingIdleTimeout: 30,
 			RequestTimeout:       30,
-			QueueTimeout:         30, // long enough: 6 reqs × 100ms = 600ms total
+			// long enough: 6 reqs × 100ms = 600ms total
 			QueueMaxSize:         50,
-			QueueWorkers:         1, // single worker = strict serial on backend
+			// single worker = strict serial on backend
 			SessionTTL:           900,
 		},
 		Resources: types.ResourceLimits{

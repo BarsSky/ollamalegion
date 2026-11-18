@@ -19,8 +19,6 @@ func createTestConfig(backends []types.Backend) *types.LoadBalancerConfig {
 			ModelAffinity:     true,
 			SessionStickiness: false,
 			QueueMaxSize:      10,
-			QueueWorkers:      2,
-			QueueTimeout:      30,
 			RequestTimeout:    30,
 			SessionTTL:        900,
 			Scoring: types.ScoringWeights{

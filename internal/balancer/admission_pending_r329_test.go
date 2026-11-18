@@ -16,7 +16,7 @@ import (
 
 // TestR329_PendingRowVisibleWhileWaiting — строка есть, пока ждём, и уходит при выходе.
 func TestR329_PendingRowVisibleWhileWaiting(t *testing.T) {
-	qm := NewQueueManager(nil, 1, 1, time.Minute)
+	qm := NewQueueManager(nil, 1)
 	p := &Proxy{queueMgr: qm}
 
 	row := p.noteAdmissionPendingR329("gemma-4-E4B-it-Q4_K_M", "cppworker-gpu")
@@ -47,7 +47,7 @@ func TestR329_PendingRowVisibleWhileWaiting(t *testing.T) {
 // TestR329_ParallelRequestsKeepTheirOwnRows — удаление по указателю: два запроса
 // с одной моделью не снимают строку друг друга.
 func TestR329_ParallelRequestsKeepTheirOwnRows(t *testing.T) {
-	qm := NewQueueManager(nil, 1, 1, time.Minute)
+	qm := NewQueueManager(nil, 1)
 	p := &Proxy{queueMgr: qm}
 
 	first := p.noteAdmissionPendingR329("m", "b1")
@@ -75,7 +75,7 @@ func TestR329_NilSafety(t *testing.T) {
 	}
 	p.clearAdmissionPendingR329(nil) // не должно паниковать
 
-	qm := NewQueueManager(nil, 1, 1, time.Minute)
+	qm := NewQueueManager(nil, 1)
 	if row := qm.noteAdmissionPendingR329("m", "b"); row == nil {
 		t.Fatal("менеджер очереди обязан создать строку")
 	}
@@ -87,7 +87,7 @@ func TestR329_NilSafety(t *testing.T) {
 
 // TestR329_PendingDTOCarriesWaitTime — waitTimeMs растёт: оператор видит, сколько ждём.
 func TestR329_PendingDTOCarriesWaitTime(t *testing.T) {
-	qm := NewQueueManager(nil, 1, 1, time.Minute)
+	qm := NewQueueManager(nil, 1)
 	p := &Proxy{queueMgr: qm}
 	row := p.noteAdmissionPendingR329("m", "b")
 	defer p.clearAdmissionPendingR329(row)

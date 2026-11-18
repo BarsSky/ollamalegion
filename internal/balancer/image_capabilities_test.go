@@ -142,9 +142,7 @@ func newImageCapsProxy(t *testing.T, backends ...types.Backend) *Proxy {
 		Backends: backends,
 		Balancing: types.BalancingSettings{
 			RequestTimeout: 10,
-			QueueTimeout:   5,
 			QueueMaxSize:   50,
-			QueueWorkers:   2,
 			OperatingMode:  "standard",
 		},
 	}

@@ -67,9 +67,7 @@ func createHealthTestServer(t *testing.T) (*httptest.Server, *Server, *balancer.
 		Balancing: types.BalancingSettings{
 			HealthCheckInterval: 10,
 			RequestTimeout:      30,
-			QueueTimeout:        60,
 			QueueMaxSize:        100,
-			QueueWorkers:        4,
 		},
 		API: types.APISettings{
 			RateLimit: 100,

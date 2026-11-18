@@ -77,9 +77,7 @@ func TestLoadBalancing_DetailedStressReport(t *testing.T) {
 			FirstByteTimeout:     30,
 			StreamingIdleTimeout: 120,
 			RequestTimeout:       30,
-			QueueTimeout:         30,
 			QueueMaxSize:         100,
-			QueueWorkers:         6,
 			SessionTTL:           900,
 		},
 		Resources: types.ResourceLimits{

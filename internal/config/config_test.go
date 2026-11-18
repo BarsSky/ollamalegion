@@ -215,5 +215,4 @@ func TestSetDefaults(t *testing.T) {
 	assert.Equal(t, 18081, config.LoadBalancer.APIPort)
 	assert.Equal(t, 120, config.Balancing.RequestTimeout)
 	assert.Equal(t, 100, config.Balancing.QueueMaxSize)
-	assert.Equal(t, 4, config.Balancing.QueueWorkers)
 }

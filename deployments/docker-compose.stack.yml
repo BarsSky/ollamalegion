@@ -478,9 +478,7 @@ services:
       # Интервалы и legacy-очередь
       - LB_HEALTH_CHECK_INTERVAL
       - LB_METRICS_INTERVAL
-      - LB_QUEUE_TIMEOUT
       - LB_QUEUE_MAX_SIZE
-      - LB_QUEUE_WORKERS
       # Лимиты ресурсов (мягкие по умолчанию)
       - LB_GPU_MAX_USAGE
       - LB_GPU_MAX_VRAM

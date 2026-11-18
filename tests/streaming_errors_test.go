@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -326,13 +325,13 @@ func TestStreaming_SlowClientWriteError(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{
 			RequestTimeout: 5,
-			QueueTimeout: 10, QueueMaxSize: 10, QueueWorkers: 1,
+			QueueMaxSize:   10,
 		},
 		Resources: types.ResourceLimits{
-			GPU: types.GPULimits{MaxUsagePercent: 90},
-			CPU: types.CPULimits{MaxUsagePercent: 90},
+			GPU:    types.GPULimits{MaxUsagePercent: 90},
+			CPU:    types.CPULimits{MaxUsagePercent: 90},
 			Memory: types.MemoryLimits{MaxUsagePercent: 90},
-			Disk: types.DiskLimits{MinFreeMB: 100},
+			Disk:   types.DiskLimits{MinFreeMB: 100},
 		},
 	}
 
@@ -817,8 +816,8 @@ func TestStreaming_SlotReleaseOnError(t *testing.T) {
 
 			// Проверяем: слоты освобождены — активных запросов должно быть 0
 			state := proxy.GetClusterState()
-		assert.Equal(t, 0, state.ActiveRequests,
-			"ActiveRequests should be 0 after all disconnects in %s", tt.name)
+			assert.Equal(t, 0, state.ActiveRequests,
+				"ActiveRequests should be 0 after all disconnects in %s", tt.name)
 
 			// Отправляем нормальный non-streaming запрос — должен работать
 			checkPayload := map[string]interface{}{
@@ -1041,111 +1040,6 @@ func TestNonStreaming_HasContentLength(t *testing.T) {
 }
 
 // =============================================================================
-// Тест 14: Idle бэкенд — нет токенов долгое время (проверка stream timeout)
-// =============================================================================
-
-// TestQueueing_StreamingQueueTimeout проверяет, что streaming запросы
-// в очереди получают сокращённый таймаут (queueTimeout/2 vs queueTimeout),
-// и клиент не висит бесконечно.
-func TestQueueing_StreamingQueueTimeout(t *testing.T) {
-	// Один бэкенд с 1 слотом — все запросы кроме первого в очередь
-	mock := NewExpandedMockServer(MockBehavior{
-		StreamResponseSize: 50,
-		ChunkDelay:         100 * time.Millisecond,
-	})
-	defer mock.Close()
-
-	config := &types.LoadBalancerConfig{
-		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 0, APIPort: 0},
-		Backends: []types.Backend{
-			{
-				ID: "single-slot", Name: "Single Slot Backend",
-				Host: "", OllamaPort: 0, // будет заполнено ниже
-				Weight: 1, MaxConcurrentReqs: 1, Status: types.StatusHealthy,
-			},
-		},
-		Balancing: types.BalancingSettings{
-			RequestTimeout: 30,
-			QueueTimeout:   2, // 2 секунды общий, streaming — 1 секунда
-			QueueMaxSize:   5,
-			QueueWorkers:   1,
-		},
-		Resources: types.ResourceLimits{
-			GPU:    types.GPULimits{MaxUsagePercent: 90},
-			CPU:    types.CPULimits{MaxUsagePercent: 90},
-			Memory: types.MemoryLimits{MaxUsagePercent: 90},
-			Disk:   types.DiskLimits{MinFreeMB: 100},
-		},
-	}
-
-	host, port := mock.HostPort()
-	config.Backends[0].Host = host
-	config.Backends[0].OllamaPort = port
-
-	proxy := balancer.NewProxy(config)
-	proxy.UpdateMetrics("single-slot", &types.BackendMetrics{
-		ID: "single-slot",
-		Ollama: types.OllamaMetrics{
-			MaxModels: 5, MaxConcurrentRequests: 1, ActiveRequests: 0, OllamaAvailable: true,
-			RunningModels: []types.RunningModel{
-				{Name: "llama3.1:8b", VRAMUsage: 6000},
-			},
-		},
-	})
-
-	proxyServer := httptest.NewServer(proxy)
-	defer proxyServer.Close()
-
-	// Первый запрос (streaming, занимает единственный слот надолго)
-	payload1 := map[string]interface{}{
-		"model":  "llama3.1:8b",
-		"prompt": "Long running request",
-		"stream": true,
-	}
-	body1, _ := json.Marshal(payload1)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		resp, err := http.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body1))
-		if err == nil && resp != nil {
-			io.CopyN(io.Discard, resp.Body, 1<<20)
-			resp.Body.Close()
-		}
-	}()
-
-	// Ждём пока слот занят
-	time.Sleep(200 * time.Millisecond)
-
-	// Второй streaming запрос — должен попасть в очередь и получить 503 через ~1 секунду
-	payload2 := map[string]interface{}{
-		"model":  "llama3.1:8b",
-		"prompt": "Should timeout in queue quickly",
-		"stream": true,
-	}
-	body2, _ := json.Marshal(payload2)
-
-	start := time.Now()
-	client2 := &http.Client{Timeout: 5 * time.Second}
-	resp2, err := client2.Post(proxyServer.URL+"/api/generate", "application/json", bytes.NewBuffer(body2))
-	elapsed := time.Since(start).Seconds()
-
-	if err != nil {
-		t.Logf("Second request error after %.2fs (expected): %v", elapsed, err)
-	} else {
-		resp2.Body.Close()
-		t.Logf("Second request status=%d after %.2fs", resp2.StatusCode, elapsed)
-	}
-
-	// Ключевая проверка: завершилось менее чем за 5 секунд (не висело бесконечно)
-	assert.Less(t, elapsed, 5.0,
-		"Streaming request in queue MUST timeout quickly (within queueTimeout/2 + buffer)")
-
-	wg.Wait()
-}
-
-// =============================================================================
 // Тест 15: Бесконечный re-queue с дедлайном — проверка maxRequeueAttempts
 // =============================================================================
 
@@ -1164,9 +1058,7 @@ func TestQueueing_InfiniteRequeuePrevented(t *testing.T) {
 
 	proxyServer, _ := SetupMultiBackendProxy(t, []*ExpandedMockServer{mock1, mock2},
 		func(cfg *types.LoadBalancerConfig) {
-			cfg.Balancing.QueueTimeout = 30
 			cfg.Balancing.QueueMaxSize = 10
-			cfg.Balancing.QueueWorkers = 1
 		})
 	defer proxyServer.Close()
 

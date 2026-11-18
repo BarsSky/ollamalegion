@@ -47,9 +47,7 @@ func authEnabledServer(t *testing.T, backends ...types.Backend) *Server {
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
 			RequestTimeout:      30,
-			QueueTimeout:        60,
 			QueueMaxSize:        100,
-			QueueWorkers:        4,
 		},
 		API: types.APISettings{RateLimit: 1000, RateBurst: 2000},
 		Auth: types.AuthConfig{

@@ -80,7 +80,7 @@ func newLiveProbeProxyR303(t *testing.T, emptyURL, donorURL string) *Proxy {
 		},
 		metricsMgr:   NewMetricsManager(),
 		modelCatalog: newModelCatalog(),
-		queueMgr:     NewQueueManager(nil, 10, 1, 30),
+		queueMgr:     NewQueueManager(nil, 10),
 		config:       &types.LoadBalancerConfig{},
 		statePath:    t.TempDir() + "/state.json",
 	}
@@ -145,7 +145,7 @@ func TestR303_LiveProbePrefersCoveringWindow(t *testing.T) {
 		},
 		metricsMgr:   NewMetricsManager(),
 		modelCatalog: newModelCatalog(),
-		queueMgr:     NewQueueManager(nil, 10, 1, 30),
+		queueMgr:     NewQueueManager(nil, 10),
 		config:       &types.LoadBalancerConfig{},
 		statePath:    t.TempDir() + "/state.json",
 	}
@@ -229,7 +229,7 @@ func TestR303_NotLoadedHere_UnknownStateIsNotAbsent(t *testing.T) {
 		},
 		metricsMgr:   NewMetricsManager(),
 		modelCatalog: newModelCatalog(),
-		queueMgr:     NewQueueManager(nil, 10, 1, 30),
+		queueMgr:     NewQueueManager(nil, 10),
 		config:       &types.LoadBalancerConfig{},
 		statePath:    t.TempDir() + "/state.json",
 	}
@@ -320,7 +320,7 @@ func TestR303_ModelAbsentOnBackend_UnknownIsNotAbsent(t *testing.T) {
 		backends:     map[string]*BackendState{"node-dead": backendStateR303(t, "node-dead", deadURL)},
 		metricsMgr:   NewMetricsManager(),
 		modelCatalog: newModelCatalog(),
-		queueMgr:     NewQueueManager(nil, 10, 1, 30),
+		queueMgr:     NewQueueManager(nil, 10),
 		config:       &types.LoadBalancerConfig{},
 		statePath:    t.TempDir() + "/state.json",
 	}

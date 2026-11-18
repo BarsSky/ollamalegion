@@ -514,9 +514,7 @@ func setupProxyWithMockOllama(t *testing.T, mock *mockOllamaServer) (*httptest.S
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,
-			QueueTimeout:      60,
 			QueueMaxSize:      100,
-			QueueWorkers:      4,
 		},
 		Resources: types.ResourceLimits{
 			GPU: types.GPULimits{

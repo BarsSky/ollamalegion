@@ -208,7 +208,7 @@ func TestCalculateScoreEnhanced(t *testing.T) {
 		backends:   backends,
 		metricsMgr: NewMetricsManager(),
 		config:     &types.LoadBalancerConfig{Balancing: types.BalancingSettings{UseEnhancedScoring: true}},
-		queueMgr:   NewQueueManager(nil, 10, 1, 30),
+		queueMgr:   NewQueueManager(nil, 10),
 	}
 
 	p.metricsMgr.mu.Lock()

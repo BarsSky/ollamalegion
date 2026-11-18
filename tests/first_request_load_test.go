@@ -100,7 +100,7 @@ func TestFirstRequest_ModelNotLoaded_LoadsIntoVRAM(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{
 			RequestTimeout: 30,
-			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
+			QueueMaxSize: 100, 
 			SyncModelLoad: types.SyncModelLoadConfig{Enabled: false}, // Отключаем sync load для проверки fallback
 		},
 		Resources: types.ResourceLimits{
@@ -231,7 +231,7 @@ func TestFirstRequest_SyncModelLoadEnabled_UsesFastWarmup(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{
 			RequestTimeout: 30,
-			QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
+			QueueMaxSize: 100, 
 			SyncModelLoad: types.SyncModelLoadConfig{Enabled: true, Timeout: "5s"},
 			ModelLoadTimeout: 5,
 		},

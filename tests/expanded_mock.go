@@ -940,9 +940,7 @@ func SetupExpandedProxy(t testing.TB, mock *ExpandedMockServer, extraCfg ...func
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,
-			QueueTimeout:      60,
 			QueueMaxSize:      100,
-			QueueWorkers:      4,
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 95},
@@ -1003,9 +1001,7 @@ func SetupMultiBackendProxy(t testing.TB, mocks []*ExpandedMockServer, extraCfg 
 			ModelAffinity:     true,
 			SessionStickiness: true,
 			RequestTimeout:    30,
-			QueueTimeout:      60,
 			QueueMaxSize:      100,
-			QueueWorkers:      4,
 		},
 		Resources: types.ResourceLimits{
 			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 95},

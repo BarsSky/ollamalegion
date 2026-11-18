@@ -37,8 +37,6 @@ func setupMixedCluster(t *testing.T) *balancer.Proxy {
 			UseEnhancedScoring: true,
 			OperatingMode:      "standard",
 			QueueMaxSize:       200,
-			QueueWorkers:       4,
-			QueueTimeout:       30,
 		},
 		Backends: []types.Backend{
 			{

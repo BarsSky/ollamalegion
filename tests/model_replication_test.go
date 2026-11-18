@@ -74,9 +74,7 @@ func configForReplication() *types.LoadBalancerConfig {
 			HealthCheckInterval: 10,
 			MetricsInterval:     5,
 			RequestTimeout:      30,
-			QueueTimeout:        60,
 			QueueMaxSize:        100,
-			QueueWorkers:        4,
 			ModelReplication: types.ModelReplicationConfig{
 				Enabled:            true,
 				DefaultMinInstances: 1,

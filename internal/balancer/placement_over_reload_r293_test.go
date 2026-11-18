@@ -39,7 +39,7 @@ func newPlacementTestProxy(t *testing.T) *Proxy {
 		},
 		metricsMgr:   NewMetricsManager(),
 		modelCatalog: newModelCatalog(),
-		queueMgr:     NewQueueManager(nil, 10, 1, 30),
+		queueMgr:     NewQueueManager(nil, 10),
 		config:       &types.LoadBalancerConfig{},
 		statePath:    t.TempDir() + "/state.json",
 	}

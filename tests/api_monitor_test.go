@@ -406,7 +406,7 @@ func TestMonitorAPI_AuthRequired(t *testing.T) {
 		},
 		Balancing: types.BalancingSettings{
 			HealthCheckInterval: 10, MetricsInterval: 5,
-			RequestTimeout: 30, QueueTimeout: 60, QueueMaxSize: 100, QueueWorkers: 4,
+			RequestTimeout: 30, QueueMaxSize: 100, 
 		},
 		API: types.APISettings{RateLimit: 100, RateBurst: 200},
 		Auth: types.AuthConfig{

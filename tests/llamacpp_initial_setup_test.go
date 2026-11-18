@@ -126,7 +126,6 @@ func TestInitialSetup_LlamaCppDefaultsFromEnv(t *testing.T) {
 			SessionStickiness: true,
 			OperatingMode:     getEnvOrDefault("LB_OPERATING_MODE", "virtual_router"),
 			QueueMaxSize:      100,
-			QueueTimeout:      60,
 		},
 		Backends: []types.Backend{
 			{

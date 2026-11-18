@@ -118,7 +118,7 @@ func TestR493_QueueStatsShowsBackendWaiters(t *testing.T) {
 	t.Setenv("LB_UNIFIED_ADMISSION", "0")
 	p := windowTestProxyR493(t, "m", 8192, 262144, 1)
 	// /queue читает обе очереди — фикстуре нужны обе (иначе nil deref).
-	p.queueMgr = NewQueueManager(nil, 10, 1, 30*time.Second)
+	p.queueMgr = NewQueueManager(nil, 10)
 	p.admission = newAdmissionQueue(300 * time.Second)
 
 	// Пустая очередь — блока нет (нулевой блок только путал бы).

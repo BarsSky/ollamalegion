@@ -588,7 +588,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	}
 
 	// QueueManager создаём после инициализации p, чтобы передать корректный proxy
-	p.queueMgr = NewQueueManager(p, config.Balancing.QueueMaxSize, config.Balancing.QueueWorkers, time.Duration(config.Balancing.QueueTimeout)*time.Second)
+	p.queueMgr = NewQueueManager(p, config.Balancing.QueueMaxSize)
 
 	// R251 (2026-10-28): порог зомби-сессий — из конфига и в ОДНОМ месте (раньше
 	// SessionManager держал хардкод 120 с, а preemption слота — 60 с, и оба

@@ -99,7 +99,7 @@ func newCatalogProxy(t *testing.T, a, b *catalogStub) *Proxy {
 		},
 		Balancing: types.BalancingSettings{
 			RequestTimeout: 10,
-			QueueTimeout: 5, QueueMaxSize: 50, QueueWorkers: 2, OperatingMode: "standard",
+			QueueMaxSize: 50, OperatingMode: "standard",
 		},
 	})
 	if p.llamaCppMetricsPoller != nil {

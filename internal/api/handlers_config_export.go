@@ -179,9 +179,7 @@ func buildConfigExport(cfg *types.LoadBalancerConfig) map[string]interface{} {
 			"requestTimeout":       cfg.Balancing.RequestTimeout,
 			"firstByteTimeout":     cfg.Balancing.FirstByteTimeout,
 			"streamingIdleTimeout": cfg.Balancing.StreamingIdleTimeout,
-			"queueTimeout":         cfg.Balancing.QueueTimeout,
 			"queueMaxSize":         cfg.Balancing.QueueMaxSize,
-			"queueWorkers":         cfg.Balancing.QueueWorkers,
 			"sessionTTL":           cfg.Balancing.SessionTTL,
 		},
 		"resources": map[string]interface{}{
@@ -303,14 +301,8 @@ func mergeConfig(current *types.LoadBalancerConfig, imported *types.LoadBalancer
 	if imported.Balancing.StreamingIdleTimeout != 0 {
 		current.Balancing.StreamingIdleTimeout = imported.Balancing.StreamingIdleTimeout
 	}
-	if imported.Balancing.QueueTimeout != 0 {
-		current.Balancing.QueueTimeout = imported.Balancing.QueueTimeout
-	}
 	if imported.Balancing.QueueMaxSize != 0 {
 		current.Balancing.QueueMaxSize = imported.Balancing.QueueMaxSize
-	}
-	if imported.Balancing.QueueWorkers != 0 {
-		current.Balancing.QueueWorkers = imported.Balancing.QueueWorkers
 	}
 	if imported.Balancing.SessionTTL != 0 {
 		current.Balancing.SessionTTL = imported.Balancing.SessionTTL

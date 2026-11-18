@@ -76,14 +76,8 @@ func configDefaults(cfg *types.LoadBalancerConfig) {
 	if cfg.Balancing.RequestTimeout == 0 {
 		cfg.Balancing.RequestTimeout = 120
 	}
-	if cfg.Balancing.QueueTimeout == 0 {
-		cfg.Balancing.QueueTimeout = 300
-	}
 	if cfg.Balancing.QueueMaxSize == 0 {
 		cfg.Balancing.QueueMaxSize = 100
-	}
-	if cfg.Balancing.QueueWorkers == 0 {
-		cfg.Balancing.QueueWorkers = 4
 	}
 	// ModelAffinity и SessionStickiness — true по умолчанию
 	cfg.Balancing.ModelAffinity = true
@@ -227,7 +221,6 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			"modelAffinity":      s.config.Balancing.ModelAffinity,
 			"sessionStickiness":  s.config.Balancing.SessionStickiness,
 			"queueMaxSize":       s.config.Balancing.QueueMaxSize,
-			"queueTimeout":       s.config.Balancing.QueueTimeout,
 			"requestTimeout":     s.config.Balancing.RequestTimeout,
 			"useEnhancedScoring": s.config.Balancing.UseEnhancedScoring,
 			// R318 (2026-10-30): действующее значение фильтра по прогнозу, а не

@@ -199,7 +199,7 @@
 
 ```powershell
 # 1) вместимость: три поверхности должны совпасть
-#    NB (R508): вместо curl+jq — скрипт scripts/stand_check_r508.ps1 (то же, но с CSRF,
+#    NB (R508): вместо curl+jq — скрипт scripts/stand_check_consistency.ps1 (то же, но с CSRF,
 #    возвратом лимита и проверкой, что ограничение снято). Поле maxConcurrentReqs в
 #    ответе не существует: на /api/v1/backends число называется maxConcurrentRequests.
 curl -s localhost:8081/api/v1/backends | jq '.backends[]|{id,max:.maxConcurrentRequests,eff:.effectiveMaxConcurrentRequests,src:.maxConcurrentRequestsSource}'
@@ -228,7 +228,7 @@ docker exec cppworker curl -s -X POST localhost:8080/api/models/unload -d '{"mod
 
 Образы: `balancer:r261119-r508c`, `webui:r261119-r508b` (пересобраны и развёрнуты;
 `deployments/.env` — `BALANCER_TAG`/`WEBUI_TAG`, файл вне git). Скрипт:
-`scripts/stand_check_r508.ps1` — 22 проверки, все PASS.
+`scripts/stand_check_consistency.ps1` — 22 проверки, все PASS.
 
 | Что | Факт |
 |---|---|

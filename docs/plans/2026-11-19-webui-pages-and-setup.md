@@ -226,7 +226,7 @@ inline `display:none` из `index.html:1483,1489,1495,1501` → скрытые �
 балансера. Пересборка проверена именно этим путём: `$env:NGINX_BASE='library/nginx:alpine'`
 → образ `r261119-r508b` собрался без ручных `docker tag`.
 
-**Проверки.** Скрипт `scripts/webui_pages_check_r508.js` (Playwright, `channel:'msedge'`;
+**Проверки.** Скрипт `scripts/webui_pages_check.js` (Playwright, `channel:'msedge'`;
 встроенный chromium в этом окружении зависает), **18 проверок, все PASS**:
 
 | Проверка | Факт |

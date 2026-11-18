@@ -2061,7 +2061,13 @@ func (p *Proxy) getLoadedNCtxFromMetrics(backendID, modelName string) int {
 	}
 	for _, m := range lm.LoadedModels {
 		if m.Name == modelName || containsFold(m.Name, modelName) || containsFold(modelName, m.Name) {
-			return m.ContextLength
+			// R505 / аудит N-6: функция отдаёт окно НА СЛОТ (его сравнивают с
+			// промптом одного клиента), поэтому ContextPerSeq главнее суммарного
+			// ContextLength; без ContextPerSeq — делим суммарное на слоты.
+			if m.ContextPerSeq > 0 {
+				return m.ContextPerSeq
+			}
+			return perSeqFromTotal(m.ContextLength, m.MaxSlots)
 		}
 	}
 	return 0

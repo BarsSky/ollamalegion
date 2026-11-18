@@ -51,3 +51,21 @@ func capDerivedWindowR466(derived, ceiling, slots int) (int, bool) {
 	}
 	return cap, true
 }
+
+// perSeqFromTotal — окно ОДНОГО слота из СУММАРНОГО окна (обратная к
+// perClientToTotal).
+//
+// R505 / аудит N-6. Нужна там, где источник говорит суммарным окном
+// (`ContextSize` из /api/models, ответ reload'а), а потребитель живёт в единице
+// «на слот» (LastKnownNCtx: preflight сравнивает с ним промпт одного клиента).
+// Деление с округлением ВНИЗ: реальное окно слота — PAD(total/slots, 256), то
+// есть НЕ МЕНЬШЕ частного, поэтому недосчёт на <256 токенов безопаснее пересчёта.
+func perSeqFromTotal(total, slots int) int {
+	if total <= 0 {
+		return 0
+	}
+	if slots <= 1 {
+		return total
+	}
+	return total / slots
+}

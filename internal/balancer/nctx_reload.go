@@ -373,6 +373,13 @@ type backendReloadState struct {
 	inflightMu sync.Mutex
 	inflight   *reloadInflight
 
+	// lastKnownNCtx — окно загруженной модели НА СЛОТ (R505 / аудит N-6).
+	//
+	// Одна единица для всех писателей и читателей: preflight сравнивает с этим
+	// числом промпт одного клиента, резолвер выдаёт его как окно запроса.
+	// Суммарное окно (ContextSize из /api/models, ответ reload'а) обязано быть
+	// пересчитано через perSeqFromTotal ДО записи — иначе preflight видит вдвое
+	// большее окно, чем есть у слота, и пропускает невлезающий промпт.
 	lastKnownNCtx int
 
 	consecutiveCycleFailures int
@@ -1482,9 +1489,15 @@ func (c *NCtxReloadCoordinator) DoReload(
 	if actual == 0 {
 		actual = plan.NewNCtx
 	}
-	c.SetLastKnownNCtx(backendID, actual)
+	// R505 / аудит N-6: LastKnownNCtx — окно НА СЛОТ (так его читают preflight и
+	// резолвер), а ответ reload'а (ContextSize) — СУММАРНЫЙ. Раньше сюда писали
+	// суммарное: при parallel=2 preflight видел вдвое большее окно, чем есть у
+	// слота, и «промпт влезает» оказывалось ложью.
+	perSeq := perSeqFromTotal(actual, normalizedSlotsR504(hints.Parallel))
+	c.SetLastKnownNCtx(backendID, perSeq)
 	cur.err = nil
-	logger.Get().Infof("[nctx_reload] backend %s: reload successful, new n_ctx=%d", backendID, actual)
+	logger.Get().Infof("[nctx_reload] backend %s: reload successful, n_ctx=%d суммарно, %d на слот, слотов %d",
+		backendID, actual, perSeq, normalizedSlotsR504(hints.Parallel))
 
 	// R83-fix (2026-09-30): честно сообщаем, если окно НЕ доросло до запрошенного.
 	//

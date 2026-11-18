@@ -196,7 +196,11 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		// следующий (transport-level) preflight-чек до обновления metrics poller
 		// (~30 c) увидит старый n_ctx и запустит ВТОРОЙ reload — клиент получит
 		// 503 уже после того, как дождался первого (в т.ч. в новом wait-режиме).
-		lr.proxy.cacheLoadedContextLength(args.backendID, meta.ModelName, res.TargetNCtx)
+		// R505 / аудит N-7: TargetNCtx — окно НА КЛИЕНТА, а старый вызов писал его
+		// в ContextLength (СУММАРНОЕ) и оставлял ContextPerSeq от прошлой загрузки:
+		// резолвер и preflight читали старое окно слота и снова решали «не влезает».
+		// cacheLoadedWindowActualR327 (R327) пишет три поля согласованно.
+		lr.proxy.cacheLoadedWindowActualR327(args.backendID, meta.ModelName, res.TargetNCtx)
 		return false, res
 	case PreflightAsyncReload:
 		// Round 34 (2026-08-12) Phase 1: stream dialog с keepalives для streaming

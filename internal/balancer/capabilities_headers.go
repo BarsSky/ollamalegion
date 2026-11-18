@@ -42,8 +42,17 @@ func (p *Proxy) addModelCapabilitiesHeaders(w http.ResponseWriter, modelName str
 	// Теперь в X-Model-Max-Context — ДЕЙСТВУЮЩИЙ потолок обслуживания, а сырой
 	// GGUF уходит отдельным заголовком (метаданные не теряем, но и не выдаём их
 	// за предел обслуживания).
+	// R505 / аудит N-8: X-Model-Max-Context — окно НА СЛОТ: клиент ставит
+	// `num_ctx` как окно своего запроса, а воркер делит суммарное окно между
+	// слотами. Объявлять суммарное значило обещать вдвое больше при parallel=2:
+	// клиент ставил наше же число и получал 413 либо вторую перезагрузку.
+	// Суммарный потолок модели уходит отдельным заголовком — информацию не
+	// теряем, но и не подменяем единицу.
 	if eff, ggufMax := p.advertisedMaxContextR469(modelName); eff > 0 {
 		w.Header().Set("X-Model-Max-Context", strconv.Itoa(eff))
+		if total := p.advertisedMaxContextTotalR505(modelName); total > eff {
+			w.Header().Set("X-Model-Max-Context-Total", strconv.Itoa(total))
+		}
 		if ggufMax > eff {
 			w.Header().Set("X-Model-Gguf-Max-Context", strconv.Itoa(ggufMax))
 		}

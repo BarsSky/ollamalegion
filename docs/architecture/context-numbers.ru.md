@@ -63,7 +63,8 @@
 | `/v1/models` | `context_length` | окно **на слот** загруженной копии | `internal/balancer/llamacpp_handlers_readonly.go:917` |
 | `/v1/models` | `max_context_length` | `max(maxContext, ggufMaxContext)` | `internal/balancer/llamacpp_handlers_readonly.go:920` |
 | ответ на инференс | `X-Model-Context-Length` | окно **на слот** (`min(ContextLength, ContextPerSeq)`) | `internal/balancer/capabilities_headers.go:57`, `:90` |
-| ответ на инференс | `X-Model-Max-Context` | действующий потолок обслуживания (R469) | `internal/balancer/capabilities_headers.go:45`, `internal/balancer/effective_window_advertise_r469.go:35` |
+| ответ на инференс | `X-Model-Max-Context` | действующий потолок обслуживания **на слот** (R469 + R505) | `internal/balancer/capabilities_headers.go:45`, `internal/balancer/effective_window_advertise_r469.go:35` |
+| ответ на инференс | `X-Model-Max-Context-Total` | тот же потолок **суммарно** (окно×слоты), выставляется при `slots>1` (R505) | `internal/balancer/capabilities_headers.go:48` |
 | ответ на инференс | `X-Model-Gguf-Max-Context` | GGUF-потолок, только если он выше действующего | `internal/balancer/capabilities_headers.go:48` |
 | ответ воркера | `X-Model-Context-Warning` | `ok/approaching/overflow/impossible`, `nCtx` = **эффективное окно запроса** (override клиента, если он есть) | `cmd/cppworker/nctx_clamp.go:247`, `:260`, `:342`; проброс — `internal/balancer/llamacpp_native_path.go:124` |
 | воркер `/api/models` | `context_size` | суммарное n_ctx | `cmd/cppworker/handlers_model.go:1504` |

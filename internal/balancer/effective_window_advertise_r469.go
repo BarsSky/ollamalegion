@@ -26,12 +26,20 @@ import "ollama-loadbalancer/pkg/types"
 //
 // Возвращает:
 //
-//	eff      — минимум из известных ограничений (>0);
+//	eff      — минимум из известных ограничений (>0), в единице «НА СЛОТ»;
 //	ggufMax  — потолок из метаданных модели (для отдельного заголовка), 0 если unknown.
 //
 // Все источники берутся из уже посчитанных значений: GGUF и max из снимка
 // метрик, профиль — p.profileCapCtx, операторский cap — effectiveAutoReloadCeiling
 // (он же учитывает заявленное оператором окно профиля, правило R255/R267).
+//
+// R505 / аудит N-8: единица — НА СЛОТ. Клиент трактует `num_ctx` как окно
+// своего запроса (одного слота), а операторский cap и загруженное окно у нас
+// СУММАРНЫЕ: объявлять их как есть — обещать вдвое больше при parallel=2. Клиент
+// ставил наше же число и получал либо 413, либо вторую перезагрузку. GGUF-потолок
+// (n_ctx_train) и MaxContext модели — уже на последовательность, поэтому берутся
+// как есть. Суммарный потолок уходит отдельным заголовком
+// (X-Model-Max-Context-Total) — см. advertisedMaxContextTotalR505.
 func (p *Proxy) advertisedMaxContextR469(modelName string) (eff, ggufMax int) {
 	if p == nil || modelName == "" {
 		return 0, 0
@@ -51,12 +59,70 @@ func (p *Proxy) advertisedMaxContextR469(modelName string) (eff, ggufMax int) {
 	if p.nctxReload != nil {
 		operatorCap = p.effectiveAutoReloadCeiling(modelName, p.nctxReload.Config().AutoReloadMaxNCtx)
 	}
-	for _, v := range []int{ggufMax, perModelMax, operatorCap} {
+	// R505 / аудит N-8: суммарные источники приводим к единице «на слот» ОДИН раз.
+	// ggufMax и perModelMax — уже на последовательность (n_ctx_train/MaxContext
+	// модели), их не делим. Загруженное окно сюда НЕ входит: это текущее
+	// состояние инстанса (его отдаёт X-Model-Context-Length), а не потолок —
+	// иначе объявленный потолок падал бы до текущего окна и клиент сжимал бы
+	// историю без причины.
+	slots := p.windowSlotsR505(modelName)
+	for _, v := range []int{
+		ggufMax,
+		perModelMax,
+		derivedWindowCapR466(operatorCap, slots),
+	} {
 		if v > 0 && (eff == 0 || v < eff) {
 			eff = v
 		}
 	}
 	return eff, ggufMax
+}
+
+// advertisedMaxContextTotalR505 — СУММАРНЫЙ потолок окна для отдельного заголовка.
+//
+// R505 / аудит N-8: клиенту полезно знать и суммарное окно модели (сколько воркер
+// поднимет в contextSize), но оно не должно подменять окно клиента: клиент
+// ставит `num_ctx` как окно своего запроса, то есть на слот.
+func (p *Proxy) advertisedMaxContextTotalR505(modelName string) int {
+	perClient, _ := p.advertisedMaxContextR469(modelName)
+	if perClient <= 0 {
+		return 0
+	}
+	return perClientToTotal(perClient, p.windowSlotsR505(modelName))
+}
+
+// windowSlotsR505 — число слотов загруженной модели (0/1 = один).
+//
+// Источник: `maxSlots` из /api/models (cppworker отдаёт его с R83), иначе
+// параллельность из профиля модели, иначе 1.
+func (p *Proxy) windowSlotsR505(modelName string) int {
+	if p == nil || modelName == "" {
+		return 1
+	}
+	slots := 0
+	if p.metricsMgr != nil {
+		p.metricsMgr.mu.RLock()
+		for _, lm := range p.metricsMgr.llamaMetrics {
+			if lm == nil {
+				continue
+			}
+			for i := range lm.LoadedModels {
+				if !modelNameMatches(lm.LoadedModels[i].Name, modelName) {
+					continue
+				}
+				if v := lm.LoadedModels[i].MaxSlots; v > slots {
+					slots = v
+				}
+			}
+		}
+		p.metricsMgr.mu.RUnlock()
+	}
+	if slots <= 0 {
+		if prof, ok := profileForReloadHints(p.profilesSnapshotR423(), modelName); ok && prof.Parallel > 0 {
+			slots = prof.Parallel
+		}
+	}
+	return normalizedSlotsR504(slots)
 }
 
 // modelContextLimitsR469 — GGUF-потолок и max из метрик загруженной модели.

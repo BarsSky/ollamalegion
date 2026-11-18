@@ -33,15 +33,17 @@ import (
 // (4) 5xx по-прежнему ошибка.
 
 // r517Server — сервер с одним llama.cpp-бэкендом и подставным воркером.
+// Поля упорядочены под fieldalignment: сначала строки/map (указатели), потом
+// счётчики — иначе govet ругается «struct with 80 pointer bytes could be 40».
 type r517Upstream struct {
-	reloadStatus int
 	reloadBody   string
-	loadStatus   int
 	loadBody     string
-	reloadCalls  int
-	loadCalls    int
 	loadQuery    url.Values
 	loadPayload  map[string]interface{}
+	reloadStatus int
+	loadStatus   int
+	reloadCalls  int
+	loadCalls    int
 }
 
 func (u *r517Upstream) start(t *testing.T) types.Backend {

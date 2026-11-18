@@ -97,6 +97,14 @@
     function renderPerModelList() {
         const list = document.getElementById('autotune-per-model-list');
         if (!list) return;
+        // R513 (2026-11-19): список — это `<select>` на каждую модель; его
+        // пересборка закрывает выпадающий список и сбрасывает выбор, если
+        // оператор как раз выбирает значение. Пока фокус внутри списка —
+        // не перерисовываем (данные перечитает следующий тик после ухода).
+        if (window.RefreshGuard && typeof window.RefreshGuard.isEditingIn === 'function' &&
+            window.RefreshGuard.isEditingIn(list)) {
+            return;
+        }
         if (availableModels.length === 0) {
             list.innerHTML = '<div class="hint">No models loaded yet. Start a model or wait for metrics poller to refresh.</div>';
             return;

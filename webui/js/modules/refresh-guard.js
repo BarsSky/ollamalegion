@@ -57,7 +57,21 @@
         return false;
     }
 
-    var api = { isEditable: isEditable, isEditingIn: isEditingIn };
+    /**
+     * editingInId — идёт ли ввод внутри элемента с указанным id (R513).
+     *
+     * Нужен там, где перерисовывается ОДНА панель, а не вся страница: панель
+     * реестра горячих настроек, таблица лимитов, список моделей AutoTune.
+     * Если элемента нет в DOM — false (нечего охранять).
+     */
+    function editingInId(id) {
+        if (typeof document === 'undefined' || typeof document.getElementById !== 'function') {
+            return false;
+        }
+        return isEditingIn(document.getElementById(id));
+    }
+
+    var api = { isEditable: isEditable, isEditingIn: isEditingIn, editingInId: editingInId };
     if (typeof window !== 'undefined') {
         window.RefreshGuard = api;
         // Для Node-тестов модуля (webui/tests): window в них — объект-заглушка.

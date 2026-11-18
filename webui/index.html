@@ -122,9 +122,14 @@
                 <a href="#logs" class="nav-item" data-page="logs">
                     <span class="nav-icon-wrap"><i class="fas fa-file-lines fa-fw"></i></span> <span data-i18n="nav.logs">Логи</span>
                 </a>
-                <a href="#diagnostics" class="nav-item" data-page="diagnostics">
-                    <span class="nav-icon-wrap"><i class="fas fa-stethoscope fa-fw"></i></span> <span data-i18n="nav.diagnostics">Диагностика</span>
-                </a>                <a href="health.html" target="_blank" rel="noopener" class="nav-item" data-page="health">
+                <!-- R513 (2026-11-19): здесь БЫЛ второй пункт «Диагностика» —
+                     ровно такой же, как ярлык в подвале сайдбара (ниже,
+                     `.sidebar-diag-link`, добавлен R481). Оператор видел в меню
+                     ДВА одинаковых пункта. Оставляем ярлык в подвале: он вне
+                     прокручиваемого списка, поэтому виден всегда — именно это и
+                     было причиной появления R481 (на невысоком экране пункт
+                     списка уезжал за границу `nav`). -->
+                <a href="health.html" target="_blank" rel="noopener" class="nav-item" data-page="health">
                     <span class="nav-icon-wrap"><i class="fas fa-heartbeat fa-fw"></i></span> <span data-i18n="nav.health">Состояние</span>
                 </a>
                 <!-- R493 (2026-11-17): страница «Справка и шаблоны» — записи-справка

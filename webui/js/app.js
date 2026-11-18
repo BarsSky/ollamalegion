@@ -98,6 +98,29 @@ const ui = (function () {
         var deepLink = pageFromURL();
         if (deepLink && deepLink !== 'dashboard') switchPage(deepLink);
 
+        // R513 (2026-11-19): навигация обязана переживать F5 и кнопки «назад/вперёд».
+        //
+        // ЖИВАЯ ЖАЛОБА. «F5 не возвращает на ту же страницу». Причина: URL не
+        // менялся НИКОГДА — в webui/js не было ни одного pushState/replaceState
+        // (проверено grep: 0 совпадений), pageFromURL читал ?page=/hash только
+        // один раз при загрузке. То есть адрес был замороженной ссылкой: если в
+        // нём однажды оказался ?page=settings, F5 открывал «Настройки» с любой
+        // страницы. Здесь — вторая половина механизма: слушаем историю и хэш,
+        // а switchPage пишет выбранную страницу в адрес (см. syncPageURL).
+        //
+        // pageFromURL() в обработчике, а не запомненная страница: браузер сам
+        // восстанавливает адрес при «назад», и источником истины остаётся URL.
+        if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+            window.addEventListener('popstate', function () {
+                var p = pageFromURL();
+                if (p) switchPage(p);
+            });
+            window.addEventListener('hashchange', function () {
+                var p = pageFromURL();
+                if (p) switchPage(p);
+            });
+        }
+
         // R84 (2026-10-03): индикатор свежести данных в шапке (#dataFreshness)
         // и переключатель авто-обновления. Провайдеры страниц регистрируем ДО
         // первого рендера, иначе первое нажатие «Обновить» не нашло бы их.
@@ -204,6 +227,9 @@ const ui = (function () {
         if (targetNav) targetNav.classList.add('active');
 
         currentPage = page;
+        // R513 (2026-11-19): страница попадает в адрес, иначе F5 возвращает не
+        // туда (см. syncPageURL и обработчики popstate/hashchange в init).
+        syncPageURL(page);
         // R493 (2026-11-17): App.state.currentPage — ВТОРАЯ копия страницы (её
         // читает app-core.js:165 при смене языка для заголовка). Она никогда не
         // обновлялась: заголовок при смене языка брался от 'dashboard'. Держим
@@ -234,16 +260,49 @@ const ui = (function () {
     // headless-проверка страниц (скриншоты) не могла выбрать нужную вкладку.
     // Значение проверяем по списку известных страниц, чтобы мусор в URL не
     // приводил к пустому экрану.
+    //
+    // R513 (2026-11-19): список известных страниц исправлен по факту разметки.
+    // Было: `'help'` — страницы `#help-page` в index.html НЕТ (help — это раздел
+    // внутри «Справки и шаблонов»), а `'agents'` — есть `#agents-page`, но
+    // страницы не было в списке, поэтому ссылка ?page=agents молча открывала
+    // дашборд. `virtual-models`, `health`, `monitor` — отдельные html/iframe, их
+    // SPA-роутер не открывает; первые две в списке отсутствуют осознанно (клик
+    // по ним отдаётся браузеру, см. app-listeners.js → setupNavigation).
     function pageFromURL() {
-        var known = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'logs', 'diagnostics', 'reference', 'settings', 'help'];
+        var known = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'diagnostics', 'reference', 'settings'];
         var candidate = '';
         try {
+            // ?page= приоритетнее хэша: так адрес, записанный switchPage
+            // (syncPageURL), не перебивается старым #hash, оставшимся в ссылке.
             var qs = new URLSearchParams(window.location.search || '');
             candidate = qs.get('page') || '';
             if (!candidate && window.location.hash) candidate = window.location.hash.replace(/^#\/?/, '');
         } catch (e) { /* старый браузер — просто останемся на дашборде */ }
         candidate = String(candidate || '').toLowerCase();
         return known.indexOf(candidate) >= 0 ? candidate : '';
+    }
+
+    /**
+     * syncPageURL — записать открытую страницу в адрес (R513).
+     *
+     * replaceState, а не pushState: лишние записи истории сделали бы «назад»
+     * бесполезным (каждый клик по меню — шаг назад). При этом адрес всё равно
+     * обновляется, поэтому F5 открывает ту же страницу.
+     *
+     * Ошибки глушим осознанно: на `file://` и в старых браузерах History API
+     * может быть недоступен, а навигация по SPA обязана остаться рабочей.
+     */
+    function syncPageURL(page) {
+        if (!page) return;
+        try {
+            if (!window.history || typeof window.history.replaceState !== 'function') return;
+            var href = window.location.href;
+            var url = new URL(href);
+            if (url.searchParams.get('page') === page) return; // адрес уже правильный
+            url.searchParams.set('page', page);
+            url.hash = ''; // #hash — устаревший способ, ?page= теперь источник истины
+            window.history.replaceState(null, '', url.pathname + url.search);
+        } catch (e) { /* навигация важнее адреса */ }
     }
 
     function getPageTitle(page) {
@@ -520,7 +579,10 @@ const ui = (function () {
     function refreshCurrentPage() {
         if (window.DataRefresh && typeof window.DataRefresh.refresh === 'function') {
             return window.DataRefresh.refresh(currentPage).then(function () {
-                refreshPage(currentPage);
+                // R513: у «Настроек» провайдер уже обошёл все её источники —
+                // повторная перерисовка была бы вторым проходом по тем же API
+                // (и вторым поводом перетереть форму).
+                if (currentPage !== 'settings') refreshPage(currentPage);
                 return true;
             });
         }
@@ -561,7 +623,9 @@ const ui = (function () {
                 fetchClusterState().catch(function () { return null; })
                     .then(function () { return window.DataRefresh.refresh(currentPage); })
                     .then(function (ok) {
-                        refreshPage(currentPage);
+                        // R513: «Настройки» перерисовывает свой провайдер,
+                        // повторный refreshPage не нужен (см. refreshCurrentPage).
+                        if (currentPage !== 'settings') refreshPage(currentPage);
                         if (!ok) {
                             showToast(window.I18N ? I18N.t('refresh.failed', 'Не удалось обновить данные') : 'Refresh failed', 'error');
                         }
@@ -1297,6 +1361,30 @@ const ui = (function () {
         // ЗАЩИТА: не перезаписываем UI если wizard активен
         if (document.getElementById('setupWizardModal')) return;
 
+        // R513 (2026-11-19): НЕ ПЕРЕТИРАТЬ ФОРМУ, КОГДА В НЕЙ РАБОТАЮТ.
+        //
+        // Живая жалоба оператора: «обновление держит новую информацию, но не даёт
+        // нормально взаимодействовать с формами — постоянно их скрывая».
+        // R512 закрыл только таймер и только фокус (тик не запускался, пока
+        // курсор в поле), но оставались три обходных пути: кнопка «Обновить» в
+        // шапке, клик по индикатору свежести (DataRefresh → App.refreshCurrentPage)
+        // и сам refreshPage('settings'), который на каждом тике заново заливал
+        // ~40 полей из ответа сервера. Здесь — последний рубеж: пока оператор
+        // вводит хоть что-то в формы страницы «Настройки», серверные значения в
+        // НИХ не заливаются вовсе. Через один тик после ухода из поля (5 с) форма
+        // догоняет сервер; ручной «Обновить» не блокируется — он просто не
+        // трогает то, что оператор набирает.
+        //
+        // Почему страница целиком, а не «поле в поле»: заливка идёт десятками
+        // пар «getElementById → value=» по всей функции, и пропуск только
+        // активного элемента не спасает от соседнего эффекта — `syncModeFromServer`
+        // ниже прячет целые группы полей варианта (settings-ui.js:186-221),
+        // из-за чего форма и выглядит «исчезнувшей».
+        if (window.RefreshGuard && typeof window.RefreshGuard.editingInId === 'function' &&
+            window.RefreshGuard.editingInId('settings-page')) {
+            return;
+        }
+
         var maEl = document.getElementById('modelAffinity');
         if (maEl) maEl.checked = serverConfig.modelAffinity !== false;
         var ssEl = document.getElementById('sessionStickiness');
@@ -1991,6 +2079,13 @@ const ui = (function () {
                     // Перерисовка: fetch-функции обновляют `data.*`, но не DOM
                     // страницы. Без этого авто-обновление обновляло данные, а
                     // оператор видел прежние числа (ровно то, на что жаловались).
+                    //
+                    // R513 (2026-11-19): для «Настроек» перерисовка НЕ нужна —
+                    // провайдер уже обошёл все её источники (серверный конфиг,
+                    // реестр, лимиты, AutoTune), и повторный refreshPage только
+                    // сделал бы второй проход по тем же API. Раньше четыре
+                    // перерисовки за тик и были причиной «формы пропадают».
+                    if (currentPage === 'settings') { return; }
                     refreshPage(currentPage);
                 }).catch(function () { /* ошибку покажет индикатор свежести */ });
                 return;
@@ -2101,7 +2196,22 @@ const ui = (function () {
             sendMonitorConfig();
             return true;
         });
-        DR.register('settings', function () { return loadBackendLimits(); });
+        // R513 (2026-11-19): «Настройки» — единственная страница, которую тик
+        // раньше перерисовывал ЦЕЛИКОМ: refreshPage('settings') заново тянул
+        // серверный конфиг (заливал ~40 полей), реестр горячих настроек
+        // (innerHTML панели), лимиты бэкендов (innerHTML таблицы с input'ами) и
+        // AutoTune — по одному и тому же таймеру, четырьмя проходами. Теперь все
+        // её источники — в одном провайдере, и каждый рисует только СВОЮ панель.
+        // Пропуск перерисовки при вводе делает не этот код, а сами модули
+        // (js/modules/refresh-guard.js): так правило одно и для тика, и для
+        // кнопки «Обновить», и для клика по индикатору свежести.
+        DR.register('settings', function () {
+            loadSettings();
+            if (window.SettingsRegistry && typeof window.SettingsRegistry.load === 'function') {
+                window.SettingsRegistry.load();
+            }
+            return Promise.resolve(loadBackendLimits());
+        });
     }
 
 
@@ -2821,6 +2931,13 @@ const ui = (function () {
     function loadBackendLimits() {
         var tbody = document.getElementById('backendLimitsBody');
         if (!tbody) return;
+        // R513: лимиты — это `<input type="number">` в таблице; пересборка
+        // innerHTML уносит набранное значение вместе со строкой. Пока оператор
+        // правит число в этой таблице, её не перерисовываем.
+        if (window.RefreshGuard && typeof window.RefreshGuard.isEditingIn === 'function' &&
+            window.RefreshGuard.isEditingIn(tbody)) {
+            return;
+        }
         var backends = data.backends || [];
         if (backends.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" class="loading-cell">' + (window.I18N ? I18N.t('common.loading') : 'Loading...') + '</td></tr>';

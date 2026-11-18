@@ -415,6 +415,17 @@
     function render() {
         var el = state.root || containerEl();
         if (!el) { return false; }
+        // R513 (2026-11-19): в панели есть поля ввода (числа/строки настроек), и
+        // `innerHTML = ...` ниже уничтожал набранное вместе с фокусом — оператор
+        // видел «форма пропала» после тика авто-обновления. Пока ввод идёт
+        // ВНУТРИ панели, перерисовку пропускаем; данные (`state.settings`) при
+        // этом уже обновлены load()-ом, и следующий рендер (после ухода из поля)
+        // покажет свежие effective-значения.
+        if (typeof window !== 'undefined' && window.RefreshGuard &&
+            typeof window.RefreshGuard.isEditingIn === 'function' &&
+            window.RefreshGuard.isEditingIn(el)) {
+            return false;
+        }
         state.root = el;
         el.innerHTML = renderPanel();
         // R66b-reapply: секция — аккордеон с inline max-height, посчитанным по

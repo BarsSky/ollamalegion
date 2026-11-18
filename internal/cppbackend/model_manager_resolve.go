@@ -416,13 +416,6 @@ func (m *IdleUnloadManager) checkAndUnload() {
 	}
 }
 
-func min(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // SliceMetadataProvider — интерфейс для получения метаданных GGUF
 // В реальности будет вызывать C bridge для парсинга header
 type SliceMetadataProvider interface {

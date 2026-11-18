@@ -433,7 +433,7 @@ func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prom
 	// проверяет sw.IsBroken() и возвращает false → exit), но:
 	// (a) Не explicit — при чтении кода не очевидно как cancellation работает.
 	// (b) Зависит от того что caller передал callback с ctx-awareness.
-	// Теперь: select с ctx.Done() + labelled break для EOS. Cancellation
+	// Теперь: select с ctx.Done() + labeled break для EOS. Cancellation
 	// работает в обе стороны — callback returns false ИЛИ ctx.Done().
 	//
 	// ctx берётся от request handler через callback (callback'и

@@ -3526,5 +3526,4 @@ func writeToolsStreamGenerationError(w http.ResponseWriter, sw *safeStreamWriter
 	errJSON, _ := json.Marshal(errChunk)
 	sw.Writef("%s\n", errJSON)
 	sw.Flush()
-	return
 }

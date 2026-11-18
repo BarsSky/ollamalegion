@@ -42,6 +42,66 @@ type deviceLayerRange struct {
 // /api/models и /config/runtime, балансер — в WebUI).
 type DeviceLayerRange = deviceLayerRange
 
+// ============================================================
+// R521 (§8.3.5): последние строки лога llama.cpp.
+// ============================================================
+//
+// ЖИВОЙ ФАКТ (архив 2026-11-18): клиент получал «llama_decode failed … code 1»
+// без единой строки от llama.cpp. Мост эти строки УЖЕ перехватывает
+// (bridge_install_log_capture → goBridgeLogLine), но использовал их только для
+// раскладки слоёв — оператор видел код ошибки вместо причины (OOM).
+//
+// Здесь — кольцевой буфер последних строк: дёшево (строка на событие), без
+// блокировок на горячем пути (мьютекс только на append, как у плана слоёв).
+const recentLogLimit = 200
+
+var (
+	recentLogMu   sync.Mutex
+	recentLogTail []string
+)
+
+// recordLogLine — запомнить строку лога llama.cpp (R521).
+func recordLogLine(line string) {
+	if line == "" {
+		return
+	}
+	recentLogMu.Lock()
+	recentLogTail = append(recentLogTail, line)
+	if len(recentLogTail) > recentLogLimit {
+		// Копируем хвост, чтобы старый массив не жил вечно.
+		recentLogTail = append([]string(nil), recentLogTail[len(recentLogTail)-recentLogLimit:]...)
+	}
+	recentLogMu.Unlock()
+}
+
+// RecentLogLines — последние n строк лога llama.cpp (R521).
+//
+// Пустой результат означает «лог ещё не поступал» или «сборка без моста»
+// (llama_stub), а не «llama.cpp молчал»: вызывающий сам решает, как это назвать.
+func RecentLogLines(n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	recentLogMu.Lock()
+	defer recentLogMu.Unlock()
+	if len(recentLogTail) == 0 {
+		return nil
+	}
+	if n > len(recentLogTail) {
+		n = len(recentLogTail)
+	}
+	out := make([]string, n)
+	copy(out, recentLogTail[len(recentLogTail)-n:])
+	return out
+}
+
+// ResetRecentLogLines — очистить хвост (R521). Нужно перед загрузкой модели:
+// иначе в ошибку декода попадёт лог ПРЕДЫДУЩЕЙ загрузки.
+func ResetRecentLogLines() {
+	recentLogMu.Lock()
+	recentLogTail = nil
+	recentLogMu.Unlock()
+}
 // ResetDeviceLayers — сбросить план перед загрузкой модели и поставить перехват
 // лог-строк llama.cpp (перехват идемпотентен, см. bridge_install_log_capture).
 //

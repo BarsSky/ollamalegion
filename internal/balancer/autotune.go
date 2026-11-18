@@ -1558,12 +1558,22 @@ func PlanApplyAutoTuneWithMinContext(
 			}
 			// R69: уменьшать ниже клиентского запроса нельзя — рекомендация
 			// построена на текущем feasible и не знает про запросы клиента.
+			//
+			// R521 (§8.3.4): подавление больше НЕ тихое. Живой факт (архив
+			// 2026-11-18): AutoTune рекомендовал 60 114 при загруженных 131 072 и
+			// запросе 131 072, подавление срабатывало молча — и клиент получал
+			// гарантированное падение декода (CUDA OOM), а не отказ по памяти.
+			// Теперь событие уровня Warn с числами: видно, что окно выше
+			// безопасного и почему понижение не сделано.
 			if minContext > 0 && rec.RecommendedNumCtx < minContext {
-				logger.Get().Infow("autotune: skipping n_ctx downgrade below client request",
+				logger.Get().Warnw("autotune: n_ctx downgrade suppressed by R69 — окно выше безопасного, память под угрозой",
 					"model", currentLoaded.Name,
 					"current_n_ctx", currentLoaded.ContextLength,
 					"recommended_n_ctx", rec.RecommendedNumCtx,
-					"client_requested_n_ctx", minContext)
+					"client_requested_n_ctx", minContext,
+					"feasible_max_context", currentLoaded.FeasibleMaxContext,
+					"risk", "память может не хватить на compute buffer → llama_decode failed (code 1)",
+					"next", "окно поднимется только явной загрузкой с бОльшим n_ctx; для безопасного окна перезагрузите модель вручную")
 				continue
 			}
 			plan.ContextSize = rec.RecommendedNumCtx

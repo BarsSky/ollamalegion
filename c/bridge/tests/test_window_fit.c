@@ -64,6 +64,13 @@ int main(void) {
     check(strstr(buf, "причина не в окне") != NULL,
           "когда числа влезают — текст прямо говорит, что окно НЕ причина");
     check(strstr(buf, "current_n_ctx=0") == NULL, "в тексте нет ложных current_n_ctx=0");
+    // R521 (§8.3.6): подсказка обязана быть выполнимой и про память.
+    check(strstr(buf, "n_batch=128") == NULL,
+          "в подсказке нет n_batch=128 (наш дефолт 64 — совет был невыполним)");
+    check(strstr(buf, "max_vram_n_ctx") == NULL,
+          "в подсказке нет устаревшего max_vram_n_ctx");
+    check(strstr(buf, "Освободите VRAM") != NULL,
+          "подсказка говорит, что освободить VRAM/слои/окно — причина в памяти");
 
     n = bridge_decode_failure_message(buf, sizeof(buf), 200000, 512, 512, 131072, 131072);
     check(n > 0 && strstr(buf, "> окно слота") != NULL,

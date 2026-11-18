@@ -61,12 +61,18 @@ int bridge_decode_failure_message(char* buf, size_t buf_size,
     if (fits) {
         // Числа НЕ подтверждают переполнение окна: говорим это прямо, иначе
         // оператор снова будет искать «n_ctx overflow» там, где его нет.
+        // R521 (§8.3.6): подсказка больше не называет n_batch=128 (наш дефолт —
+        // 64, то есть совет был заведомо невыполним) и не ссылается на
+        // max_vram_n_ctx, который к моменту ошибки устарел (в архиве 234 810 при
+        // фактических 37k). Причина при влезающих числах — ПАМЯТЬ, и совет
+        // должен быть про неё: окно, слои на GPU, освобождение VRAM.
         n = snprintf(buf, buf_size,
             "llama_decode failed for prompt batch: prompt_tokens=%d, n_predict=%d, n_batch=%d, "
             "n_ctx=%d (per slot %d) — запрос влезает в окно по числам, значит причина не в окне, "
             "а в памяти/раскладке (VRAM под compute-buffer, частичный offload). "
-            "Проверьте свободную VRAM и уменьшите n_batch (например, 128) или n_ctx",
-            actual_tokens, n_predict, n_batch, n_ctx_total, per_seq);
+            "Освободите VRAM: меньше слоёв на GPU, меньше окно, kv-cache q8_0/q4_0; "
+            "n_batch=%d — это уже наш рабочий минимум, уменьшать его дальше смысла нет",
+            actual_tokens, n_predict, n_batch, n_ctx_total, per_seq, n_batch);
     } else {
         n = snprintf(buf, buf_size,
             "llama_decode failed for prompt batch: prompt_tokens=%d + n_predict=%d + 1 = %lld > "

@@ -45,7 +45,7 @@ func (p *Proxy) advertisedMaxContextR469(modelName string) (eff, ggufMax int) {
 		return 0, 0
 	}
 	_, maxCtx := p.modelContextInfo(modelName)
-	ggufMax, perModelMax := p.modelContextLimitsR469(modelName)
+	ggufMax, perModelMax, feasibleMax := p.modelContextLimitsR469(modelName)
 	if ggufMax <= 0 {
 		ggufMax = maxCtx
 	}
@@ -66,9 +66,22 @@ func (p *Proxy) advertisedMaxContextR469(modelName string) (eff, ggufMax int) {
 	// иначе объявленный потолок падал бы до текущего окна и клиент сжимал бы
 	// историю без причины.
 	slots := p.windowSlotsR505(modelName)
+	// R521 (§8.3.2): клиенту нельзя обещать окно, которое НЕ ВЛЕЗАЕТ в память.
+	//
+	// ЖИВОЙ ФАКТ (архив 2026-11-18, A10 24 ГБ, 27B Q4_K_M): объявляли 131072
+	// (min из GGUF 262144, профиля 131072 и env 262144), клиент законно просил
+	// 131072, работа грузилась с этим окном — и первый же decode на 80k-промпте
+	// падал в CUDA OOM. Feasible воркера на том же ходе был ~60 000 (AutoTune
+	// рекомендовал 60 114) — то есть система ЗНАЛА безопасное число и всё равно
+	// обещала больше.
+	//
+	// Берём feasible как ещё один источник min. Он тоже СУММАРНЫЙ (n_ctx модели),
+	// поэтому приводим к окну слота тем же derivedWindowCapR466, что и
+	// операторский cap (R505/N-8: единица объявления — на слот).
 	for _, v := range []int{
 		ggufMax,
 		perModelMax,
+		derivedWindowCapR466(feasibleMax, slots),
 		derivedWindowCapR466(operatorCap, slots),
 	} {
 		if v > 0 && (eff == 0 || v < eff) {
@@ -130,9 +143,12 @@ func (p *Proxy) windowSlotsR505(modelName string) int {
 // Отдельная функция (а не modelContextInfo) нужна, чтобы не менять уже
 // используемое поведение того геттера: он склеивает max/GGUF в одно число, а
 // здесь оба значения нужны по отдельности.
-func (p *Proxy) modelContextLimitsR469(modelName string) (ggufMax, maxCtx int) {
+// modelContextLimitsR469 — потолки модели из снимка метрик: (GGUF, MaxContext,
+// FeasibleMaxContext). Третий источник добавлен R521 (§8.3.2): объявляемое окно
+// обязано учитывать, что модель влезает в память не с любым окном.
+func (p *Proxy) modelContextLimitsR469(modelName string) (ggufMax, maxCtx, feasibleMax int) {
 	if p == nil || p.metricsMgr == nil || modelName == "" {
-		return 0, 0
+		return 0, 0, 0
 	}
 	p.metricsMgr.mu.RLock()
 	snapshot := make([]types.LlamaCppModel, 0, 8)
@@ -148,7 +164,7 @@ func (p *Proxy) modelContextLimitsR469(modelName string) (ggufMax, maxCtx int) {
 		if !modelNameMatches(m.Name, modelName) {
 			continue
 		}
-		return m.GGUFMaxContext, m.MaxContext
+		return m.GGUFMaxContext, m.MaxContext, m.FeasibleMaxContext
 	}
-	return 0, 0
+	return 0, 0, 0
 }

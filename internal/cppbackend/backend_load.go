@@ -572,6 +572,7 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	// наполнит его строками `load_tensors: layer N assigned to device X`, и без
 	// сброса в план попали бы слои предыдущей модели.
 	bridge.ResetDeviceLayers()
+	bridge.ResetRecentLogLines()
 	handle, err := bridge.LoadModelWithEarlyHandle(cfg, inst.handle)
 	// Round 25 (2026-08-04): замеряем реальное время load'а для истории.
 	// bridge.LoadModelWithEarlyHandle — blocking CGo, возвращает после

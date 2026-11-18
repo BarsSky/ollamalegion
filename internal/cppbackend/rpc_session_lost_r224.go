@@ -101,6 +101,10 @@ func (b *Backend) diagnoseInferenceFailure(inst *modelInstance, modelName string
 	if err == nil || b == nil {
 		return err
 	}
+	// R521 (§8.3.5): ошибка декода уносит последние строки лога llama.cpp.
+	// Делаем это ДО ранних выходов (нет RPC-узлов, отмена и т.п.): «code 1» без
+	// причины одинаково бесполезен на любом узле.
+	err = decodeErrorWithTail(err, decodeErrorTailLive())
 	servers := b.activeRPCServers()
 	if len(servers) == 0 {
 		return err

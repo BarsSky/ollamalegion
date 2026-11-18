@@ -2384,5 +2384,8 @@ func goBridgeLogLine(line *C.char, length C.int) {
 	if line == nil || length <= 0 {
 		return
 	}
-	recordLayerAssignment(C.GoStringN(line, length))
+	text := C.GoStringN(line, length)
+	recordLayerAssignment(text)
+	// R521 (§8.3.5): те же строки — в хвост, который попадёт в ошибку декода.
+	recordLogLine(text)
 }

@@ -104,16 +104,18 @@ func (b *Backend) ComputeFeasible(modelName string) (*FeasibleInfo, error) {
 
 	freeVRAMMB, freeRAMMB := b.getFreeMemoryMB()
 
-	// 50% safety factor на VRAM (cppworker convention: оставляем половину
-	// VRAM на CUDA context + compute buffers + scratch).
-	safeVRAMMB := freeVRAMMB / 2
-	maxVRAMCtx := 0
-	if safeVRAMMB > 0 && kvPerToken > 0 {
-		maxVRAMCtx = int(safeVRAMMB*1024*1024) / kvPerToken
-		if maxVRAMCtx > h.ContextLength {
-			maxVRAMCtx = h.ContextLength
-		}
-	}
+	// R521 (§8.3.1): потолок окна считается ПО ПАМЯТИ, а не «половина свободной
+	// VRAM».
+	//
+	// ЖИВОЙ ФАКТ (архив 2026-11-18, A10 24 ГБ, 27B Q4_K_M, kv q8_0): здесь
+	// стояло `safeVRAMMB := freeVRAMMB / 2` и `maxVRAMCtx = safeVRAMMB/kvPerToken`
+	// — без вычета весов модели и compute buffer. Расчёт разрешил окно 131072,
+	// после загрузки осталось 2508 МБ, и первый же llama_decode на 80k-промпте
+	// упал с CUDA OOM («code 1» без причины). Половина свободной VRAM — не
+	// резерв на буферы, а просто доля от того, что ещё не занято.
+	weightsMB := b.weightsSizeMB(modelName)
+	reserveMB := computeBufferReserveMB(weightsMB)
+	maxVRAMCtx := maxVRAMCtxFromMemory(freeVRAMMB, weightsMB, reserveMB, kvPerToken, h.ContextLength)
 
 	maxRAMCtx := 0
 	if freeRAMMB > 0 && kvPerToken > 0 {

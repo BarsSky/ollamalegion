@@ -9,10 +9,10 @@
 //   - background sync (Task 5: warn when profile is conservative)
 //
 // 4 источника, в порядке убывания авторитетности (см. balancer/preflight_nctx.go):
-//   1. user request (manual override)        — out of scope here
-//   2. profile (operator policy)             — caller responsibility
-//   3. feasible (this function)              — что hardware реально может
-//   4. GGUF metadata (training context)      — hard upper bound
+//  1. user request (manual override)        — out of scope here
+//  2. profile (operator policy)             — caller responsibility
+//  3. feasible (this function)              — что hardware реально может
+//  4. GGUF metadata (training context)      — hard upper bound
 //
 // ПРЕДОТВРАЩАЕТ класс багов:
 //   - Profile conservative (32K) vs hardware allows 64K → 413 preflight crash
@@ -31,14 +31,14 @@ import (
 // Все поля в ТОКЕНАХ (не байтах). Zero = "unknown / not computed"
 // (caller должен fallback на GGUF metadata или fail safe).
 type FeasibleInfo struct {
-	GGUFMax     int    `json:"gguf_max"`       // из GGUF metadata (training context)
-	MaxVRAMCtx  int    `json:"max_vram_ctx"`   // free VRAM / kv_per_token
-	MaxRAMCtx   int    `json:"max_ram_ctx"`    // free RAM / kv_per_token
-	KVPerToken  int    `json:"kv_per_token"`   // bytes per token для KV cache
-	KVCacheType string `json:"kv_cache_type"`  // "f16" (default) / "q8_0" / "q4_0"
-	FreeVRAMMB  uint64 `json:"free_vram_mb"`   // observed free VRAM at calc time
-	FreeRAMMB   uint64 `json:"free_ram_mb"`    // observed free RAM at calc time
-	Source      string `json:"source"`         // "gguf" / "loaded_info" / "fallback"
+	GGUFMax     int    `json:"gguf_max"`      // из GGUF metadata (training context)
+	MaxVRAMCtx  int    `json:"max_vram_ctx"`  // free VRAM / kv_per_token
+	MaxRAMCtx   int    `json:"max_ram_ctx"`   // free RAM / kv_per_token
+	KVPerToken  int    `json:"kv_per_token"`  // bytes per token для KV cache
+	KVCacheType string `json:"kv_cache_type"` // "f16" (default) / "q8_0" / "q4_0"
+	FreeVRAMMB  uint64 `json:"free_vram_mb"`  // observed free VRAM at calc time
+	FreeRAMMB   uint64 `json:"free_ram_mb"`   // observed free RAM at calc time
+	Source      string `json:"source"`        // "gguf" / "loaded_info" / "fallback"
 }
 
 // ComputeFeasible возвращает FeasibleInfo для модели. Порядок предпочтения:
@@ -49,9 +49,10 @@ type FeasibleInfo struct {
 //  3. Error (caller решает fallback — обычно "use profile as-is").
 //
 // kvCacheType берётся из (в порядке приоритета):
-//   a) Per-model profile override (если synced из balancer через profileSyncer)
-//   b) Backend.cfg.DefaultKVCacheType (config.bundled.json global default)
-//   c) "f16" (safe upper bound — больше KV memory, но гарантированно работает)
+//
+//	a) Per-model profile override (если synced из balancer через profileSyncer)
+//	b) Backend.cfg.DefaultKVCacheType (config.bundled.json global default)
+//	c) "f16" (safe upper bound — больше KV memory, но гарантированно работает)
 //
 // Round 37 (2026-08-18): auto-adapt n_ctx для балансера (3-tier resolution).
 // Раньше был только profile.contextLength — если оператор поставил консервативное
@@ -145,13 +146,13 @@ func (b *Backend) resolveGGUFAndKVType(modelName string) (*GGUFHeaderInfo, strin
 	// Path 1: loaded model — данные уже в памяти (no GGUF re-read)
 	if mi, err := b.GetModel(modelName); err == nil && mi != nil {
 		h := &GGUFHeaderInfo{
-			Architecture: mi.Architecture,
-			NLayers:      mi.NLayers,
-			NHeads:       mi.NHeads,
-			NKvHeads:     mi.NKvHeads,
-			HeadDimK:     mi.HeadDimK,
-			HeadDimV:     mi.HeadDimV,
-			NEmbd:        mi.NEmbd,
+			Architecture:  mi.Architecture,
+			NLayers:       mi.NLayers,
+			NHeads:        mi.NHeads,
+			NKvHeads:      mi.NKvHeads,
+			HeadDimK:      mi.HeadDimK,
+			HeadDimV:      mi.HeadDimV,
+			NEmbd:         mi.NEmbd,
 			ContextLength: mi.GGUFContextLength, // Round 37: 0 если не проставлено
 		}
 		// KV type: prefer per-model override, fall back to backend default

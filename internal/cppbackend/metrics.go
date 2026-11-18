@@ -11,10 +11,10 @@ import (
 // Metrics — метрики работы CppBackend
 type Metrics struct {
 	// Счётчики запросов
-	TotalRequests      atomic.Int64 `json:"totalRequests"`
-	TotalTokens        atomic.Int64 `json:"totalTokens"`
-	TotalErrors        atomic.Int64 `json:"totalErrors"`
-	ActiveRequests     atomic.Int64 `json:"activeRequests"`
+	TotalRequests  atomic.Int64 `json:"totalRequests"`
+	TotalTokens    atomic.Int64 `json:"totalTokens"`
+	TotalErrors    atomic.Int64 `json:"totalErrors"`
+	ActiveRequests atomic.Int64 `json:"activeRequests"`
 
 	// R358 (2026-10-31): ОТМЕНЁННЫЕ генерации — отдельный счётчик.
 	//
@@ -28,16 +28,16 @@ type Metrics struct {
 	TotalCancelled atomic.Int64 `json:"totalCancelled"`
 
 	// Счётчики по моделям
-	ModelRequests      sync.Map `json:"-"` // map[string]*ModelMetrics
+	ModelRequests sync.Map `json:"-"` // map[string]*ModelMetrics
 
 	// Временные метрики
-	RequestDurations   []time.Duration `json:"-"` // rolling window
-	TokenLatencyMs     atomic.Int64    `json:"tokenLatencyMs"` // средняя задержка токена
+	RequestDurations []time.Duration `json:"-"`              // rolling window
+	TokenLatencyMs   atomic.Int64    `json:"tokenLatencyMs"` // средняя задержка токена
 
 	// Загрузка
-	TotalModelsLoaded  atomic.Int64 `json:"totalModelsLoaded"`
+	TotalModelsLoaded   atomic.Int64 `json:"totalModelsLoaded"`
 	TotalModelsUnloaded atomic.Int64 `json:"totalModelsUnloaded"`
-	ActiveModels       atomic.Int64 `json:"activeModels"`
+	ActiveModels        atomic.Int64 `json:"activeModels"`
 	// Round 16 code-review fix (2026-07-30): UnloadModel timeout counter.
 	// Инкрементится когда BatchedScheduler.Run() не возвращается в течение
 	// 10s timeout при UnloadModel — указывает на баг в scheduler (deadlock,
@@ -54,12 +54,12 @@ type Metrics struct {
 	ReasoningAutoEnables atomic.Int64 `json:"reasoningAutoEnables"`
 
 	// GPU
-	GPUMemoryUsedMB    atomic.Int64 `json:"gpuMemoryUsedMb"`
-	GPUMemoryTotalMB   atomic.Int64 `json:"gpuMemoryTotalMb"`
+	GPUMemoryUsedMB  atomic.Int64 `json:"gpuMemoryUsedMb"`
+	GPUMemoryTotalMB atomic.Int64 `json:"gpuMemoryTotalMb"`
 
-	startTime            time.Time
-	mu                   sync.Mutex
-	maxDurationSamples   int
+	startTime          time.Time
+	mu                 sync.Mutex
+	maxDurationSamples int
 }
 
 // ModelMetrics — метрики по конкретной модели
@@ -83,9 +83,9 @@ type ModelMetrics struct {
 	// обычно < 1ms (256 элементов). Если N=256 не хватит для p99 precision —
 	// увеличить (constant). Сейчас размер — константа для lock-free инициализации.
 	sampleMu     sync.Mutex
-	durations   [256]int64 // ms
-	durationsIdx int      // next write position
-	durationsLen int      // valid count (0..256)
+	durations    [256]int64 // ms
+	durationsIdx int        // next write position
+	durationsLen int        // valid count (0..256)
 }
 
 // NewMetrics создаёт новый Metrics
@@ -309,17 +309,17 @@ func (m *Metrics) GetModelMetricsSnapshot() map[string]ModelMetricsSnapshotJSON 
 			}
 		}
 		out[name] = ModelMetricsSnapshotJSON{
-			Name:        name,
-			Requests:    requests,
-			Errors:      errors,
-			Cancelled:   mm.Cancelled.Load(),
-			ErrorRate:   errorRate,
-			Tokens:      mm.Tokens.Load(),
-			AvgMs:       avgMs,
-			P50Ms:       p50,
-			P95Ms:       p95,
-			P99Ms:       p99,
-			LastUsedAt:  lastUsedAt,
+			Name:       name,
+			Requests:   requests,
+			Errors:     errors,
+			Cancelled:  mm.Cancelled.Load(),
+			ErrorRate:  errorRate,
+			Tokens:     mm.Tokens.Load(),
+			AvgMs:      avgMs,
+			P50Ms:      p50,
+			P95Ms:      p95,
+			P99Ms:      p99,
+			LastUsedAt: lastUsedAt,
 		}
 		return true
 	})
@@ -328,9 +328,9 @@ func (m *Metrics) GetModelMetricsSnapshot() map[string]ModelMetricsSnapshotJSON 
 
 // ModelMetricsSnapshotJSON — Round 18 P1.4. JSON shape для /api/infer/metrics.
 type ModelMetricsSnapshotJSON struct {
-	Name       string  `json:"name"`
-	Requests   int64   `json:"requests"`
-	Errors     int64   `json:"errors"`
+	Name     string `json:"name"`
+	Requests int64  `json:"requests"`
+	Errors   int64  `json:"errors"`
 	// R358: отмены по модели — отдельно от ошибок (см. Outcome).
 	Cancelled  int64   `json:"cancelled"`
 	ErrorRate  float64 `json:"error_rate"`

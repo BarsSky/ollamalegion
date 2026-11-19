@@ -64,7 +64,7 @@
 | `LB_NCTX_RELOAD_TIMEOUT_SEC` | int | — | `cfg.AutoReloadTimeoutSec` | Выше config | |
 | `LB_NCTX_PREFLIGHT_ENABLED` | bool | — | `cfg.PreflightEnabled` | Выше config | |
 | `LB_NCTX_PREFLIGHT_ASYNC_RELOAD` | bool | — | `cfg.PreflightAsyncReload` | Выше config | |
-| `LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC` | int | — | `cfg.PreflightAsyncRetryAfterSec` | Выше config | |
+| `LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC` | int | — | `cfg.PreflightAsyncRetryAfterSec` (5) | Выше config | базовое значение `Retry-After` для 503 при async-reload. **R549 (T-6 аудита):** итоговое значение считается как `max(база, оценка reload)` и срезается потолком `LB_NCTX_RELOAD_PREFLIGHT_ASYNC_RETRY_AFTER_MAX_SEC` (по умолчанию **480** с — измеренный верх живых reload'ов 280–480 с; было 120 при собственной оценке 186 с, из-за чего клиент возвращался вторым reload'ом) |
 | `LB_NCTX_PREFLIGHT_MAX_WAIT_SEC` | int | — | `cfg.PreflightMaxWaitSec` | Выше config | |
 | `LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER` | int | — | `cfg.PreflightWaitMultiplier` | Выше config | |
 | `LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC` | int | — | `cfg.PreflightWaitBufferSec` | Выше config | |

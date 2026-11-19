@@ -860,7 +860,7 @@ Preflight check of `n_ctx` BEFORE a synchronous model load. Without
 |---|---|---|
 | `LB_NCTX_PREFLIGHT_ENABLED` | `true` | Master switch |
 | `LB_NCTX_PREFLIGHT_ASYNC_RELOAD` | `true` | Async instead of blocking reload |
-| `LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC` | `30` | `Retry-After` header in 503 |
+| `LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC` | `5` (итог = `max(база, оценка reload)`, потолок 480) | `Retry-After` header in 503. R549: потолок `LB_NCTX_RELOAD_PREFLIGHT_ASYNC_RETRY_AFTER_MAX_SEC` = 480 с (измеренный верх живых reload'ов); до R549 было 120 при оценке 186 с — клиент запускал второй reload |
 | `LB_NCTX_PREFLIGHT_MAX_WAIT_SEC` | `900` (15 min) | Max polling time for loading. **22GB Qwen3.6 on a 3070** requires `1800` (30 min) — see Round 35c |
 | `LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER` | `2` | cppworker estimate multiplier |
 | `LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC` | `60` | Additional buffer |

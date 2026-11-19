@@ -206,27 +206,33 @@ func TestNCtxReloadConfig_DefaultAsyncValues(t *testing.T) {
 	}
 }
 
-// TestNCtxReloadConfig_EffectiveAsyncRetryAfter — clamp в [2, PreflightAsyncRetryAfterMaxSec].
+// TestNCtxReloadConfig_EffectiveAsyncRetryAfter — clamp в [2, потолок].
 //
-// R60.6 (2026-09-07): max clamp 30 → 120s (default). 30s было слишком мало
-// для realistic hardware (5GB+131072 n_ctx load = 60-180s на RTX 3070 8GB).
+// R60.6 (2026-09-07): max clamp 30 → 120s.
+// R549 (T-6): потолок по умолчанию 120 → 480 с. Прежняя строка `{200, 0, 120}`
+// закрепляла ровно тот дефект, на который указал аудит: оценка reload 186 с (и
+// живые 280–480 с) срезалась до 120, клиент возвращался ВТОРЫМ reload'ом, пока
+// первый ещё шёл. Теперь 200 проходит как есть, а срезает только 480.
 func TestNCtxReloadConfig_EffectiveAsyncRetryAfter(t *testing.T) {
 	tests := []struct {
 		in          int
 		maxOverride int
 		want        int
 	}{
-		{0, 0, 5},       // default
-		{-1, 0, 5},      // default
-		{1, 0, 2},       // clamp min
-		{2, 0, 2},       // min
-		{5, 0, 5},       // normal
-		{30, 0, 30},     // old max
-		{50, 0, 50},     // R60.6: under new max=120, no clamp
-		{120, 0, 120},   // R60.6: new max (default)
-		{200, 0, 120},   // R60.6: clamp at new max
-		{50, 30, 30},    // R60.6: operator override max=30 (backward compat)
-		{200, 200, 200}, // R60.6: operator override max=200 (custom)
+		{0, 0, 5},        // default
+		{-1, 0, 5},       // default
+		{1, 0, 2},        // clamp min
+		{2, 0, 2},        // min
+		{5, 0, 5},        // normal
+		{30, 0, 30},      // old max
+		{50, 0, 50},      // under max, no clamp
+		{120, 0, 120},    // старое значение потолка — теперь просто значение
+		{200, 0, 200},    // R549: 200 больше НЕ срезается до 120
+		{480, 0, 480},    // R549: новый потолок по умолчанию
+		{600, 0, 480},    // R549: срез по новому потолку
+		{50, 30, 30},     // operator override max=30 (backward compat)
+		{200, 200, 200},  // operator override max=200 (custom)
+		{600, 200, 200},  // operator override сильнее дефолта
 	}
 	for _, tt := range tests {
 		cfg := NCtxReloadConfig{

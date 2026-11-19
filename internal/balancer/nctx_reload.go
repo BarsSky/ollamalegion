@@ -202,14 +202,60 @@ func reloadTimeoutContext(parent context.Context, d time.Duration) (context.Cont
 	return context.WithTimeout(parent, d)
 }
 
+// PreflightAsyncRetryAfterCeilingDefaultSec — R549 (T-6 аудита): дефолтный
+// ПОТОЛОК Retry-After при async reload.
+//
+// ДО R549 потолок был 120 с — и расходился с собственным эстиматором балансера:
+// `EstimateReloadTimeMs` для 16.4 ГБ / 131072 даёт ≈186 с
+// (docs/plans/2026-11-19-webui-and-balancer-fixes.md §8.1), а живые reload'ы на
+// стенде — 280–480 с. Клиент, послушавшись `Retry-After: 120`, возвращался, пока
+// первый reload ещё шёл, получал «reload in progress» и запускал ВТОРОЙ — ровно
+// тот cascading retry, от которого защищал R60.6.
+//
+// Теперь потолок равен ИЗМЕРЕННОМУ верху живых reload'ов (480 с), и это же число
+// ограничивает оценку. Явная настройка оператора
+// (`PreflightAsyncRetryAfterMaxSec` / env
+// `LB_NCTX_RELOAD_PREFLIGHT_ASYNC_RETRY_AFTER_MAX_SEC`) по-прежнему сильнее.
+const PreflightAsyncRetryAfterCeilingDefaultSec = 480
+
+// effectiveAsyncRetryAfterCeiling — потолок Retry-After (0/пусто = дефолт R549).
+func (c NCtxReloadConfig) effectiveAsyncRetryAfterCeiling() int {
+	if maxRA := c.PreflightAsyncRetryAfterMaxSec; maxRA > 0 {
+		return maxRA
+	}
+	return PreflightAsyncRetryAfterCeilingDefaultSec
+}
+
+// asyncRetryAfterFromEstimate — ЕДИНАЯ формула «сколько сказать клиенту ждать»
+// (R549, T-6). estimatedMs — оценка времени reload (EstimateReloadTimeMs или
+// `estimatedLoadTimeMs` из тела воркера); 0 = оценки нет, берём базовое значение.
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. До R549 одна и та же логика «база → оценка → потолок»
+// была написана ДВАЖДЫ (здесь и в preflight_nctx.go), причём со своим числом 120
+// в каждой копии — классический дефект аудита «одна величина — разные источники».
+func asyncRetryAfterFromEstimate(cfg NCtxReloadConfig, estimatedMs int64) int {
+	retryAfter := cfg.effectiveAsyncRetryAfter()
+	if estimatedMs <= 0 {
+		return retryAfter
+	}
+	estSec := int((estimatedMs + 999) / 1000) // вверх до целых секунд
+	if estSec > retryAfter {
+		retryAfter = estSec
+	}
+	if ceiling := cfg.effectiveAsyncRetryAfterCeiling(); retryAfter > ceiling {
+		retryAfter = ceiling
+	}
+	return retryAfter
+}
+
 // effectiveAsyncRetryAfter — сколько секунд клиенту ждать после 503
-// перед retry. Default 5, clamp [2, PreflightAsyncRetryAfterMaxSec (default 120)].
+// перед retry. Default 5, clamp [2, effectiveAsyncRetryAfterCeiling()].
 //
 // R60.6 (2026-09-07): max clamp 30 → 120s. Иначе client (OpenWebUI) делал
 // retry через 30s пока cppworker ещё грузил 5GB+131072 n_ctx (60-180s).
 // Cascading retries → несколько reload goroutines → 503 spam в логах.
-// 120s покрывает realistic hardware load (даже RTX 3070 8GB с partial
-// offload в RAM — 5GB модель + 131072 n_ctx = ~60-90s).
+// R549 (T-6): потолок по умолчанию 120 → 480 с (измеренный верх живых reload'ов);
+// см. PreflightAsyncRetryAfterCeilingDefaultSec.
 func (c NCtxReloadConfig) effectiveAsyncRetryAfter() int {
 	r := c.PreflightAsyncRetryAfterSec
 	if r <= 0 {
@@ -218,13 +264,7 @@ func (c NCtxReloadConfig) effectiveAsyncRetryAfter() int {
 	if r < 2 {
 		r = 2
 	}
-	// R60.6: max clamp = PreflightAsyncRetryAfterMaxSec (default 120s).
-	// Operator может переопределить в config.json: Balancing.NCtxReload.
-	// PreflightAsyncRetryAfterMaxSec или env LB_NCTX_RELOAD_PREFLIGHT_ASYNC_RETRY_AFTER_MAX_SEC.
-	maxRA := c.PreflightAsyncRetryAfterMaxSec
-	if maxRA <= 0 {
-		maxRA = 120 // R60.6: was 30
-	}
+	maxRA := c.effectiveAsyncRetryAfterCeiling()
 	if r > maxRA {
 		r = maxRA
 	}

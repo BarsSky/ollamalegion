@@ -1362,21 +1362,12 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 				modelSizeBytes = state.ModelSizeBytes
 			}
 			estimatedMs := EstimateReloadTimeMs(modelSizeBytes, decision.TargetNCtx)
-			// R60.6: clamp по operator config (default 120s). 0 = use cfg default.
-			estimatedRetryAfter := cfg.effectiveAsyncRetryAfter()
-			if estimatedMs > 0 {
-				estSec := int((estimatedMs + 999) / 1000) // round up to seconds
-				if estSec > estimatedRetryAfter {
-					estimatedRetryAfter = estSec
-				}
-				maxRA := cfg.PreflightAsyncRetryAfterMaxSec
-				if maxRA <= 0 {
-					maxRA = 120
-				}
-				if estimatedRetryAfter > maxRA {
-					estimatedRetryAfter = maxRA
-				}
-			}
+			// R549 (T-6 аудита): база → оценка → потолок в ОДНОЙ функции.
+			//
+			// До R549 здесь была ВТОРАЯ копия этой формулы со своим числом 120,
+			// и она срезала оценку 186 с до 120: клиент возвращался, пока reload
+			// ещё шёл, и запускал второй (cascading retry).
+			estimatedRetryAfter := asyncRetryAfterFromEstimate(cfg, estimatedMs)
 
 			logger.Get().Infow("preflight: triggering ASYNC reload (Round 31 #2, R60.6)",
 				"backend_id", backendID,

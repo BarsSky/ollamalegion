@@ -64,7 +64,7 @@
 | `LB_NCTX_RELOAD_TIMEOUT_SEC` | int | — | `cfg.AutoReloadTimeoutSec` | Above config | |
 | `LB_NCTX_PREFLIGHT_ENABLED` | bool | — | `cfg.PreflightEnabled` | Above config | |
 | `LB_NCTX_PREFLIGHT_ASYNC_RELOAD` | bool | — | `cfg.PreflightAsyncReload` | Above config | |
-| `LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC` | int | — | `cfg.PreflightAsyncRetryAfterSec` | Above config | |
+| `LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC` | int | — | `cfg.PreflightAsyncRetryAfterSec` (5) | Above config | base `Retry-After` for the async-reload 503. **R549 (audit T-6):** the final value is `max(base, reload estimate)` capped by `LB_NCTX_RELOAD_PREFLIGHT_ASYNC_RETRY_AFTER_MAX_SEC` (default **480** s — the measured upper bound of live reloads, 280–480 s; it used to be 120 while the balancer's own estimate was 186 s, so the client came back and started a second reload) |
 | `LB_NCTX_PREFLIGHT_MAX_WAIT_SEC` | int | — | `cfg.PreflightMaxWaitSec` | Above config | |
 | `LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER` | int | — | `cfg.PreflightWaitMultiplier` | Above config | |
 | `LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC` | int | — | `cfg.PreflightWaitBufferSec` | Above config | |

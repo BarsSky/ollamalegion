@@ -87,11 +87,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// семейство, версию, поддержанный диапазон и порт OpenAI-passthrough —
 	// оператор должен понять причину и что делать, а не увидеть «ошибка».
 	hasTools := len(toolSchemas) > 0
-	if p.refuseUnsupportedModelFamily(w, originalPath, modelFromCtx, hasTools,
-		isOllamaConversionPath(originalPath) && !nativePath) {
+	// R532 (R2 читаемости): отказ по семейству модели и лог решения вынесены.
+	if p.refuseUnsupportedFamilyAndLog(w, originalPath, modelFromCtx, hasTools, nativePath) {
 		return nil
 	}
-	p.logModelFamily(originalPath, modelFromCtx, hasTools)
 
 	llamacppPath := originalPath
 	if !nativePath {
@@ -2819,4 +2818,16 @@ func (p *Proxy) retryAfterNCtxError(w http.ResponseWriter, r *http.Request, back
 		"is_prompt_too_long", errors.Is(nctxErr, bridge.ErrPromptTooLong))
 	p.handleNCtxReload(r.Context(), w, r, backendID, modelFromCtx, nctxErr, bodyBuf)
 	return true
+}
+
+// refuseUnsupportedFamilyAndLog — отказ ДО запроса к модели, если её семейство
+// не преобразуется в Ollama API (R268), и лог решения (R532, R2 читаемости:
+// вынесено из proxyRequestLlamaCpp дословно). true — ответ клиенту отправлен.
+func (p *Proxy) refuseUnsupportedFamilyAndLog(w http.ResponseWriter, originalPath, modelFromCtx string, hasTools, nativePath bool) bool {
+	if p.refuseUnsupportedModelFamily(w, originalPath, modelFromCtx, hasTools,
+		isOllamaConversionPath(originalPath) && !nativePath) {
+		return true
+	}
+	p.logModelFamily(originalPath, modelFromCtx, hasTools)
+	return false
 }

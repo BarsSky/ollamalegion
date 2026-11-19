@@ -1322,7 +1322,6 @@ window.I18N_EN = {
   "settings.log_language.readonly": "Only an administrator can change the log language",
   "settings.log_language.current": "Current: %s",
 "settings.section.mode": "Operating Mode",
-  "settings.section.io": "Import / Export",
   "settings.section.users": "Users",
   "settings.users.name": "Name",
   "settings.users.role": "Role",

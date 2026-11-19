@@ -581,7 +581,6 @@ window.I18N_RU = {
   "settings.log_language.readonly": "Только администратор может менять язык логов",
   "settings.log_language.current": "Сейчас: %s",
 "settings.section.mode": "Режим работы",
-  "settings.section.io": "Импорт / Экспорт",
   "settings.section.users": "Пользователи",
   "settings.users.name": "Имя",
   "settings.users.role": "Роль",

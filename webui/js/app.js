@@ -799,25 +799,9 @@ const ui = (function () {
         if (exportBtn) exportBtn.addEventListener('click', function () {
             if (window.ConfigIO) ConfigIO.exportConfig();
         });
-        var exportBtn2 = document.getElementById('exportSettingsBtn2');
-        if (exportBtn2) exportBtn2.addEventListener('click', function () {
-            if (window.ConfigIO) ConfigIO.exportConfig();
-        });
 
         var importBtn = document.getElementById('importSettingsBtn');
         if (importBtn) importBtn.addEventListener('click', function () {
-            if (window.ConfigIO) {
-                ConfigIO.importConfigFromFile().then(function (data) {
-                    return ConfigIO.showImportPreview(data);
-                }).then(function (confirmed) {
-                    if (confirmed) ConfigIO.applyConfig(data);
-                }).catch(function (err) {
-                    showToast(err.message || 'Import failed', 'error');
-                });
-            }
-        });
-        var importBtn2 = document.getElementById('importSettingsBtn2');
-        if (importBtn2) importBtn2.addEventListener('click', function () {
             if (window.ConfigIO) {
                 ConfigIO.importConfigFromFile().then(function (data) {
                     return ConfigIO.showImportPreview(data);

@@ -265,6 +265,17 @@ P1 (загруженные) → P2 (blocking-ожидание прогрева) 
 **Осталось по F8:** 3c перед очередью + свободный слот и VRAM-fit в `findLeastLoadedOnDisk`; тот же шаг на
 handler-пути (`selectLlamaCppBackendForModel`); запись о самом 120-секундном ожидании в лог.
 
+**СДЕЛАНО (R554, 0.7.357) — слот и VRAM в 3c.** У этапа 3c своя точка входа
+`findLeastLoadedBackendWithModelOnDiskForColdStart`: свободный слот (по той же трактовке числа вместимости —
+`types.CapacityFromValueR501`, что у допуска запроса) и VRAM-fit (тот же `vramFitSlack`, что у 3b). Переезд и
+failover остались на прежней функции — там слот освобождается вместе с упавшим узлом, и это отдельный тест.
+Ограничение R284 соблюдено: внутри `findLeastLoadedOnDisk` держится `p.mu.RLock`, поэтому `hasFreeSlotNowR493` и
+`canAcceptRequest` там вызывать нельзя (рекурсивный RLock — живое зависание); страж `TestR284_NoRecursiveProxyMutex`
+поймал первую версию правки сразу. 4 теста, 2 мутации.
+
+**Осталось по F8:** тот же шаг на handler-пути (`selectLlamaCppBackendForModel`) и запись о 120-секундном ожидании
+в лог (путь уже короткий, но если P3 срабатывает, это стоит видеть).
+
 ### 2.9 Окно: 200k → 131k (проверено) — **СДЕЛАНО (R545, 0.7.348)**
 Формула (`preflight_helper.go:457-479`): `cap = max(profile.contextLengthMax, LB_NCTX_RELOAD_MAX_N_CTX)`,
 затем `min(cap, GGUF)`. В `config/config.json` у 17 из 18 профилей `"contextLengthMax": 131072` (строки 105, 125,

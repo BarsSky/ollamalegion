@@ -400,7 +400,7 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 	// опрошен или файла нет ни у кого — helper вернёт "", и поведение остаётся
 	// прежним (score по ресурсам): выдумывать отказ там, где данных нет, нельзя.
 	if model != "" {
-		if id := p.findLeastLoadedBackendWithModelOnDisk(model, allowedTypes); id != "" {
+		if id := p.findLeastLoadedBackendWithModelOnDiskForColdStart(model, allowedTypes); id != "" {
 			if p.queueMgr != nil {
 				p.queueMgr.addDispatchLoad()
 			}

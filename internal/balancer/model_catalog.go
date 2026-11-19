@@ -576,21 +576,45 @@ func (p *Proxy) RefreshModelCatalogNow() map[string]ModelCatalogSnapshot {
 // за них отвечает прежний fallback, поэтому отсутствие каталога поведение не
 // меняет.
 func (p *Proxy) findLeastLoadedBackendWithModelOnDisk(modelName string, allowedTypes []types.BackendType) string {
-	return p.findLeastLoadedOnDisk(modelName, allowedTypes, nil)
+	return p.findLeastLoadedOnDisk(modelName, allowedTypes, nil, false)
+}
+
+// findLeastLoadedBackendWithModelOnDiskForColdStart — R554 (F8-хвост): то же, но
+// для ХОЛОДНОГО СТАРТА (этап 3c селектора), где выбор означает «сейчас сюда
+// поедет ЗАГРУЗКА модели». Поэтому добавлены два фильтра, которых нет у переезда:
+//
+//   - СВОБОДНЫЙ СЛОТ: без него выбирался узел, где модель уже некуда поставить, и
+//     загрузка вставала в очередь сама к себе;
+//   - VRAM-FIT: модель должна влезать в СВОБОДНУЮ VRAM (тот же расчёт, что у 3b —
+//     `vramFitSlack`), иначе загрузка падает по памяти либо вытесняет живую копию.
+//
+// У переезда и failover остаётся прежняя функция: там «свободный слот» не
+// обязателен (слот освобождается вместе с упавшим узлом), и менять это поведение
+// в этой правке нельзя.
+func (p *Proxy) findLeastLoadedBackendWithModelOnDiskForColdStart(modelName string, allowedTypes []types.BackendType) string {
+	return p.findLeastLoadedOnDisk(modelName, allowedTypes, nil, true)
 }
 
 // findLeastLoadedBackendWithModelOnDiskExcluding — то же, но с исключением узлов
 // (переезд с упавшего бэкенда: свою же копию повторно не выбираем).
 func (p *Proxy) findLeastLoadedBackendWithModelOnDiskExcluding(modelName string, exclude map[string]bool) string {
-	return p.findLeastLoadedOnDisk(modelName, []types.BackendType{types.BackendTypeLlamaCpp}, exclude)
+	return p.findLeastLoadedOnDisk(modelName, []types.BackendType{types.BackendTypeLlamaCpp}, exclude, false)
 }
 
-func (p *Proxy) findLeastLoadedOnDisk(modelName string, allowedTypes []types.BackendType, exclude map[string]bool) string {
+func (p *Proxy) findLeastLoadedOnDisk(modelName string, allowedTypes []types.BackendType, exclude map[string]bool, coldStart bool) string {
 	if p == nil || modelName == "" || p.modelCatalog == nil {
 		return ""
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+
+	// needMB — сколько свободной VRAM нужно модели (только для холодного старта).
+	needMB := 0.0
+	if coldStart {
+		if sizeBytes := p.getModelSizeBytes(modelName); sizeBytes > 0 {
+			needMB = float64(sizeBytes) / (1024 * 1024) * vramFitSlack
+		}
+	}
 
 	interval := modelCatalogRefreshInterval()
 	var bestBackendID string
@@ -627,12 +651,39 @@ func (p *Proxy) findLeastLoadedOnDisk(modelName string, allowedTypes []types.Bac
 		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
+		// R554 (F8-хвост): холодный старт — только узлы, где модель влезает в
+		// СВОБОДНУЮ VRAM (тот же расчёт, что у 3b). Без этого 3c выбирал узел, на
+		// который загрузка не встанет по памяти.
+		//
+		// ВАЖНО (R284): здесь держится `p.mu.RLock`, поэтому вызывать
+		// `hasFreeSlotNowR493`/`canAcceptRequest` НЕЛЬЗЯ — они берут p.mu повторно,
+		// а рекурсивный RLock в sync.RWMutex не рекурсивен: второй RLock не
+		// выдаётся никогда, если между ними встал писатель (живое зависание,
+		// ради которого заведён lock_deadlock_r284_test). Слот считается по уже
+		// прочитанным `active`/`maxReqs` ниже, а VRAM — только под metricsMgr.mu.
+		if coldStart && needMB > 0 {
+			if freeMB, known := p.backendVramFreeMB(id); known && float64(freeMB) < needMB {
+				if logger.Get() != nil {
+					logger.Get().Debugw("R554: холодный старт — узел пропущен по VRAM",
+						"backend", id, "model", modelName,
+						"need_mb", int(needMB), "free_mb", freeMB)
+				}
+				continue
+			}
+		}
 		state.mu.Lock()
 		active := state.ActiveReqs
 		maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 		state.mu.Unlock()
 		if maxReqs <= 0 {
 			continue
+		}
+		// R554: свободный слот для ХОЛОДНОГО СТАРТА — по той же трактовке числа
+		// вместимости, что у допуска запроса (R501: 0 = не задано, -1 = без лимита).
+		if coldStart {
+			if cap := types.CapacityFromValueR501(maxReqs); cap.Known && !cap.Unlimited && active >= cap.Value {
+				continue
+			}
 		}
 		loadRatio := float64(active) / float64(maxReqs)
 		if bestBackendID == "" || loadRatio < bestLoadRatio {

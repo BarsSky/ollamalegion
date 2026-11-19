@@ -182,7 +182,7 @@ inline `display:none` из `index.html:1483,1489,1495,1501` → скрытые �
 | **W4** | Дубли: одна пара Export/Import ✅ **R557** (секция `#section-io` удалена, одна пара, мёртвые обработчики и ключ i18n убраны); осталось — одна поверхность раскладки и честный заголовок карточки image | `webui/tests/config-io-single-pair-r557.test.js`, `config_export_import_test.go`, `settings-overlap-r317` |
 | **W5** | Мастер → карточка первого запуска; убрать `backendEngine` из payload; починить импорт (§4.6) | 🟡 **§4.6 и `backendEngine` закрыты (R543)**; карточка первого запуска — решение владельца (смена сценария, не дефект) |
 | **W6** | Снять/пометить «API Токен» и секцию агента; починить `mode-wizard`-ids, если W1 не сделан | ✅ **снято (R544)**: поля удалены, вместо них строка факта; тест `settings-inert-fields-r544` |
-| **W7** | Уборка: ✅ **R558** — `webui_field_tests.html`, генератор `generate_tests.py`, `ru.json`/`en.json` удалены (страж `webui-dead-artifacts-r558`); осталось — полная сверка мёртвых i18n-ключей, `help` в `pageFromURL` | `webui-dead-artifacts-r558.test.js`, i18n-сверка |
+| **W7** | Уборка: ✅ **R558** — `webui_field_tests.html`, генератор `generate_tests.py`, `ru.json`/`en.json` удалены (страж `webui-dead-artifacts-r558`); ключи мастера (`wizard.api_token_label`, `wizard.tooltip.api_token`) удалены в R559 со стражем; осталось — полная машинная сверка ~2574 ключей и `help` в `pageFromURL` | `webui-dead-artifacts-r558.test.js`, i18n-сверка |
 
 **Тесты, которые держат эти поверхности живыми** (цена удаления): `unverified-modes-hidden-r118` (требует 5 карточек
 режимов), `selection-ui-r493` (читает файлы `mode-wizard.js`/`demo-mode.js`), `settings-overlap-r317` (границы

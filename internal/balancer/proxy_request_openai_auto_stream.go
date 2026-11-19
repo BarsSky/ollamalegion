@@ -197,6 +197,25 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 	// аккумулятора — иначе клиент получает duration_ms=0 и считает tokens/s по
 	// своим часам (см. комментарий у upstreamStartedAt).
 	accum.startedAt = upstreamStartedAt
+
+	// R548 (T-4 аудита): сторож ТИШИНЫ на пути буферизации.
+	//
+	// ДО R548 единственной защитой от зависшего воркера здесь был предел
+	// длительности 300 с — и он же рубил законную длинную генерацию (27B на A10:
+	// минуты на ответ; клиент рвёт на ~480 с, то есть балансер ошибался раньше
+	// клиента). Теперь разделено по смыслу: ДЛИТЕЛЬНОСТЬ по умолчанию не
+	// ограничена, ТИШИНА — ограничена тем же сторожем, что на стриминговых путях
+	// (R297). Чтение из upstream блокирующее, поэтому onStall закрывает тело —
+	// только так можно разбудить `scanner.Scan()`.
+	stallWatch := newStreamStallWatch(streamStallAbortTimeout(), streamFirstFrameAbortTimeout(), func(ev stallEvent) {
+		logger.Get().Errorw("R548: тишина upstream при буферизации non-stream ответа — закрываем тело, чтобы не ждать вечно",
+			"backend", backendID, "model", modelName,
+			"stalled_sec", int(ev.stalled.Seconds()), "prefill", ev.prefill)
+		_ = upstreamResp.Body.Close()
+	})
+	stallWatch.Start()
+	defer stallWatch.Stop()
+
 	scanner := bufio.NewScanner(upstreamResp.Body)
 	// SSE строки могут быть длинными (reasoning chunks)
 	scanner.Buffer(make([]byte, 0, 64*1024), streamMaxLineBytes()) // R264: один лимит строки на все пути (R259) // до 4MB на строку
@@ -253,6 +272,24 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 			break
 		}
 		accum.addChunk(payload)
+		// R548: пришли данные — сбросить отсчёт тишины сторожа.
+		stallWatch.Touch()
+	}
+
+	if ev, ok := stallWatch.Fired(); ok {
+		// R548: не «пустой ответ» и не общий scanner error, а прямое объяснение:
+		// стрим молчал. Тело уже закрыл сторож, поэтому чтение разблокировалось.
+		keepalive.Stop()
+		logger.Get().Errorw("R548: upstream молчал дольше порога — отдаём понятную ошибку",
+			"backend", backendID, "model", modelName,
+			"stalled_sec", int(ev.stalled.Seconds()), "prefill", ev.prefill,
+			"chunks_processed", accum.chunksProcessed)
+		_, _ = w.Write(autoStreamErrorBody("auto_stream_stalled",
+			fmt.Sprintf("upstream was silent for %s while buffering", ev.stalled.Round(time.Second))))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
 	}
 
 	if err := scanner.Err(); err != nil {

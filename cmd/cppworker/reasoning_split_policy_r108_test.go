@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // reasoning_split_policy_r108_test.go — R108 (2026-10-13): защита правила
 // «разбор ответа — по формату, а не по имени модели».
@@ -165,7 +165,7 @@ func TestR108_VisibleContentCleanedOnAllSurfaces(t *testing.T) {
 			// поэтому литерал проверяется в хелпере отдельным случаем ниже.
 			"nonStreamVisibleContentR430(",
 		}},
-		{"escaped_call_markup_r430.go", []string{
+		{"escaped_call_markup.go", []string{
 			// Гарантия «видимый ответ проходит через cleanFinalContent» держится
 			// здесь — на пути, которым идут все НЕпотоковые поверхности.
 			"stripToolCallMarkup(cleanFinalContent(parsed))",

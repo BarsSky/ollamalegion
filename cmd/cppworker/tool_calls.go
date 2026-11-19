@@ -271,7 +271,7 @@ func parseToolCallsFromOutputWithTools(output string, tools []openAITool) []open
 	calls = coerceToolCallsToSchema(calls, tools)
 	// R428: вызов инструмента, которого клиент НЕ объявлял, выполнить нельзя —
 	// известные синонимы записи файла переводим на объявленный инструмент,
-	// остальные отбрасываем (см. declared_tool_filter_r428.go).
+	// остальные отбрасываем (см. declared_tool_filter.go).
 	return filterUndeclaredToolCalls(calls, tools)
 }
 

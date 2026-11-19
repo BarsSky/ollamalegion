@@ -1,4 +1,4 @@
-/**
+﻿/**
  * backend-type-filter.js — Backend Type Filter & GGUF Tab Visibility
  * OllamaLegion WebUI
  *
@@ -265,7 +265,7 @@
             }
 
             // Защита wizard: не перезаписываем тип из cluster state, пока wizard активен
-            if (document.getElementById('setupWizardModal')) {
+            if (document.getElementById('firstRunCard')) {
                 window.__lastClusterState = state;
                 return;
             }

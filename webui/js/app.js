@@ -1,4 +1,4 @@
-﻿/**
+/**
  * OllamaLegion WebUI — Orchestrator
  * Imports: Utils, Api, WebSocketManager, Renderers (loaded before this file)
  */
@@ -187,14 +187,12 @@ const ui = (function () {
             setupNotificationsUI();
         }
 
-        // Check if setup wizard should be shown — проверяем сервер, а не localStorage
-        if (window.SetupWizard && window.SetupWizard.isInitialized) {
-            window.SetupWizard.isInitialized().then(function (initialized) {
-                if (!initialized) {
-                    window.SetupWizard.start();
-                }
-            }).catch(function () {
-                // При ошибке подключения не показываем wizard — сервер может быть недоступен
+        // R596 (2026-11-19): мастер первого запуска заменён карточкой.
+        // Карточка спрашивает ТРИ порога, которые реально читает slot_manager.go
+        // (gpu/cpu/ram), и пишет их вместе с `initialized: true` одним PUT.
+        // Источник истины — сервер (config.json), localStorage — запасной путь.
+        if (window.FirstRunCard && typeof window.FirstRunCard.check === 'function') {
+            window.FirstRunCard.check().catch(function () {
                 console.warn('Failed to check initialization status from server');
             });
         }
@@ -1042,8 +1040,8 @@ const ui = (function () {
                     window.Api.updateConfig({ initialized: false }).then(function () {
                         localStorage.removeItem('ollamalegion_wizard_done');
                         localStorage.removeItem('ollamalegion_backend_type');
-                        if (window.SetupWizard) {
-                            window.SetupWizard.start();
+                        if (window.FirstRunCard) {
+                            window.FirstRunCard.check();
                         }
                     }).catch(function (err) {
                         showToast(
@@ -1053,8 +1051,8 @@ const ui = (function () {
                     });
                 } else {
                     localStorage.removeItem('ollamalegion_wizard_done');
-                    if (window.SetupWizard) {
-                        window.SetupWizard.start();
+                    if (window.FirstRunCard) {
+                        window.FirstRunCard.check();
                     }
                 }
             });
@@ -1351,7 +1349,7 @@ const ui = (function () {
         if (!serverConfig) return;
 
         // ЗАЩИТА: не перезаписываем UI если wizard активен
-        if (document.getElementById('setupWizardModal')) return;
+        if (document.getElementById('firstRunCard')) return;
 
         // R513 (2026-11-19): НЕ ПЕРЕТИРАТЬ ФОРМУ, КОГДА В НЕЙ РАБОТАЮТ.
         //

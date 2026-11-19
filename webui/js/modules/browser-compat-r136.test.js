@@ -1,4 +1,4 @@
-// browser-compat-r136.test.js — R136 (2026-10-16).
+﻿// browser-compat-r136.test.js — R136 (2026-10-16).
 //
 // Запуск: node webui/js/modules/browser-compat-r136.test.js
 //
@@ -59,7 +59,7 @@ check('R136: в браузерном коде нет обращений к globa
 });
 
 check('R136: модули, которые падали, теперь используют globalThis', function () {
-    ['backend-merge.js', 'monitor-groups.js', 'setup-plan.js'].forEach(function (name) {
+    ['backend-merge.js', 'monitor-groups.js'].forEach(function (name) {
         const src = fs.readFileSync(path.join(__dirname, name), 'utf8');
         assert.ok(src.indexOf('globalThis.') !== -1, name + ': нет ни одного globalThis.');
         assert.strictEqual(src.match(/(?<![\w.$])global\./g), null, name + ': осталось обращение к global.');

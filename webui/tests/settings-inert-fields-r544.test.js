@@ -1,4 +1,4 @@
-// settings-inert-fields-r544.test.js — R544 (F10 §1.9 плана
+﻿// settings-inert-fields-r544.test.js — R544 (F10 §1.9 плана
 // 2026-11-19-webui-and-balancer-fixes; W6 и §4.8 плана
 // 2026-11-19-webui-pages-and-setup): в «Настройках» не осталось полей,
 // которые ничего не делают.
@@ -30,7 +30,9 @@ const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
 const indexHtml = read('index.html');
 const appJs = read('js/app.js');
 const configIo = read('js/modules/config-io.js');
-const wizard = read('js/modules/setup-wizard.js');
+// R596 (2026-11-19): мастер удалён целиком — читать его файл больше нельзя.
+// Проверяем не «внутри мастера нет мёртвого поля», а «мастер не вернулся».
+const wizardPath = path.join(root, 'js/modules/setup-wizard.js');
 
 let passed = 0;
 const failures = [];
@@ -89,8 +91,10 @@ check('в разметке нет инертных полей (id=…)', functio
 });
 
 check('в мастере нет поля токена', function () {
-    assert.strictEqual(wizard.indexOf('wiz-apiToken'), -1,
-        '#wiz-apiToken вернулся в мастер: buildWizardPayload это поле не читает, токен задаётся сервером');
+    // R596: мастера нет вовсе — поэтому «мёртвого поля токена в мастере» быть не
+    // может. Проверяем именно это, а не текст удалённого файла.
+    assert.strictEqual(fs.existsSync(wizardPath), false,
+        'мастер вернулся: вместе с ним вернётся и поле #wiz-apiToken, которое payload не читает');
 });
 
 check('вместо полей — честный источник факта', function () {

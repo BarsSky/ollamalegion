@@ -1,4 +1,4 @@
-// settings-form-guard-r513.test.js — R513 (2026-11-19): авто-обновление и кнопка
+﻿// settings-form-guard-r513.test.js — R513 (2026-11-19): авто-обновление и кнопка
 // «Обновить» не перетирают формы на странице «Настройки».
 //
 // ПРОДОЛЖЕНИЕ R512. R512 закрыл ровно один путь: таймер не запускал тик, пока
@@ -91,7 +91,7 @@ function runApplyServerConfig(editing) {
         getElementById: function (id) {
             requested.push(id);
             if (id === 'settings-page') return settingsPage;
-            if (id === 'setupWizardModal') return null;
+            if (id === 'firstRunCard') return null; // R596: мастер заменён карточкой
             return {
                 id: id,
                 set value(v) { writes.push(id + '=' + v); },
@@ -123,7 +123,7 @@ check('R513/4: пока оператор в форме — applyServerConfig н�
     const r = runApplyServerConfig(true);
     assert.deepStrictEqual(r.writes, [],
         'поля перезаписаны во время ввода: ' + r.writes.slice(0, 6).join(', '));
-    assert.deepStrictEqual(r.requested, ['setupWizardModal', 'settings-page'],
+    assert.deepStrictEqual(r.requested, ['firstRunCard', 'settings-page'],
         'функция продолжила работу после guard-а (запрошены поля: ' + r.requested.join(', ') + ')');
 });
 

@@ -1,4 +1,4 @@
-// selection-ui-r493.test.js — R493 (долг 12n): в WebUI не должно остаться
+﻿// selection-ui-r493.test.js — R493 (долг 12n): в WebUI не должно остаться
 // «выбора алгоритма», которого нет.
 //
 // ЖИВОЙ ДЕФЕКТ, который здесь закрыт. В Настройках был select с пятью
@@ -36,7 +36,6 @@ const html = read('index.html');
 const jsFiles = [
     'js/app.js',
     'js/modules/config-io.js',
-    'js/modules/setup-wizard.js',
     'js/modules/demo-mode.js',
 ];
 

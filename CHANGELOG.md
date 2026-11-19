@@ -1,4 +1,32 @@
-﻿## [0.7.428 - R624: R3 — handleListModels вынесен, handlers_model.go ушёл ниже порога 1500, 2026-11-19]
+﻿## [0.7.429 - R625: R3 — слой «сборка промпта из чата» вынесен из handlers_chat.go, 2026-11-19]
+
+Четвёртый шаг R3. `cmd/cppworker/handlers_chat.go` — самый большой из оставшихся
+(3529 строк); вынесен первый, самый самодостаточный слой.
+
+| Файл | Было | Стало |
+|---|---|---|
+| `cmd/cppworker/handlers_chat.go` | 3529 | **2872** |
+| `cmd/cppworker/handlers_chat_prompt.go` (новый) | — | 536 |
+
+Вынесено ровно то, что НЕ зависит от `http.ResponseWriter`: `buildGenerateRequestFromChat`,
+`buildChatPrompt*`, `injectThinkingInstruction/IntoMessages`, `extractSystemFromMessages`,
+`msgsToBridge`, `keepAliveFromRaw`, `formatWantsJSON`, `thinkEnabledFromRaw`,
+`jsonSchemaText`. Это слой «превратить чат-запрос в запрос моста», и читать его отдельно
+от стриминга — уже польза: до выноса между ним и писателями потока было 1500 строк
+чужого кода.
+
+**Импорты снова расставил компилятор, а не глаз:** в новый файл понадобились
+`time`, `bridge`, `i18n`, `logger`; `cppbackend` там оказался не нужен (импортировал
+по привычке — сборка это поймала).
+
+**Проверено:** `go build -tags llama_stub ./...` = 0; `./cmd/cppworker` (71.9 s) —
+зелёные (наборы про tools-совместимость, thinking и сборку промпта проверяют именно
+перенесённый код).
+
+**Остаток R3:** `handlers_chat.go` 2872 (нужен ещё один-два выноса, чтобы уйти ниже
+1500); всего 22 файла ≥1500 строк (нужно ≤3); функций >300 строк — 39 (цель ≤5),
+и главный вкладчик — `writeChatStreamResponseWithTools` (985 строк) в этом же файле.
+## [0.7.428 - R624: R3 — handleListModels вынесен, handlers_model.go ушёл ниже порога 1500, 2026-11-19]
 
 Третий шаг R3 и первый, который **сдвинул счётчик** `structure_report`:
 `файлов ≥1500 строк: 23 → 22`.

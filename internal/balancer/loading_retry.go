@@ -17,7 +17,10 @@
 // запрос. Это делает lazy-load прозрачным для клиента.
 //
 // Лимиты:
-//   - max 30 секунд ожидания (достаточно для cold-start 22GB qwen3.6 на 20GB VRAM).
+//   - бюджет ожидания — ПО РАЗМЕРУ МОДЕЛИ (R547, T-9 аудита), а не плоские 30 с:
+//     измеренные холодные загрузки 16–27B на стенде — 140–485 с, поэтому 30 с
+//     обрывали ожидание раньше, чем загрузка успевала начаться. Явная настройка
+//     `LB_LOADING_RETRY_MAX_SEC` сильнее оценки.
 //   - interval 500ms (типичный poll на завершение lazy-load).
 //   - early exit если context отменён клиентом.
 package balancer
@@ -28,6 +31,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,17 +42,78 @@ import (
 
 // Loading retry configuration.
 const (
-	// loadingRetryMaxAttempts — максимум попыток polling'а.
-	// При interval=500ms и max=60 → 30 секунд (cold-start 22GB qwen3.6).
-	loadingRetryMaxAttempts = 60
-
 	// loadingRetryInterval — задержка между опросами /api/models/load/progress.
 	loadingRetryInterval = 500 * time.Millisecond
 
 	// loadingRetryHTTPTimeout — таймаут одного HTTP-опроса /progress (короткий,
 	// потому что endpoint дешёвый и должен отвечать быстро).
 	loadingRetryHTTPTimeout = 2 * time.Second
+
+	// loadingRetryMinBudget — нижняя граница бюджета: даже для модели без
+	// известного размера ждать меньше, чем длится прокрутка слотов, бессмысленно.
+	loadingRetryMinBudget = 30 * time.Second
 )
+
+// loadingRetryBudgetFromEnv — явный opt-in оператора: `LB_LOADING_RETRY_MAX_SEC`.
+//
+// Читается напрямую (а не через envSeconds): тот уважает мастер-выключатель
+// `LB_STREAMING_NEVER_TIMEOUT`, который про ТАЙМАУТЫ СТРИМА, а здесь речь об
+// ожидании загрузки — смешивать их нельзя, иначе «стрим без таймаута» отключил бы
+// и границу ожидания.
+func loadingRetryBudgetFromEnv() (time.Duration, bool) {
+	raw := strings.TrimSpace(os.Getenv("LB_LOADING_RETRY_MAX_SEC"))
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	d := time.Duration(n) * time.Second
+	if d < loadingRetryMinBudget {
+		d = loadingRetryMinBudget
+	}
+	return d, true
+}
+
+// loadingRetryBudget — сколько ждать завершения lazy-load (R547, T-9).
+//
+// ПОЧЕМУ НЕ КОНСТАНТА 30 с. До R547 бюджет был `60 попыток × 500 мс = 30 с`, а
+// комментарий рядом утверждал «достаточно для cold-start 22GB». Живые числа
+// того же стенда (шапка autoload_wait.go, docs/architecture/debts.ru.md):
+// 16–27B грузятся 140–485 с. То есть клиент получал 503 «model is still loading
+// after 30s» ЗАДОЛГО до того, как модель вообще успевала подняться.
+//
+// Источник числа тот же, что у границы первого байта (R498/R523): эстиматор по
+// размеру модели. Явный `LB_LOADING_RETRY_MAX_SEC` сильнее.
+func (p *Proxy) loadingRetryBudget(modelName string) (time.Duration, string) {
+	if d, ok := loadingRetryBudgetFromEnv(); ok {
+		return d, "env LB_LOADING_RETRY_MAX_SEC"
+	}
+	if p != nil {
+		if size := p.getModelSizeBytes(modelName); size > 0 {
+			d := EstimateFirstByteTimeoutFromModelSize(size)
+			if d < loadingRetryMinBudget {
+				d = loadingRetryMinBudget
+			}
+			return d, fmt.Sprintf("оценка по размеру модели (%d байт)", size)
+		}
+	}
+	// Размер неизвестен — берём оценку для неизвестного размера (900 с), а не
+	// прежние 30 с: «неизвестно» не значит «быстро».
+	d := EstimateFirstByteTimeoutFromModelSize(0)
+	if d < loadingRetryMinBudget {
+		d = loadingRetryMinBudget
+	}
+	return d, "оценка для неизвестного размера"
+}
+
+// loadingRetryBudgetSeconds — тот же бюджет в секундах: нужен для текста отказа
+// клиенту, чтобы он называл ФАКТИЧЕСКОЕ ожидание, а не константу.
+func (p *Proxy) loadingRetryBudgetSeconds(modelName string) int {
+	d, _ := p.loadingRetryBudget(modelName)
+	return int(d.Seconds())
+}
 
 // loadingSignalFromBody — пытается распознать 503 "model is loading" в JSON-ответе
 // от бэкенда. Возвращает (isLoading, modelName, retryAfterMs).
@@ -120,16 +186,20 @@ func (p *Proxy) waitForBackendModelLoaded(
 	engine := p.resolveBackendEngine(backend)
 	baseURL := p.getBackendBaseURL(backend)
 
+	budget, budgetSource := p.loadingRetryBudget(modelName)
+
 	log := logger.Get()
 	log.Infow("waitForBackendModelLoaded: start polling",
 		"backend", backendID, "model", modelName,
-		"engine", string(engine), "max_attempts", loadingRetryMaxAttempts,
+		"engine", string(engine),
+		"budget_sec", int(budget.Seconds()), "budget_source", budgetSource,
 		"interval_ms", loadingRetryInterval.Milliseconds())
 
 	pollClient := &http.Client{Timeout: loadingRetryHTTPTimeout}
 
 	start := time.Now()
-	for attempt := 1; attempt <= loadingRetryMaxAttempts; attempt++ {
+	deadline := start.Add(budget)
+	for attempt := 1; ; attempt++ {
 		// Check context cancellation (client disconnected).
 		select {
 		case <-ctx.Done():
@@ -162,7 +232,15 @@ func (p *Proxy) waitForBackendModelLoaded(
 		if attempt == 1 || attempt%10 == 0 {
 			log.Debugw("waitForBackendModelLoaded: still loading",
 				"backend", backendID, "model", modelName,
-				"attempt", attempt, "elapsed_ms", time.Since(start).Milliseconds())
+				"attempt", attempt, "elapsed_ms", time.Since(start).Milliseconds(),
+				"budget_sec", int(budget.Seconds()))
+		}
+
+		// R547: выход по ДЕДЛАЙНУ (раньше — по числу попыток, что и давало
+		// «после 30 с»). Проверяем ПОСЛЕ опроса: загрузка могла завершиться
+		// ровно на границе.
+		if !time.Now().Before(deadline) {
+			break
 		}
 
 		// Sleep с возможностью прерывания по context.
@@ -175,7 +253,7 @@ func (p *Proxy) waitForBackendModelLoaded(
 
 	log.Warnw("waitForBackendModelLoaded: timeout, model still not loaded",
 		"backend", backendID, "model", modelName,
-		"max_attempts", loadingRetryMaxAttempts,
+		"budget_sec", int(budget.Seconds()), "budget_source", budgetSource,
 		"elapsed_ms", time.Since(start).Milliseconds())
 	return false, nil
 }

@@ -703,7 +703,7 @@ func (p *Proxy) awaitLoadedModelNonStream(w http.ResponseWriter, r *http.Request
 			w.Header().Set("Retry-After", "5")
 			w.Header().Set("X-Model-Loading-Retry", "exhausted")
 			errBody, _ := json.Marshal(map[string]interface{}{
-				"error":        fmt.Sprintf("model is still loading after %ds: %s", loadingRetryMaxAttempts*int(loadingRetryInterval.Seconds()), loadingModelName),
+				"error":        fmt.Sprintf("model is still loading after %ds: %s", p.loadingRetryBudgetSeconds(loadingModelName), loadingModelName),
 				"loading":      true,
 				"model":        loadingModelName,
 				"retryAfterMs": 5000,

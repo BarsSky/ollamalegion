@@ -1633,16 +1633,9 @@ const ui = (function () {
         // отдавал — поля выглядели настройкой, которой не существует.
 
         // Operating Mode
-        if (config.operatingMode) {
-            var radio = document.querySelector('input[name="operatingMode"][value="' + config.operatingMode + '"]');
-            if (radio) {
-                radio.checked = true;
-                if (window.SettingsUI) {
-                    SettingsUI.updateModeCards(config.operatingMode);
-                    SettingsUI.showModeFields(config.operatingMode);
-                }
-            }
-        }
+        // R563 (W1): блок выбора режима удалён. Секция #section-mode снесена (R562),
+        // радио name="operatingMode" в разметке больше нет — обновлять было нечего,
+        // а SettingsUI.updateModeCards/showModeFields остались без потребителя.
 
         // R544 (F10/W6): блок `if (config.agent)` с заполнением четырёх полей
         // агента удалён вместе с самими полями (§4.8 аудита §S-2: значения не
@@ -1779,7 +1772,6 @@ const ui = (function () {
         // Определяем текущий operatingMode из radio-кнопок на странице
         // (R66b: значение уже посчитано выше как currentOperatingMode и
         // используется для вывода enabled-флагов RPC-режимов).
-        var operatingMode = currentOperatingMode;
 
         // Определяем текущий backendEngine из BackendTypeFilter (источник истины после мастера)
         var backendEngine = null;
@@ -1801,7 +1793,10 @@ const ui = (function () {
         }
 
         var config = {
-            operatingMode: operatingMode,
+            // R563 (W1): operatingMode в payload БОЛЬШЕ НЕ УХОДИТ: радио режима удалены (R562),
+            // и значение стало константой 'standard' — сохранение настроек молча сбрасывало бы
+            // серверный режим. Сервер применяет поле только если оно непустое, поэтому без него
+            // текущее значение сохраняется (тот же приём, что в R543 для мастера).
             // R65d (2026-09-20): секция `agent` УБРАНА из payload.
             //
             // Она отправлялась (collectInterval/heartbeatInterval/

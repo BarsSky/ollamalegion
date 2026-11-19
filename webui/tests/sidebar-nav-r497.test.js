@@ -92,7 +92,7 @@ check('updateModeCards экспортирован и вызывается сна
         'updateModeCards не экспортирован из SettingsUI — снаружи будет TypeError ' +
         '(аудит §4.4), и applyServerConfig не обновит часть настроек');
 
-    const callers = ['js/app.js', 'js/modules/config-io.js'];
+    const callers = ['js/modules/config-io.js'];
     for (const file of callers) {
         const src = read(file);
         assert.ok(/SettingsUI\.updateModeCards\s*\(/.test(src),

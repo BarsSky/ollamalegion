@@ -188,6 +188,8 @@ global.window.Api = {
 global.window.confirm = function () { return true; };
 global.window.prompt = function () { return null; };
 
+// R642: состояние и помощники вынесены и грузятся первыми (как в index.html).
+require('./reference-page-helpers.js');
 require('./reference-page.js');
 const RP = global.window.ReferencePage;
 assert.ok(RP, 'window.ReferencePage должен быть экспортирован (см. check_iife_exports.py)');

@@ -30,6 +30,13 @@ function readSrc(rel) {
 const html = readSrc('index.html');
 const appJs = readSrc('js/app.js');
 const pageJs = readSrc('js/modules/reference-page.js');
+// R642: состояние и помощники страницы вынесены в reference-page-helpers.js.
+// Разметка кнопок и ключи t('...') теперь живут в ДВУХ файлах — читаем оба, иначе
+// проверки «мутации только admin» и «ключи есть в ru/en» врали бы (первый прогон
+// после выноса дал ровно это: «кнопки не найдены в модуле: edit-rec, delete-rec,
+// to-template» — кнопки были на месте, в файле-помощнике).
+const helpersJs = readSrc('js/modules/reference-page-helpers.js');
+const pageJsAll = pageJs + '\n' + helpersJs;
 const ru = readSrc('js/i18n/ru.js');
 const en = readSrc('js/i18n/en.js');
 
@@ -74,7 +81,7 @@ function moduleKeys() {
     // и `gateText('...')` не считались вызовами перевода.
     const re = /(?<![A-Za-z0-9_$.])t\('((?:[a-z][a-z0-9._]*))'/g;
     let m;
-    while ((m = re.exec(pageJs)) !== null) keys.add(m[1]);
+    while ((m = re.exec(pageJsAll)) !== null) keys.add(m[1]);
     return keys;
 }
 
@@ -106,6 +113,15 @@ check('в меню есть пункт reference с ключом nav.reference',
 check('есть контейнер страницы <div class="page" id="reference-page">', function () {
     assert.ok(/<div class="page" id="reference-page">/.test(html),
         'нет контейнера страницы #reference-page (switchPage ищет page + "-page")');
+});
+
+check('R642: reference-page-helpers.js подключён ДО reference-page.js', function () {
+    const helpersAt = html.indexOf('src="js/modules/reference-page-helpers.js');
+    const pageAt = html.indexOf('src="js/modules/reference-page.js');
+    assert.ok(helpersAt !== -1, 'reference-page-helpers.js не подключён в index.html');
+    assert.ok(pageAt !== -1, 'reference-page.js не подключён');
+    assert.ok(helpersAt < pageAt,
+        'помощники обязаны грузиться ПЕРЕД страницей: она берёт window.ReferencePageHelpers');
 });
 
 check('скрипт reference-page.js подключён ДО js/app.js', function () {
@@ -186,7 +202,7 @@ check('модуль отдаёт публичный API в window (check_iife_ex
 
 check('все мутирующие кнопки модуля помечены data-admin-only', function () {
     const MUTATING = ['edit-rec', 'delete-rec', 'to-template', 'apply', 'preview', 'editor-save', 'editor-delete'];
-    const buttons = pageJs.match(/<button[^>]*>/g) || [];
+    const buttons = pageJsAll.match(/<button[^>]*>/g) || [];
     const found = {};
     buttons.forEach((btn) => {
         const m = btn.match(/data-ref-action="([a-z-]+)"/);

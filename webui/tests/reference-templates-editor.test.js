@@ -95,6 +95,8 @@ const TPL = {
     revision: 4
 };
 
+// R642: состояние и помощники вынесены и грузятся первыми (как в index.html).
+require('../js/modules/reference-page-helpers.js');
 require('../js/modules/reference-page.js');
 const RP = global.window.ReferencePage;
 assert.ok(RP, 'window.ReferencePage не экспортирован');

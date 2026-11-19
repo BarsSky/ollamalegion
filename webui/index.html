@@ -2750,6 +2750,9 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          (MODEL_PARAM_SPECS — единственный источник метаданных полей профиля) и
          cppworker-params.js (существующая модалка прогресса применения), но ДО
          app.js: его refreshPage('reference') монтирует страницу. -->
+    <!-- R642: состояние и помощники страницы «Справка и шаблоны» грузятся ПЕРЕД
+         reference-page.js: тот берёт window.ReferencePageHelpers и раздаёт имена. -->
+    <script defer src="js/modules/reference-page-helpers.js?v=R642"></script>
     <script defer src="js/modules/reference-page.js?v=R493"></script>
     <!-- R57.2 (2026-09-03): app-core.js provides theme/density/i18n/AutoTune/showToast
          via window.App namespace. MUST be loaded BEFORE app.js (app.js init() calls App.*). -->

@@ -65,6 +65,26 @@ const enKeys = keysOf(enSrc);
 const used = new Set();
 const dynamicHints = [];
 
+// R642 (2026-11-19): имена обёрток перевода собираются по ВСЕМ боевым файлам,
+// а не «в этом же файле».
+//
+// ЗАЧЕМ. Правило 3 ниже требовало объявления `function <name>(key` в том же файле —
+// и разваливалось, как только код разнесли: после выноса состояния и помощников
+// страницы «Справка и шаблоны» в `reference-page-helpers.js` функция `t` осталась в
+// помощниках, а её вызовы живут в обоих файлах. Измеритель потерял ОДНО обращение
+// (2201 → 2200), и храповик справедливо покраснел: «правка потеряла потребителей».
+// Снижать границу было бы враньём — потерянных ключей нет, потерян способ их видеть.
+//
+// НАПРАВЛЕНИЕ ОШИБКИ. Широкий сбор имён может только УВЕЛИЧИТЬ «used» (ключ остаётся
+// живым), то есть ошибается в безопасную сторону — как и правило R574 «строка, равная
+// ключу». Обратная ошибка (объявить живой ключ мёртвым) при этом невозможна.
+const TRANSLATOR_WRAPPERS = new Set();
+function collectTranslatorWrappers(src) {
+    for (const m of src.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(\s*key\b/g)) {
+        TRANSLATOR_WRAPPERS.add(m[1]);
+    }
+}
+
 function collectFromSource(src, rel) {
     // 1. атрибуты data-i18n*
     for (const m of src.matchAll(/data-i18n(?:-title|-placeholder|-aria-label)?="([A-Za-z0-9_.]+)"/g)) {
@@ -74,12 +94,9 @@ function collectFromSource(src, rel) {
     for (const m of src.matchAll(/(?:window\.)?I18N\.t\(\s*['"]([A-Za-z0-9_.]+)['"]/g)) {
         used.add(m[1]);
     }
-    // 3. локальные обёртки: объявления `function <name>(key` в этом файле
-    const wrappers = new Set();
-    for (const m of src.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(\s*key\b/g)) {
-        wrappers.add(m[1]);
-    }
-    for (const name of wrappers) {
+    // 3. обёртки перевода: вызовы ЛЮБОГО имени, объявленного как `function <name>(key`
+    //    в любом боевом файле (R642: обёртка и её вызовы могут жить в разных файлах).
+    for (const name of TRANSLATOR_WRAPPERS) {
         const callRe = new RegExp('(?:^|[^\\w$.])' + name.replace(/\$/g, '\\$') + '\\(\\s*[\'"]([A-Za-z0-9_.]+)[\'"]', 'g');
         for (const m of src.matchAll(callRe)) used.add(m[1]);
     }
@@ -113,8 +130,18 @@ function markLiteralUses(allText) {
 const htmlFiles = walk(WEBUI, [], (n) => n.endsWith('.html'));
 const jsFiles = walk(path.join(WEBUI, 'js'), [], (n) => n.endsWith('.js') && !n.endsWith('.test.js'));
 
+// R642: ПЕРВЫЙ проход — только имена обёрток перевода, по всем файлам. Второй проход
+// ниже ищет вызовы уже с полным набором имён, поэтому обёртка и её вызовы могут жить
+// в разных файлах (это и была причина потери одного обращения после выноса в R642).
+const sourceCache = new Map();
 for (const f of htmlFiles.concat(jsFiles)) {
-    collectFromSource(fs.readFileSync(f, 'utf8'), path.relative(ROOT, f).replace(/\\/g, '/'));
+    const src = fs.readFileSync(f, 'utf8');
+    sourceCache.set(f, src);
+    collectTranslatorWrappers(src);
+}
+
+for (const f of htmlFiles.concat(jsFiles)) {
+    collectFromSource(sourceCache.get(f), path.relative(ROOT, f).replace(/\\/g, '/'));
 }
 
 // R574: любая строка, равная ключу, считается использованием (см. markLiteralUses).

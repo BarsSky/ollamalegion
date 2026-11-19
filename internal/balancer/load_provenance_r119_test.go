@@ -18,7 +18,6 @@
 package balancer
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -161,11 +160,9 @@ func TestR119_Provenance_RecordIsSafeOnNilProxy(t *testing.T) {
 // TestR119_Provenance_WiredIntoLoadPath — защита от отката: загрузка обязана
 // считать provenance и сохранять его.
 func TestR119_Provenance_WiredIntoLoadPath(t *testing.T) {
-	raw, err := os.ReadFile("model_management.go")
-	if err != nil {
-		t.Fatalf("read model_management.go: %v", err)
-	}
-	src := string(raw)
+	// R632: менеджер моделей разложен на шесть файлов — читаем весь слой
+	// (см. model_management_sources_r632_test.go), иначе сторож краснел бы на переносе.
+	src := readModelManagementSourcesR632(t)
 	for _, needle := range []string{
 		"newLoadProvenanceBuilder(&req)",
 		"provenance.observe(LoadSourceProfile,",

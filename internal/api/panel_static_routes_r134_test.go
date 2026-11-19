@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // panel_static_routes_r134_test.go — R134 (2026-10-16): панель балансера отдаёт
 // шрифты и страницы дашборда, а не 404.
@@ -42,7 +42,11 @@ func TestR134_PanelServesIconFontsAndDashboard(t *testing.T) {
 		{"/webfonts/fa-solid-900.woff2", "", false},
 		{"/index.html", "", true},
 		{"/", `data-page="agents"`, false},
-		{"/virtual-models.html", "", false},
+		// R595 (2026-11-19): «Виртуальные модели» переехали в SPA, отдельного
+		// virtual-models.html больше нет — проверяем, что страница живёт В SPA
+		// (маршрут «/» отдаёт index.html с пунктом меню), а не 404-заглушкой.
+		// health.html остаётся отдельным файлом (решение владельца).
+		{"/health.html", "", false},
 	}
 	for _, c := range cases {
 		req := httptest.NewRequest(http.MethodGet, c.path, nil)

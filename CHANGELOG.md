@@ -1,4 +1,52 @@
-﻿## [0.7.405 - R601: R5 — пакет `internal/cppbackend` переименован (15 файлов), 2026-11-19]
+﻿## [0.7.406 - R602: R5 — пакет `internal/api` переименован (22 файла) + починен страж статических маршрутов, 2026-11-19]
+
+Четвёртый шаг R5. Тема — **весь пакет `internal/api`**: 22 файла с номером раунда в
+имени. Имена даны по ответственности (обработчик/хелпер), номер раунда остался только
+в шапке файла.
+
+| Было | Стало |
+|---|---|
+| `agent_host_keep_r357.go` | `agent_host_keep.go` |
+| `auth_users_path_r481.go` | `auth_users_path.go` |
+| `autotune_units_r498.go` | `autotune_units.go` |
+| `cluster_load_eviction_r119.go` | `cluster_load_eviction.go` |
+| `cppworker_view_r465.go` | `cppworker_view.go` |
+| `diag_bundle_r476.go` | `diag_bundle.go` |
+| `diag_nctx_effective_r493.go` | `diag_nctx_effective.go` |
+| `diag_summary_r476.go` | `diag_summary.go` |
+| `handlers_backend_disabled_r250.go` | `handlers_backend_disabled.go` |
+| `handlers_llama_version_r269.go` | `handlers_llama_version.go` |
+| `handlers_logs_export_r389.go` | `handlers_logs_export.go` |
+| `handlers_prompt_calibration_r302.go` | `handlers_prompt_calibration.go` |
+| `handlers_rpc_link_r166.go` | `handlers_rpc_link.go` |
+| `handlers_settings_r278.go` | `handlers_settings.go` |
+| `handlers_window_align_r494.go` | `handlers_window_align.go` |
+| `model_op_status_r371.go` | `model_op_status.go` |
+| `model_profiles_r423.go` | `model_profiles.go` |
+| `node_labels_r393.go` | `node_labels.go` |
+| `profile_memory_check_r116.go` | `profile_memory_check.go` |
+| `reload_params_r286.go` | `reload_params.go` |
+| `reload_targets_r263.go` | `reload_targets.go` |
+| `selection_transparency_r493.go` | `selection_transparency.go` |
+
+Ссылки в комментариях обновлены тем же правилом с границей слова: 29 файлов, остаток
+старых токенов — **0**.
+
+**Попутно починен страж, который покраснел:** `panel_static_routes_r134_test.go`
+требовал `GET /virtual-models.html = 200`, но этой страницы больше нет с R595 (переехала
+в SPA). Проверка переведена на `health.html` (он остаётся отдельным файлом по решению
+владельца) — то есть страж продолжает ловить «панель перестала отдавать статические
+страницы», но больше не требует файла, которого нет.
+
+**Числа (измеренные):** боевые `*.go` без `_test.go`: **250 → 228**;
+`scripts/structure_report.ps1`: **240 → 218**.
+
+**Проверено:** `go build -tags llama_stub ./...` = 0; `./internal/api` (62.3 s) —
+зелёные, включая `TestR134_PanelServesIconFontsAndDashboard`.
+
+**Остаток R5:** 228 боевых файлов — `cmd/cppworker` (73) и `internal/balancer` (155),
+дальше по темам.
+## [0.7.405 - R601: R5 — пакет `internal/cppbackend` переименован (15 файлов), 2026-11-19]
 
 Третий шаг R5. Тема — **весь пакет `internal/cppbackend`**: 15 файлов с номером раунда
 в имени. Имена даны по ответственности файла (по его функциям), а не по номеру.

@@ -1,6 +1,6 @@
-package api
+﻿package api
 
-// handlers_llama_version_r269.go — R269 (2026-10-29): GET /api/v1/llama-version.
+// handlers_llama_version.go — R269 (2026-10-29): GET /api/v1/llama-version.
 //
 // ЗАЧЕМ ОТДЕЛЬНЫЙ ЭНДПОИНТ, ЕСЛИ ЕСТЬ ПОЛЕ В /api/v1/backends. Уведомление
 // «есть более свежая стабильная версия llama.cpp» — это состояние КЛАСТЕРА, а

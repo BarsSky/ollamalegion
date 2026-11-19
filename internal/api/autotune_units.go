@@ -1,4 +1,4 @@
-// autotune_units_r498.go — R498 (2026-11-19), аудит M-1: единицы измерения в
+﻿// autotune_units.go — R498 (2026-11-19), аудит M-1: единицы измерения в
 // AutoTune.
 //
 // ЗАЧЕМ. `types.GPUMetrics.MemoryFree/MemoryTotal` и `types.System.MemoryFree`

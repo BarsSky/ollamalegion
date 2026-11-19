@@ -387,7 +387,7 @@ var messagesMisc = map[string]map[Lang]string{
 		EN: "[NVML] Panic during Init (lib=%s): %v — NVML marked as unavailable",
 	},
 
-	// === internal/api/cluster_load_eviction_r119.go =====================
+	// === internal/api/cluster_load_eviction.go =====================
 	"api.cluster_load_eviction_r119.load_not_fit": {
 		RU: "cluster load: загрузка не влезла рядом с другой моделью — пробуем освободить",
 		EN: "cluster load: the model did not fit alongside another model — trying to free memory",

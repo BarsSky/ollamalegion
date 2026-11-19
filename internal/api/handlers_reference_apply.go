@@ -1,4 +1,4 @@
-// handlers_reference_apply.go — предпросмотр и применение шаблона.
+﻿// handlers_reference_apply.go — предпросмотр и применение шаблона.
 //
 // ГЛАВНОЕ ПРАВИЛО (§3.4, §7 п.2 документа): применение шаблона — это
 // СОХРАНЕНИЕ ПРОФИЛЯ ПЛЮС существующий reload, а не новая операция. Поэтому
@@ -100,7 +100,7 @@ type referenceTarget struct {
 	ActiveQueries *int64 `json:"activeQueries,omitempty"`
 }
 
-// referenceMemoryBlock — вердикт памяти из cppworker (§3.3, profile_memory_check_r116.go).
+// referenceMemoryBlock — вердикт памяти из cppworker (§3.3, profile_memory_check.go).
 type referenceMemoryBlock struct {
 	// Checked — удалось ли спросить cppworker (false = проверка недоступна).
 	Checked  bool                   `json:"checked"`

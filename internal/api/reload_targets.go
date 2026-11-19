@@ -1,6 +1,6 @@
-package api
+﻿package api
 
-// reload_targets_r263.go — R263 (2026-10-28): загрузка модели не должна уходить
+// reload_targets.go — R263 (2026-10-28): загрузка модели не должна уходить
 // на мёртвый узел.
 //
 // ЖИВОЙ ФАКТ (стенд r262). `POST /api/v1/cluster/models/{model}/reload

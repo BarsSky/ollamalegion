@@ -1,4 +1,4 @@
-package api
+﻿package api
 
 import (
 	"context"
@@ -453,7 +453,7 @@ func (s *Server) clusterReloadModelHandler(w http.ResponseWriter, r *http.Reques
 	//
 	// ЖИВОЙ ФАКТ (стенд r262): без явного backendId операция уходила на
 	// offline/unhealthy узел `cppworker-cyborg-bundled-agent` — «нажал загрузить,
-	// ответа нет». Выбор состояния не проверял вовсе (см. reload_targets_r263.go).
+	// ответа нет». Выбор состояния не проверял вовсе (см. reload_targets.go).
 	sel := s.selectReloadTargetsChecked(req.BackendID)
 
 	// Явно указанный узел непригоден → отвечаем СРАЗУ и по адресу, а не через
@@ -611,7 +611,7 @@ func splitClusterModelPath(path string) (string, bool) {
 	return parts[0], true
 }
 
-// selectReloadTargets — R263: перенесён в reload_targets_r263.go вместе с
+// selectReloadTargets — R263: перенесён в reload_targets.go вместе с
 // проверкой состояния узла. Здесь оставлен только комментарий-указатель, чтобы
 // поиск по старому имени приводил к актуальной реализации, а не к копии правил.
 //
@@ -798,7 +798,7 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 	// при нехватке отвечает понятной ошибкой), и только если попытка упала по
 	// памяти — выгружаем чужую модель и повторяем один раз. Если чужую модель
 	// нельзя выгрузить (занята активными запросами), честно говорим об этом.
-	// Правило живёт в loadWithEvictionOnMemoryFailure (cluster_load_eviction_r119.go)
+	// Правило живёт в loadWithEvictionOnMemoryFailure (cluster_load_eviction.go)
 	// и покрыто юнит-тестами с фейковым раннером.
 	var loadedOther string
 	otherLoaded := false

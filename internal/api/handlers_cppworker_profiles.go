@@ -1,4 +1,4 @@
-// Package api — handlers для per-model profiles (Шаг 5 cppworker-preflight-nctx-session).
+﻿// Package api — handlers для per-model profiles (Шаг 5 cppworker-preflight-nctx-session).
 //
 // CRUD endpoints для per-model profile, который определяет n_ctx (и другие
 // параметры cppworker) по умолчанию для конкретной модели. Применяется в
@@ -117,7 +117,7 @@ func (s *Server) handleListModelProfiles(w http.ResponseWriter, r *http.Request)
 	}
 
 	// R423: снимок карты профилей — админка и балансер работают с ней из разных
-	// горутин (см. model_profiles_r423.go).
+	// горутин (см. model_profiles.go).
 	models := s.modelProfilesSnapshotR423()
 	if models == nil {
 		models = make(map[string]types.LlamaCppModelProfile)
@@ -360,7 +360,7 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 	// только при загрузке — отказом или падением, а причина останется в профиле.
 	//
 	// Вердикт спрашиваем у cppworker тем же расчётом (memfit), что и загрузка
-	// (profile_memory_check_r116.go). Недоступность cppworker — не повод
+	// (profile_memory_check.go). Недоступность cppworker — не повод
 	// запрещать настройку: тогда сохраняем как раньше (fail-open).
 	if mv, asked := s.checkProfileMemory(modelName, incoming.ContextLength, incoming.KVCacheType); asked {
 		if !mv.Feasible {

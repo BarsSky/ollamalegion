@@ -9,7 +9,7 @@
 //	model_share.go, auth_session.go, auth.go, handlers_backends.go,
 //	handlers_model_share.go, handlers_placement.go, handlers_placement_apply.go,
 //	handlers_placement_plan.go, handlers_placement_validate.go,
-//	handlers_rpc_link_r166.go, handlers_image_profiles.go
+//	handlers_rpc_link.go, handlers_image_profiles.go
 //
 // ПРАВИЛА ТЕ ЖЕ (messages.go): набор fmt-глаголов в RU и EN обязан совпадать
 // (TestCatalogVerbParity), ключ не меняется при правке текста.
@@ -322,7 +322,7 @@ var messagesAPI = map[string]map[Lang]string{
 		EN: "dry run: nothing was saved or changed — apply the setting with a separate config operation",
 	},
 
-	// === handlers_rpc_link_r166.go: замер канала =========================
+	// === handlers_rpc_link.go: замер канала =========================
 	"api.handlers_rpc_link_r166.method_post_only": {
 		RU: "method not allowed (только POST)",
 		EN: "method not allowed (POST only)",

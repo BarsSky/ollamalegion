@@ -1,6 +1,6 @@
-package api
+﻿package api
 
-// selection_transparency_r493.go — долг 12n: «алгоритм» больше не настройка.
+// selection_transparency.go — долг 12n: «алгоритм» больше не настройка.
 //
 // ИСТОРИЯ. Поле `balancing.algorithm` (и `LB_ALGORITHM`) принималось, сохранялось
 // в конфиге, отдавалось API и копировалось при импорте. Но НИ ОДИН продакшн-файл

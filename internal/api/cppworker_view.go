@@ -1,4 +1,4 @@
-// cppworker_view_r465.go — R465 (2026-11-06): чтение вложенного раздела
+﻿// cppworker_view.go — R465 (2026-11-06): чтение вложенного раздела
 // outputBudget из ответа cppworker (`GET /api/v1/cppworker/config`).
 //
 // ЗАЧЕМ ОТДЕЛЬНЫЙ ФАЙЛ. В cppworkerSnapshot уже есть intValue/strValue/boolValue,

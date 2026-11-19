@@ -1,4 +1,4 @@
-package api
+﻿package api
 
 // selection_transparency_r493_test.go — сторож долга 12n после удаления поля.
 //
@@ -35,7 +35,7 @@ func TestR493_AlgorithmFieldRemoved(t *testing.T) {
 		if err != nil {
 			t.Fatalf("не прочитать %s: %v", f.Name(), err)
 		}
-		if strings.Contains(string(src), "Balancing.Algorithm") && f.Name() != "selection_transparency_r493.go" {
+		if strings.Contains(string(src), "Balancing.Algorithm") && f.Name() != "selection_transparency.go" {
 			t.Errorf("%s: обращение к удалённому полю Balancing.Algorithm — настройка без эффекта вернулась", f.Name())
 		}
 	}

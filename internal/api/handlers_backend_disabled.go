@@ -1,6 +1,6 @@
-package api
+﻿package api
 
-// handlers_backend_disabled_r250.go — R250 (2026-10-28): переключатель
+// handlers_backend_disabled.go — R250 (2026-10-28): переключатель
 // «не использовать бэкенд» (POST/GET /api/v1/backends/{id}/enabled).
 //
 // ЖИВАЯ ЖАЛОБА ОПЕРАТОРА. Нужно исключить узел из выбора балансером, не

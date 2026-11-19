@@ -1,6 +1,6 @@
-package api
+﻿package api
 
-// handlers_settings_r278.go — R278 (2026-10-29): API реестра «горячих» настроек.
+// handlers_settings.go — R278 (2026-10-29): API реестра «горячих» настроек.
 //
 // ЗАЧЕМ ОТДЕЛЬНЫЙ API, А НЕ PUT /api/v1/cluster/config. Настройки реестра — это
 // НЕ config.json: они применяются на лету, живут в отдельном override-файле в

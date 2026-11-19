@@ -239,6 +239,26 @@ inline `display:none` из `index.html:1483,1489,1495,1501` → скрытые �
    списка читаемых файлов в `selection-ui-r493`, поправить границу секций в `settings-overlap-r317`.
 5. **CSS оставить.** Классы `.mode-wizard-overlay`/`.mode-wizard-modal` используются другими модулями
    (`cppworker-params.js:753`, `image-profiles.js:1005`, `image-backends-page.js:863`) — это НЕ часть режимов.
+### 7.4 Остаток W1 после R560–R563 (что уже сделано и что осталось)
+
+**Сделано и проверено:** `mode-wizard.js` удалён (R560); секция `#section-mode` удалена — 175 строк,
+5 карточек `.mode-card`, 5 радио `name="operatingMode"` (R562); `operatingMode` убран из payload сохранения
+настроек, иначе любое сохранение молча сбрасывало серверный режим на `standard` (R563); тесты
+`unverified-modes-hidden-r118` (инверсия) и `settings-overlap-r317` (граница + поле) переписаны.
+
+**Осталось — мёртвый код без влияния на поведение** (замеры на R563):
+
+| Что | Где | Потребители |
+|---|---|---|
+| `updateModeCards`, `showModeFields` | `settings-ui.js:147-184` | внутренние вызовы `:123-124`, `:137-138`, `:366-367`; `config-io.js:326-327` |
+| `setupModeSelector`, `syncModeFromServer`, `getCurrentMode` | `settings-ui.js:117-145` | `syncModeFromServer` зовётся из `app.js:1431-1433` |
+| `updateVariantSections` + `navMap` | `settings-ui.js:186-…`, `navMap:262` | единственный вызов — из `showModeFields:183` |
+| экспорт в `window.SettingsUI` | `settings-ui.js:692-702` | — |
+
+Удалять их нужно **одним проходом** (функции + внутренние вызовы + экспорт + `app.js:1431-1433` +
+`config-io.js:326-327`), иначе останется вызов несуществующей функции — то есть дефект хуже мёртвого кода.
+Проверка после правки: `node scripts/run-webui-tests.js` (120 наборов) — в наборе есть проверки на экспорт
+`updateModeCards` (`sidebar-nav-r497`), их придётся снять вместе с функцией.
 ### 7.3 Что именно править в `settings-overlap-r317` при W1 (замер R560)
 
 Этот тест — единственный, кто держит карту секций настроек, поэтому его правка не «удалить пару

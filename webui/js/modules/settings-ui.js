@@ -152,106 +152,16 @@
      * позволяет искать строго внутри переданного контейнера.
      */
 
-    function updateVariantSections(mode) {
-        // Map mode to variant class
-        var variantMap = {
-            standard: '',
-            replication: 'variant-a',
-            rpc_coordinator: 'variant-b',
-            virtual_router: 'variant-c',
-            distributed_inference: 'variant-d'
-        };
+    // R567 (W1): режимов в UI больше нет — «зависимых от режима» страниц не осталось,
+    // список пуст осознанно. Независимые страницы остаются как РЕЕСТР видимости
+    // сайдбара: его сверяет с разметкой тест sidebar-nav-r497.
+    // R567 (W1): режимов в UI больше нет, режимного скрытия страниц тоже. Оба списка
+    // остаются как РЕЕСТР видимости сайдбара (сверку с разметкой делает sidebar-nav-r497).
+    var navModeDependent = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue',
+        'gguf', 'image', 'agents', 'logs', 'settings'];
+    var navModeIndependent = ['diagnostics', 'reference', 'health', 'virtual-models'];
 
-        // Show/hide variant sections across the whole page
-        document.querySelectorAll('.variant-section').forEach(function (sec) {
-            var classes = sec.className.split(' ');
-            var hasVariant = false;
-            var isMatch = false;
-            classes.forEach(function (cls) {
-                if (cls.indexOf('variant-') === 0) {
-                    hasVariant = true;
-                    if (cls === variantMap[mode]) {
-                        isMatch = true;
-                    }
-                }
-            });
-            if (!hasVariant) return; // not a variant section
-            if (isMatch || mode === 'standard' && hasVariant) {
-                // For standard mode, we still show variant sections that are
-                // explicitly marked as "always-show" (if any). Otherwise hide all.
-                if (mode === 'standard') {
-                    sec.style.display = 'none';
-                } else {
-                    sec.style.display = '';
-                }
-            } else {
-                sec.style.display = 'none';
-            }
-        });
 
-        // Hide/show sidebar nav items for variant-specific pages
-        // NOTE: monitor и agents всегда видны, независимо от режима
-        //
-        // R94 (2026-10-09): gguf и image добавлены в список ВСЕХ режимов.
-        //
-        // БЫЛО. Этот список не содержал 'gguf' и 'image', а код ниже прячет ЛЮБОЙ
-        // nav-item, которого нет в allowed. То есть при каждом рендере режима
-        // (страница настроек, wizard) из сайдбара исчезали страницы «GGUF models»
-        // и «Image-модели»; обратно их показывал только фильтр типа бэкенда, и
-        // достаточно было выбрать «image.cpp»/«Все», чтобы страница GGUF пропала
-        // НАВСЕГДА (жалоба: «не может определить, в каком он режиме, и не
-        // отображает gguf models страницу»). Эти страницы не зависят от режима
-        // (standard/replication/virtual_router/...), их видимость решает
-        // BackendTypeFilter по СОСТАВУ кластера (есть ли текстовые/image бэкенды).
-        // R497 (2026-11-19): список режимных страниц ОДИН, а не пять копий.
-        //
-        // ЖИВОЙ ДЕФЕКТ (аудит 2026-11-19 §4.1, наблюдение владельца «страницы
-        // появляются на миг и пропадают»). Ниже цикл прячет ЛЮБОЙ nav-item,
-        // которого нет в `allowed`. В пяти копиях списка не было 'diagnostics',
-        // 'reference', 'health' и 'virtual-models' — то есть после первого же
-        // рендера режима (страница «Настройки» или мастер) из сайдбара исчезали
-        // «Диагностика» и «Справка и шаблоны» (плюс два пункта, ведущих на
-        // отдельные html-страницы). Обратно их не показывал никто: applyChrome()
-        // backend-type-filter.js восстанавливает только gguf/image.
-        //
-        // ПОЧЕМУ РАЗДЕЛЕНИЕ, А НЕ «дописать четыре строки в каждую копию»: именно
-        // копирование списка и было причиной — при добавлении страницы забыли
-        // четыре копии из пяти. Режимные страницы (standard/…) перечислены в
-        // navModeDependent, режимно-независимые — в navModeIndependent, и оба
-        // набора склеиваются один раз.
-        //
-        // R94 (2026-10-09): gguf и image уже проходили этот же урок («страница
-        // исчезала из сайдбара и возвращалась только выбором типа бэкенда»),
-        // поэтому их видимость дополнительно решает BackendTypeFilter по СОСТАВУ
-        // кластера.
-        var navModeIndependent = ['diagnostics', 'reference', 'health', 'virtual-models'];
-        var navModeDependent = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue',
-            'gguf', 'image', 'agents', 'logs', 'settings'];
-        var navAll = navModeDependent.concat(navModeIndependent);
-        var navMap = {
-            standard: { show: navAll },
-            replication: { show: navAll },
-            rpc_coordinator: { show: navAll },
-            virtual_router: { show: navAll },
-            distributed_inference: { show: navAll }
-        };
-
-        var allowed = navMap[mode] ? navMap[mode].show : navMap.standard.show;
-        document.querySelectorAll('.nav-item[data-page]').forEach(function (item) {
-            var page = item.dataset.page;
-            if (allowed.indexOf(page) >= 0) {
-                item.style.display = '';
-            } else {
-                item.style.display = 'none';
-            }
-        });
-
-        // R94: возвращаем видимость engine-страниц по составу кластера —
-        // на случай, если их уже успел спрятать фильтр типа бэкенда.
-        if (window.BackendTypeFilter && typeof window.BackendTypeFilter.applyChrome === 'function') {
-            window.BackendTypeFilter.applyChrome();
-        }
-    }
 
     function confirmModeChange(newMode) {
         var msg = window.I18N

@@ -1,4 +1,4 @@
-// tools_stream_markers_r414_test.go — R414 (2026-11-03): служебные маркеры
+﻿// tools_stream_markers_r414_test.go — R414 (2026-11-03): служебные маркеры
 // размышлений не должны утекать в видимый content потокового ответа.
 //
 // Живой случай (Cline в VS Code, gemma-4, /api/chat): последняя дельта
@@ -74,7 +74,7 @@ func TestR414_PartialMarkerHeldBack(t *testing.T) {
 // Поведенчески проверить без живого bridge нельзя (callback замкнут на
 // writeChatStreamResponseWithTools), поэтому проверяем исходник — как R404/R402.
 func TestR414_WiringToolsStreamStripsMarkers(t *testing.T) {
-	src := readMainSourceR402(t, "handlers_chat.go")
+	src := readChatSurfaceR627(t) // R627: поверхность чата разложена на 4 файла
 	for _, want := range []string{
 		"toolsStreamMarkerPrefixHoldbackR414(delta)",
 		"toolsStreamMarkerScanR414(delta)",

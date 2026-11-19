@@ -222,7 +222,7 @@ func TestR406_RetryWithoutThinkingDecision(t *testing.T) {
 func TestR404_Wiring(t *testing.T) {
 	// R626 (2026-11-19): `writeChatStreamResponseWithTools` переехала в
 	// handlers_chat_stream_tools.go — проводка проверяется в ОБОИХ файлах.
-	src := readMainSourceR402(t, "handlers_chat.go") + readMainSourceR402(t, "handlers_chat_stream_tools.go")
+	src := readChatSurfaceR627(t) // R627: поверхность чата разложена на 4 файла
 	for _, want := range []string{
 		"toolsFeedThinkingR404(thinkingParser, token)",
 		"retry skipped — stream already started (R404)",

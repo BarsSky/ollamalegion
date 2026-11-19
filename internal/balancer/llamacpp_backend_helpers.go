@@ -491,7 +491,7 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendForModel(model string) string {
 	// Если каталог не опрошен (known=false), шаг ничего не меняет и работает
 	// прежний fallback: отсутствие телеметрии не ломает стенд.
 	if lr != nil && lr.proxy != nil && model != "" {
-		if id := lr.proxy.findLeastLoadedBackendWithModelOnDisk(model, []types.BackendType{types.BackendTypeLlamaCpp}); id != "" {
+		if id := lr.proxy.findLeastLoadedBackendWithModelOnDiskForColdStart(model, []types.BackendType{types.BackendTypeLlamaCpp}); id != "" {
 			logger.Get().Debugw(i18n.T("balancer.llamacpp_backend_helpers.model_not_loaded_node_with_file_debug"),
 				"model", model, "backend", id)
 			return id

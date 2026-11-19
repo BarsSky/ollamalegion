@@ -917,7 +917,7 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if backendID == "" {
-		// R403: ждём появления свободного бэкенда (см. backend_wait_queue_r403.go).
+		// R403: ждём появления свободного бэкенда (см. backend_wait_queue.go).
 		backendID = lr.waitForLlamaCppBackendR403(r.Context(), w, model, ExtractNumCtxFromBody(bodyBuf))
 		if backendID == "" {
 			logger.Get().Errorw("handleChat: no llama.cpp backend available after wait",

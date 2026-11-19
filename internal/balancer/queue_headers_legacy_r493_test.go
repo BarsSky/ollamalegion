@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 // queue_headers_legacy_r493_test.go — R493-12o (долг P2-13/T4): обе поверхности
 // очереди говорят на одном языке.
@@ -85,9 +85,9 @@ func TestR493_WaitingRequestReportsCanonicalHeaders(t *testing.T) {
 	// Страж подключения: вызов стоит в самом ожидании бэкенда, а не только в 503.
 	// Поведенческий тест потребовал бы собрать роутер с живым выбором бэкенда —
 	// он проверял бы фикстуру, а не контракт; подключение проверяется отдельно.
-	src, err := os.ReadFile("backend_wait_queue_r403.go")
+	src, err := os.ReadFile("backend_wait_queue.go")
 	if err != nil {
-		t.Fatalf("не прочитать backend_wait_queue_r403.go: %v", err)
+		t.Fatalf("не прочитать backend_wait_queue.go: %v", err)
 	}
 	if !strings.Contains(string(src), "setQueueWaitHeadersR493(w, out.Waited, out.Position)") {
 		t.Fatal("успешное ожидание в waitForLlamaCppBackendR403 не выставляет X-Queue-* — " +

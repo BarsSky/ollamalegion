@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // capacity_reads_guard_r501_test.go — R501 (2026-11-19), аудит S3, пункт C-2.
 //
@@ -36,7 +36,7 @@ var capacityStaticReadAllowR501 = map[string]string{
 	"backend_registry.go":        "регистрация, нормализация статики и запись заявки узла",
 	"state.go":                   "reconcileNodeCapacity и LoadState работают со статикой по определению",
 	"autosuggest.go":             "советует, какое значение записать В КОНФИГ",
-	"backend_rejections_r460.go": "отличает «не задано в конфиге» от «эффективная ноль»",
+	"backend_rejections.go": "отличает «не задано в конфиге» от «эффективная ноль»",
 }
 
 // capacityStaticReadAllowAPI_R501 — то же для пакета api: конфиг-ручки.

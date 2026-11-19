@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"crypto/sha256"
@@ -13,7 +13,7 @@ import (
 
 // Идентичность клиента (R67b): requestUserIdentity, firstStringField,
 // requestBodyIdentity и extractChatIDFromBody переехали в
-// session_resolver_r378.go (R378, P2-3). Причина: источники идентичности
+// session_resolver.go (R378, P2-3). Причина: источники идентичности
 // (заголовки пользователя/сессии/чата, поля тела, metadata) жили в двух
 // файлах — client.go и autoload_wait.go — и расходились: ключ очереди не
 // видел X-Conversation-Id, ключ маршрутизации не видел metadata.session_id.
@@ -264,7 +264,7 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 	// балансер не разделяет». Отпечаток `fp` (IP+UA) и имя клиента у них совпадают,
 	// поэтому до этой правки оба экземпляра попадали в ОДНУ сессию: общая привязка к
 	// бэкенду, общий кошелёк справедливости в admission-очереди, одна строка в
-	// панели. Различаем их по НАЧАЛУ РАЗГОВОРА (см. session_instance_r118.go):
+	// панели. Различаем их по НАЧАЛУ РАЗГОВОРА (см. session_instance.go):
 	// Cline пересылает историю целиком, поэтому системная инструкция + первая задача
 	// стабильны внутри задачи и различаются между задачами/экземплярами.
 	if conv := conversationFingerprintFromRequest(r); conv != "" {

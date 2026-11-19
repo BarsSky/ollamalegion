@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"sync"
@@ -98,7 +98,7 @@ type SessionIdentity struct {
 	UserHasSummaryMarker bool
 	// TaskID — идентификатор задачи из environment_details («Current Task ID: …»).
 	TaskID string
-	// ConvKey — отпечаток начала разговора целиком (session_instance_r118.go):
+	// ConvKey — отпечаток начала разговора целиком (session_instance.go):
 	// точный признак «начало не изменилось вообще». Пусто — отпечаток не строился
 	// (короткий промпт), тогда работают только текстовые признаки.
 	ConvKey string
@@ -399,7 +399,7 @@ func (sm *SessionManager) GetAllSnapshots() []types.Session {
 //
 // Живая гонка (CI, -race, TestLoadBalancing_MultipleClients): R480 читал
 // s.BackendID / s.LastRequestAt через Get() (общий указатель, см. R66c) в
-// proxy.go и session_move_need_r480.go, пока параллельный Set писал те же поля.
+// proxy.go и session_move_need.go, пока параллельный Set писал те же поля.
 // Для точечного чтения полей одного поля мало (GetBackendID есть, LastRequestAt
 // — нет), поэтому возвращаем полную копию.
 func (sm *SessionManager) GetSnapshot(id string) (types.Session, bool) {

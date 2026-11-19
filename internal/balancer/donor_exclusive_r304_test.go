@@ -327,9 +327,9 @@ func TestR304_SelectionSitesAskSharedPredicate(t *testing.T) {
 
 	// Голый isGroupWorkerR92 допустим только там, где он и есть ответ.
 	allowedRaw := map[string]bool{
-		"backend_group_r92.go":    true, // определение предиката
+		"backend_group.go":    true, // определение предиката
 		"donor_exclusive_r304.go": true, // объединённый предикат
-		"backend_disable_r250.go": true, // диагностика «а не выключил ли я всё сам»
+		"backend_disable.go": true, // диагностика «а не выключил ли я всё сам»
 	}
 	for key, fn := range funcs {
 		if !fn.callsRawWorkerOnly {

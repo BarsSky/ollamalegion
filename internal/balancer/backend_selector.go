@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"time"
@@ -511,7 +511,7 @@ func (p *Proxy) findBackendWithModelExcludingLocked(modelName string, exclude ma
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
 		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
-		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		// становится — ровно этого оператор и просил (см. backend_disable.go).
 		if isDisabledBackendState(state) {
 			continue
 		}
@@ -598,7 +598,7 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool, allowedTypes
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
 		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
-		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		// становится — ровно этого оператор и просил (см. backend_disable.go).
 		if isDisabledBackendState(state) {
 			continue
 		}
@@ -677,7 +677,7 @@ func (p *Proxy) findLeastLoadedBackendWithModel(modelName string, allowedTypes [
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
 		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
-		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		// становится — ровно этого оператор и просил (см. backend_disable.go).
 		if isDisabledBackendState(state) {
 			continue
 		}
@@ -744,7 +744,7 @@ func (p *Proxy) findLessLoadedBackendWithModelWhere(
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
 		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
-		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		// становится — ровно этого оператор и просил (см. backend_disable.go).
 		if isDisabledBackendState(state) {
 			continue
 		}
@@ -816,7 +816,7 @@ func (p *Proxy) findLessLoadedBackendAnyWhere(
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
 		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
-		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		// становится — ровно этого оператор и просил (см. backend_disable.go).
 		if isDisabledBackendState(state) {
 			continue
 		}
@@ -928,7 +928,7 @@ func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.Back
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
 		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
-		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		// становится — ровно этого оператор и просил (см. backend_disable.go).
 		if isDisabledBackendState(state) {
 			continue
 		}
@@ -1010,7 +1010,7 @@ func (p *Proxy) selectFreeBackendAny(allowedTypes []types.BackendType) string {
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
 		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
-		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		// становится — ровно этого оператор и просил (см. backend_disable.go).
 		if isDisabledBackendState(state) {
 			continue
 		}
@@ -1080,7 +1080,7 @@ func (p *Proxy) selectByResources(allowedTypes []types.BackendType) string {
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
 		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
-		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		// становится — ровно этого оператор и просил (см. backend_disable.go).
 		if isDisabledBackendState(state) {
 			continue
 		}

@@ -240,7 +240,7 @@ var messagesBalancer3 = map[string]map[Lang]string{
 		EN: "AdoptCppWorkerToken: the cppworker token reported by the agent was saved",
 	},
 
-	// === cancel_client_r229.go: отмена от клиента =======================
+	// === cancel_client.go: отмена от клиента =======================
 	"balancer.cancel_client.broadcast_info": {
 		RU: "client cancel: отмена от клиента разослана воркерам",
 		EN: "client cancel: the client cancellation was broadcast to the workers",
@@ -250,7 +250,7 @@ var messagesBalancer3 = map[string]map[Lang]string{
 		EN: "client cancel: the worker did not accept the cancellation",
 	},
 
-	// === cancel_upstream_r184.go: отмена генерации на воркере ===========
+	// === cancel_upstream.go: отмена генерации на воркере ===========
 	"balancer.cancel_upstream.not_accepted_warn": {
 		RU: "cancel upstream: воркер не принял отмену",
 		EN: "cancel upstream: the worker did not accept the cancellation",

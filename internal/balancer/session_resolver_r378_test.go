@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 // session_resolver_r378_test.go — R378 (2026-11-01): один резолвер ключей
 // сессии/очереди (P2-3 из аудита регрессий).
@@ -7,7 +7,7 @@ package balancer
 //  1. ПОВЕДЕНИЕ не изменилось: ключ очереди на каждый набор источников даёт
 //     ровно то же значение, что и до переноса в один файл (золотая матрица);
 //  2. ИСТОЧНИКИ живут в одном месте: новый заголовок идентичности, добавленный
-//     мимо session_resolver_r378.go, роняет стюард, а список проброса
+//     мимо session_resolver.go, роняет стюард, а список проброса
 //     self-proxy обязан включать все источники.
 
 import (
@@ -186,7 +186,7 @@ func TestR378_Steward_IdentitySourcesLiveHere(t *testing.T) {
 		"X-User-Id", "X-OpenWebUI-User-Id", "X-User-Email",
 		"X-Chat-Id", "X-Conversation-Id",
 	}
-	allowedFiles := map[string]bool{"session_resolver_r378.go": true}
+	allowedFiles := map[string]bool{"session_resolver.go": true}
 
 	files, err := filepath.Glob("*.go") // тесты идут с cwd = каталог пакета
 	if err != nil {
@@ -216,7 +216,7 @@ func TestR378_Steward_IdentitySourcesLiveHere(t *testing.T) {
 				base := filepath.Base(path)
 				if !allowedFiles[base] {
 					t.Errorf("%s: заголовок идентичности %q вне резолвера — добавьте источник в "+
-						"session_resolver_r378.go, иначе ключ очереди и ключ сессии разойдутся", path, h)
+						"session_resolver.go, иначе ключ очереди и ключ сессии разойдутся", path, h)
 				}
 			}
 			return true

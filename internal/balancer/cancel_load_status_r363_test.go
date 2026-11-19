@@ -1,4 +1,4 @@
-// cancel_load_status_r363_test.go — R363 (2026-10-31), аудит abort A4 (сторона балансера).
+﻿// cancel_load_status_r363_test.go — R363 (2026-10-31), аудит abort A4 (сторона балансера).
 //
 // РЕШЕНИЕ ОПЕРАТОРА: «Да загрузку прерывать при отмене».
 //
@@ -111,9 +111,9 @@ func TestR363_ClientCancelDefaultsToLoadCancel_STEWARD(t *testing.T) {
 		return ""
 	}
 
-	client := read("cancel_client_r229.go")
+	client := read("cancel_client.go")
 	if client == "" {
-		t.Fatal("не удалось прочитать cancel_client_r229.go")
+		t.Fatal("не удалось прочитать cancel_client.go")
 	}
 	if !strings.Contains(client, "req.CancelLoad = &allowLoadCancel") {
 		t.Error("клиентская отмена не выставляет cancel_load по умолчанию: Stop во время " +
@@ -123,10 +123,10 @@ func TestR363_ClientCancelDefaultsToLoadCancel_STEWARD(t *testing.T) {
 		t.Error("clientCancelBody не принимает cancel_load — клиенту нечем отказаться")
 	}
 
-	// Сторожевые обрывы: в cancel_upstream_r184.go поля cancel_load быть НЕ должно.
-	upstream := read("cancel_upstream_r184.go")
+	// Сторожевые обрывы: в cancel_upstream.go поля cancel_load быть НЕ должно.
+	upstream := read("cancel_upstream.go")
 	if upstream == "" {
-		t.Fatal("не удалось прочитать cancel_upstream_r184.go")
+		t.Fatal("не удалось прочитать cancel_upstream.go")
 	}
 	if strings.Contains(upstream, "cancel_load") {
 		t.Error("сторожевой путь (таймаут/тишина) ставит cancel_load: таймаут одного клиента " +

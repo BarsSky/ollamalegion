@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"os"
@@ -350,7 +350,7 @@ func (p *Proxy) findModelOnAnyBackendNoVRAMCheck(model string, bt types.BackendT
 
 	for id, state := range p.backends {
 		// R92 (S2): воркер логического бэкенда не обслуживает запросы сам —
-		// модель на нём только частью слоёв (см. backend_group_r92.go).
+		// модель на нём только частью слоёв (см. backend_group.go).
 		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
 		if p.cannotHostModelR304(id) {
 			continue
@@ -396,7 +396,7 @@ func (p *Proxy) selectAnyHealthy(bt types.BackendType) string {
 	defer p.mu.RUnlock()
 	for id, state := range p.backends {
 		// R92 (S2): воркер логического бэкенда не обслуживает запросы сам —
-		// модель на нём только частью слоёв (см. backend_group_r92.go).
+		// модель на нём только частью слоёв (см. backend_group.go).
 		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
 		if p.cannotHostModelR304(id) {
 			continue

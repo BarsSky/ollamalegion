@@ -1,4 +1,4 @@
-// preflight_stream_dialog.go — Round 34 (2026-08-12) Phase 1: stream dialog
+﻿// preflight_stream_dialog.go — Round 34 (2026-08-12) Phase 1: stream dialog
 // with heartbeats during reload.
 //
 // Проблема: при async preflight reload (LB_NCTX_PREFLIGHT_ASYNC_RELOAD=true)
@@ -529,7 +529,7 @@ func selfProxyPostWithMarker(ctx context.Context, incoming *http.Request, reques
 // X-Session-ID/X-Client-ID клиента терялись (регресс R252/R118.9). Cookie нужен
 // для клиентов, которые идентифицируют сессию печенькой.
 // R378 (2026-11-01): заголовки идентичности больше не перечислены здесь
-// вручную — они берутся из session_resolver_r378.go (identity*R378). Раньше
+// вручную — они берутся из session_resolver.go (identity*R378). Раньше
 // список проброса и списки ключей сессии/очереди жили отдельно, и новая голова
 // идентичности доезжала до внутреннего запроса только если её не забыли ни в
 // одном из трёх мест.

@@ -94,6 +94,11 @@ func TestR519_UnknownVRAMKeepsOldAdvice(t *testing.T) {
 // Живой факт: только что развёрнутый стенд (0 моделей, ~7 ГБ свободной VRAM)
 // отдаёт max_vram_n_ctx=0 при vram_known=true. Первая версия R519 объявляла это
 // «свободной VRAM не хватает» — неправда, вводящая оператора в заблуждение.
+//
+// R545 (F9): того же факта достаточно, чтобы НЕ отказывать вовсе. Потолок
+// авто-reload — про уже загруженную модель; на пустом узле клиент должен получить
+// загрузку своим окном (физику проверит гейт R522), а не 413 «выше потолка».
+// Поэтому проверяем отсутствие отказа и отсутствие ложного «места нет».
 func TestR520_EmptyBackendIsUnknownNotNoRoom(t *testing.T) {
 	proxy := r519Proxy(t, true, 0)
 	// Убираем загруженные модели: exact-fit воркер для них не считал.
@@ -103,14 +108,14 @@ func TestR520_EmptyBackendIsUnknownNotNoRoom(t *testing.T) {
 
 	_, _, msg, status := proxy.preflightNCtxReloadIfNeeded(
 		context.Background(), "backend-1", "Qwen3-4B-Instruct-2507-Q4_K_M", r519Body(), "/api/chat")
-	if status != http.StatusRequestEntityTooLarge {
-		t.Fatalf("статус = %d, want 413 (текст: %s)", status, msg)
+	if status == http.StatusRequestEntityTooLarge {
+		t.Fatalf("пустой узел не должен получать 413 по потолку авто-reload (R545): %s", msg)
 	}
 	if strings.Contains(msg, "free VRAM is not enough") {
 		t.Fatalf("на пустом узле нельзя утверждать «места нет»: %s", msg)
 	}
-	if !strings.Contains(msg, "auto_reload_max_n_ctx") {
-		t.Fatalf("ожидался прежний текст про операторский лимит; получено: %s", msg)
+	if strings.Contains(msg, "auto_reload_max_n_ctx") {
+		t.Fatalf("на пустом узле потолок авто-reload не причина отказа: %s", msg)
 	}
 }
 

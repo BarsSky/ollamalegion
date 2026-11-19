@@ -21,6 +21,11 @@ import (
 
 // TestNCtxRefusalNamesBindingLimitR140 — физический предел НИЖЕ операторского:
 // называем физический и НЕ советуем поднимать настройку.
+//
+// R545 (F9): отказ по потолку теперь выдаётся ТОЛЬКО для загруженной модели
+// (до правки он приходил раньше определения состояния и бил по пустому узлу —
+// жалоба №9 «клиент просит 200k, дают 131k»). Поэтому фикстура обязана содержать
+// загруженную модель: потолок авто-reload — про АВТО-рост уже работающей модели.
 func TestNCtxRefusalNamesBindingLimitR140(t *testing.T) {
 	config := createTestConfig()
 	proxy := newProxyWithCleanup(t, config)
@@ -30,9 +35,18 @@ func TestNCtxRefusalNamesBindingLimitR140(t *testing.T) {
 	proxy.nctxReload.SetConfig(cfg)
 
 	// Воркер сообщил, что в свободную VRAM влезает только 8192: часть памяти
-	// занята другими загруженными моделями.
+	// занята другими загруженными моделями. Модель загружена с окном 32768.
 	proxy.metricsMgr.mu.Lock()
-	proxy.metricsMgr.llamaMetrics["backend-1"] = &types.LlamaCppMetrics{MaxVRAMNCtx: 8192, VramKnown: true}
+	proxy.metricsMgr.llamaMetrics["backend-1"] = &types.LlamaCppMetrics{
+		MaxVRAMNCtx: 8192,
+		VramKnown:   true,
+		LoadedModels: []types.LlamaCppModel{{
+			Name:          "gemma-4-E4B-it-Q4_K_M",
+			ContextLength: 32768,
+			ContextPerSeq: 32768,
+			State:         "loaded",
+		}},
+	}
 	proxy.metricsMgr.mu.Unlock()
 
 	body := []byte(`{"model":"gemma-4-E4B-it-Q4_K_M","messages":[{"role":"user","content":"ок"}],"options":{"num_ctx":262144}}`)
@@ -48,7 +62,7 @@ func TestNCtxRefusalNamesBindingLimitR140(t *testing.T) {
 
 // TestNCtxRefusalWithoutPhysicalLimitR140 — физический предел НЕИЗВЕСТЕН
 // (воркер ещё не опрошен, max_vram_n_ctx=0): не выдумываем число и говорим
-// только про операторский лимит, как раньше.
+// только про операторский лимит, как раньше. R545: модель загружена (см. выше).
 func TestNCtxRefusalWithoutPhysicalLimitR140(t *testing.T) {
 	config := createTestConfig()
 	proxy := newProxyWithCleanup(t, config)
@@ -56,6 +70,17 @@ func TestNCtxRefusalWithoutPhysicalLimitR140(t *testing.T) {
 	cfg := proxy.nctxReload.Config()
 	cfg.AutoReloadMaxNCtx = 131072
 	proxy.nctxReload.SetConfig(cfg)
+
+	proxy.metricsMgr.mu.Lock()
+	proxy.metricsMgr.llamaMetrics["backend-1"] = &types.LlamaCppMetrics{
+		LoadedModels: []types.LlamaCppModel{{
+			Name:          "gemma-4-E4B-it-Q4_K_M",
+			ContextLength: 32768,
+			ContextPerSeq: 32768,
+			State:         "loaded",
+		}},
+	}
+	proxy.metricsMgr.mu.Unlock()
 
 	body := []byte(`{"model":"gemma-4-E4B-it-Q4_K_M","messages":[{"role":"user","content":"ок"}],"options":{"num_ctx":262144}}`)
 	_, _, msg, status := proxy.preflightNCtxReloadIfNeeded(

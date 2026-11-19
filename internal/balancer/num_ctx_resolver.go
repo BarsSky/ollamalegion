@@ -368,10 +368,60 @@ func (p *Proxy) physicalNumCtxCeiling(modelName, backendID string) int {
 		return 0
 	}
 	return resolvePhysicalMaxContext(
-		p.getGGUFMaxContext(backendID),
-		p.profileCapCtx(modelName, true), // fold: «gemma-4» должен находить «gemma-4-E4B-…»
+		p.ggufMaxContextForModel(backendID, modelName), // R545 (F9): GGUF ИМЕННО этой модели
+		p.profileCapCtx(modelName, true),               // fold: «gemma-4» должен находить «gemma-4-E4B-…»
 		preflightAutoReloadMaxNCtx(p),
 	)
+}
+
+// ggufMaxContextForModel — R545 (F9): GGUF-потолок ИМЕННО запрошенной модели.
+//
+// ДО: и решатель, и сборщик состояния брали top-level `lm.GGUFMaxContext`, а это
+// МАКСИМУМ по ЗАГРУЖЕННЫМ моделям узла (llamacpp_metrics_poller.go:615-616). На
+// узле, где рядом живёт большая модель, потолок «маленькой» оказывался чужим, а
+// для НЕзагруженной модели top-level вообще отсутствовал (0 = «неизвестно»),
+// хотя по смыслу вопрос был «сколько держит ЭТА модель».
+//
+// СТАЛО: сначала запись по имени модели (`gguf_max_context` приходит от воркера
+// в /api/models для каждой загруженной модели), и только если per-model данных
+// нет вовсе (старый воркер) — прежний top-level. Если per-model данные есть, но
+// запрошенной модели среди них нет, честно возвращаем 0 («неизвестно»), а не
+// число соседней модели.
+func (p *Proxy) ggufMaxContextForModel(backendID, modelName string) int {
+	if p == nil || p.metricsMgr == nil || backendID == "" {
+		return 0
+	}
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+	lm := p.metricsMgr.llamaMetrics[backendID]
+	if lm == nil {
+		return 0
+	}
+	best := 0
+	anyPerModel := false
+	for _, m := range lm.LoadedModels {
+		if m.GGUFMaxContext <= 0 {
+			continue
+		}
+		anyPerModel = true
+		if modelName != "" &&
+			m.Name != modelName &&
+			!containsFold(m.Name, modelName) &&
+			!containsFold(modelName, m.Name) {
+			continue
+		}
+		if m.GGUFMaxContext > best {
+			best = m.GGUFMaxContext
+		}
+	}
+	if best > 0 {
+		return best
+	}
+	if !anyPerModel {
+		// Старый воркер: per-model gguf_max_context не публикуется.
+		return lm.GGUFMaxContext
+	}
+	return 0
 }
 
 // loadedWindowNCtx — R83-fix (2026-09-30): окно, с которым модель РЕАЛЬНО
@@ -793,8 +843,9 @@ func (p *Proxy) maxNumCtxForModel(modelName string, backendID string) int {
 	// Tier 3: GGUFMax from metrics (R43 fix: was loaded model contextSize).
 	// Loaded-model contextSize is current state (conservative if no auto-tune yet).
 	// GGUFMax is the model's hard upper bound from training metadata.
+	// R545 (F9): по ИМЕНИ модели, а не максимум по узлу.
 	if backendID != "" {
-		if v := p.getGGUFMaxContext(backendID); v > 0 {
+		if v := p.ggufMaxContextForModel(backendID, modelName); v > 0 {
 			return v
 		}
 		// Final fallback: loaded model contextSize from metrics.
@@ -908,11 +959,38 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 		// profile.ContextLength — это максимум, который поддерживает модель
 		// после partial GPU offload (зависит от VRAM).
 		// Fallback на config.DefaultModelProfile (Phase D.3-fix).
+		//
+		// R545 (F9, жалоба №9 плана 2026-11-19-webui-and-balancer-fixes): потолок
+		// профиля/оператора — про ЗАГРУЖЕННУЮ модель и авто-reload, а не про
+		// первичную загрузку.
+		//
+		// Живой дефект: клиент просит 200k, а на узле, где модели ЕЩЁ НЕТ, окно
+		// молча понижалось до profile.contextLengthMax = 131072. Собственный
+		// контракт балансера говорит обратное: «Профиль — хинт, а не потолок»
+		// (docs/architecture/context-numbers.ru.md), R68 в этом же файле, и
+		// потолок авто-роста НЕ ограничивает явную загрузку модели
+		// (nctx_reload_handlers.go, R83). Хуже того, понижение здесь уезжало в
+		// X-Cpp-Ctx, и авто-загрузка поднимала модель ровно на этом числе.
+		//
+		// Теперь при «не загружена на этом узле» потолок остаётся справочным
+		// (Info-лог с обоими числами), а физику проверяют воркер (GGUF /
+		// max_vram_n_ctx) и гейт окна R522 — там отказ/понижение приходит
+		// С ЧИСЛАМИ (вес + KV + буферы), а не тихим 131k.
+		_, clampState := p.loadedWindowFromCache(backendID, modelName)
 		if maxCtx := p.maxNumCtxForModel(modelName, backendID); maxCtx > 0 && n > maxCtx {
-			logger.Get().Warnw("ResolveNumCtx: clamping request num_ctx to profile max",
-				"model", modelName, "requested", n, "clamped_to", maxCtx, "source", NumCtxSourceRequest)
-			p.recordDesiredNCtx(backendID, modelName, maxCtx)
-			return ResolvedNumCtx{Value: maxCtx, Source: NumCtxSourceRequest}
+			if clampState != loadedWindowLoaded {
+				logger.Get().Infow("ResolveNumCtx: R545 — модель не загружена на узле, потолок профиля/оператора НЕ понижает клиентское окно",
+					"model", modelName, "backend", backendID,
+					"requested_n_ctx", n, "ceiling_not_applied", maxCtx,
+					"loaded_state", clampState.String(),
+					"why", "первичная загрузка: профиль — хинт, физику проверяют воркер и гейт окна R522",
+					"source", NumCtxSourceRequest)
+			} else {
+				logger.Get().Warnw("ResolveNumCtx: clamping request num_ctx to profile max",
+					"model", modelName, "requested", n, "clamped_to", maxCtx, "source", NumCtxSourceRequest)
+				p.recordDesiredNCtx(backendID, modelName, maxCtx)
+				return ResolvedNumCtx{Value: maxCtx, Source: NumCtxSourceRequest}
+			}
 		}
 		// R83-fix (2026-09-30): НИКОГДА не просим больше, чем модель РЕАЛЬНО имеет.
 		//

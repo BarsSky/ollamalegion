@@ -1001,80 +1001,12 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 			"backend", backendID, "model", modelName, "requested_n_ctx", requestedNCtx)
 	}
 
-	// R83 (2026-09-29): ПОТОЛОК auto-reload применяется и на ЭТОМ пути.
-	//
-	// ДЕФЕКТ (пойман на живом). В балансере два независимых пути n_ctx-reload:
-	// координатор (nctx_reload.go, проверяет cfg.AutoReloadMaxNCtx) и этот —
-	// preflightNCtxReloadIfNeeded. Второй потолок НЕ проверял, поэтому клиент
-	// мог поднять контекст выше операторского лимита: при LB_NCTX_RELOAD_MAX_N_CTX=16384
-	// и загруженных 16384 запрос с num_ctx=32768 вызвал async reload
-	//   "preflightNCtxReload: detected n_ctx mismatch, scheduling async reload,
-	//    loaded_n_ctx":16384,"requested_n_ctx":32768
-	// и модель загрузилась с 32768 — настройка оператора была перебита
-	// клиентским запросом, причём молча (в ответе 200).
-	//
-	// Теперь запрос, требующий контекст выше потолка, отклоняется с понятным
-	// объяснением вместо тихой перезагрузки. Сам потолок НЕ ограничивает
-	// явную загрузку модели (WebUI/load-with-params) — он про авто-reload.
-	// R255 (2026-10-28): потолок авто-роста учитывает ЗАЯВЛЕННОЕ оператором окно.
-	//
-	// Живая жалоба: оператор выставил в карточке модели 256000 (и модель обучена
-	// на 262144, VRAM хватает), а запрос агента на окно больше 131072 упирался в
-	// env-потолок LB_NCTX_RELOAD_MAX_N_CTX. Потолок — защита от АВТО-роста по
-	// клиентскому запросу; если политику задал сам оператор (профиль модели), его
-	// окно и есть потолок. Физический предел (VRAM/GGUF) проверяется отдельно
-	// ниже, поэтому «в никуда» окно не вырастет.
-	// R267: та же ЕДИНАЯ формула потолка, что у решателя (второй не существует).
-	effCeil := 0
-	if cfg := p.nctxReload.Config(); cfg.AutoReloadMaxNCtx > 0 {
-		effCeil = p.effectiveAutoReloadCeiling(modelName, cfg.AutoReloadMaxNCtx)
-	}
-	if effCeil > 0 && requestedNCtx > effCeil {
-		// R140 (2026-10-16): называем СВЯЗЫВАЮЩИЙ предел, а не только
-		// операторский.
-		//
-		// max_vram_n_ctx воркер считает по ФАКТИЧЕСКИ свободной VRAM, поэтому
-		// он учитывает и другие загруженные модели. Если он ниже операторского
-		// лимита, совет «поднимите LB_NCTX_RELOAD_MAX_N_CTX» невыполним: окно
-		// всё равно не влезет, и клиент уйдёт в бесплодный цикл поднятия
-		// настройки. Когда физический потолок неизвестен (0 = poller ещё не
-		// опросил бэкенд) — не выдумываем число и говорим только про
-		// операторский лимит, как раньше.
-		// R519 (2026-11-19): «0» у max_vram_n_ctx означает ДВЕ разные вещи, и
-		// раньше они склеивались в «неизвестно».
-		//
-		// Воркер отдаёт max_vram_n_ctx=0 в двух случаях: (а) он ещё не измерил
-		// VRAM (vram_known=false) — тогда честно «неизвестно»; (б) VRAM измерена,
-		// но свободной не хватает даже на минимальное окно (vram_known=true,
-		// типично — модель уже занимает карту). Живой факт стенда: при загруженной
-		// 4B моделью /api/models отдаёт max_vram_n_ctx=0 и vram_known=true, а
-		// балансер в отказе советовал «Raise LB_NCTX_RELOAD_MAX_N_CTX» — совет,
-		// который ничего не создаст: места в VRAM нет.
-		physicalMax, physicalKnown := p.maxVRAMNCtxKnownFromMetrics(backendID)
-		binding := effCeil
-		if physicalMax > 0 && physicalMax < binding {
-			binding = physicalMax
-		}
-		if physicalKnown && physicalMax == 0 {
-			binding = 0
-		}
-		logger.Get().Warnw(i18n.T("balancer.nctx_reload_handlers.requested_above_limit_no_reload_warn"),
-			"backend", backendID, "model", modelName,
-			"requested_n_ctx", requestedNCtx,
-			"auto_reload_max_n_ctx", effCeil,
-			"max_vram_n_ctx", physicalMax,
-			"vram_known", physicalKnown,
-			"binding_limit", binding,
-			"hint", i18n.T("balancer.nctx_reload_handlers.requested_above_limit_hint"))
-		if physicalKnown && physicalMax == 0 {
-			return bodyBuf, false,
-				formatNCtxVRAMExhaustedRefusal(requestedNCtx, effCeil, modelName),
-				http.StatusRequestEntityTooLarge
-		}
-		return bodyBuf, false,
-			formatNCtxCeilingRefusal(requestedNCtx, effCeil, physicalMax, modelName),
-			http.StatusRequestEntityTooLarge
-	}
+	// R545 (F9): отказ по потолку авто-reload перенесён НИЖЕ — после
+	// resolveLoadedWindowNCtx (см. блок «ПОТОЛОК auto-reload — ТОЛЬКО для
+	// загруженной модели»). Здесь он стоял ДО определения состояния модели и
+	// потому бил по ПУСТОМУ узлу: клиент просит 200k, а на бэкенде, где модели
+	// ещё нет, он получал 413 «выше потолка», хотя по контракту (R83, R255)
+	// потолок ограничивает только АВТО-рост уже загруженной модели.
 
 	// 2. R118 (2026-10-14): ЧТО ИМЕННО известно о модели — «загружена»,
 	//    «грузится прямо сейчас», «модели нет» или «состояние неизвестно».
@@ -1108,6 +1040,62 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 			"requested_n_ctx", requestedNCtx,
 			"hint", i18n.T("balancer.nctx_reload_handlers.model_state_unknown_hint"))
 		return bodyBuf, true, "", http.StatusOK
+	}
+
+	// R545 (F9): ПОТОЛОК auto-reload — ТОЛЬКО для загруженной модели.
+	//
+	// Здесь и только здесь он и имеет смысл: R83 завёл его против ТИХОЙ
+	// перезагрузки уже работающей модели по клиентскому запросу (клиент поднимал
+	// окно выше операторского лимита, и настройка перебивалась молча). Для
+	// первичной загрузки потолок по контракту не действует — он «про авто-reload,
+	// а не про явную загрузку» (см. комментарий в начале функции).
+	//
+	// Жалоба №9 плана 2026-11-19-webui-and-balancer-fixes: блок стоял ВЫШЕ
+	// resolveLoadedWindowNCtx и потому отвечал 413 клиенту, который просил 200k у
+	// СВОБОДНОГО узла (модели там ещё нет). Теперь состояние уже известно:
+	// «нет» — идём грузить клиентским окном (физику проверит гейт R522),
+	// «грузится»/«неизвестно» — свои ветки выше, «загружена» — отказ по потолку.
+	//
+	// R140 (2026-10-16): в отказе называем СВЯЗЫВАЮЩИЙ предел, а не только
+	// операторский: max_vram_n_ctx считается по фактически свободной VRAM, и
+	// совет «поднимите лимит» невыполним, если связывает память.
+	// R519: «0» у max_vram_n_ctx означает две разные вещи (см. ниже).
+	if loadedState == loadedWindowLoaded {
+		// R267: та же ЕДИНАЯ формула потолка, что у решателя (второй не существует).
+		// R255: потолок авто-роста учитывает ЗАЯВЛЕННОЕ оператором окно.
+		effCeil := 0
+		if p.nctxReload != nil {
+			if cfg := p.nctxReload.Config(); cfg.AutoReloadMaxNCtx > 0 {
+				effCeil = p.effectiveAutoReloadCeiling(modelName, cfg.AutoReloadMaxNCtx)
+			}
+		}
+		if effCeil > 0 && requestedNCtx > effCeil {
+			physicalMax, physicalKnown := p.maxVRAMNCtxKnownFromMetrics(backendID)
+			binding := effCeil
+			if physicalMax > 0 && physicalMax < binding {
+				binding = physicalMax
+			}
+			if physicalKnown && physicalMax == 0 {
+				binding = 0
+			}
+			logger.Get().Warnw(i18n.T("balancer.nctx_reload_handlers.requested_above_limit_no_reload_warn"),
+				"backend", backendID, "model", modelName,
+				"requested_n_ctx", requestedNCtx,
+				"auto_reload_max_n_ctx", effCeil,
+				"max_vram_n_ctx", physicalMax,
+				"vram_known", physicalKnown,
+				"binding_limit", binding,
+				"loaded_n_ctx", loadedNCtx,
+				"hint", i18n.T("balancer.nctx_reload_handlers.requested_above_limit_hint"))
+			if physicalKnown && physicalMax == 0 {
+				return bodyBuf, false,
+					formatNCtxVRAMExhaustedRefusal(requestedNCtx, effCeil, modelName),
+					http.StatusRequestEntityTooLarge
+			}
+			return bodyBuf, false,
+				formatNCtxCeilingRefusal(requestedNCtx, effCeil, physicalMax, modelName),
+				http.StatusRequestEntityTooLarge
+		}
 	}
 
 	// R303 (D4): модель НЕ загружена на этом узле, но жива на другом.
@@ -2242,7 +2230,9 @@ func (p *Proxy) resolveModelMaxContext(backendID, model string, profileMaxContex
 			// GGUF и воркеру, как и раньше.
 			cap = profileMaxContext
 		}
-		ggufMax := p.getGGUFMaxContext(backendID)
+		// R545 (F9): GGUF ИМЕННО этой модели, а не максимум по загруженным
+		// моделям узла (см. ggufMaxContextForModel).
+		ggufMax := p.ggufMaxContextForModel(backendID, model)
 		if ggufMax > 0 && (cap == 0 || ggufMax < cap) {
 			cap = ggufMax
 		}
@@ -2274,7 +2264,8 @@ func (p *Proxy) resolveModelMaxContext(backendID, model string, profileMaxContex
 	// bound from training) instead of default profile (conservative 32768).
 	// Pre-R43: Tier 3 returned getMetricsModelMaxContext() which is also
 	// conservative (cppworker reports max_vram_n_ctx, not GGUFMax).
-	ggufMax := p.getGGUFMaxContext(backendID)
+	// R545 (F9): GGUF по имени модели.
+	ggufMax := p.ggufMaxContextForModel(backendID, model)
 	if ggufMax > 0 {
 		return ggufMax
 	}

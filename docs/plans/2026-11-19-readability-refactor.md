@@ -215,6 +215,17 @@ rpc-ссылки) + `handlers_backends_list.go` 616 + `handlers_backends_mutate.
 «SSE→NDJSON», usage/done, сводки, кадры ошибок), каркас структур описан выше.
 **Статус очереди на 2026-11-18:** пункты 1–7 сделаны (R532/R533/R534/R536/R535/
 R537/R538), решающий шаг — сделан в R539 (ниже), остаток координатора — в R540.
+**Итог R542 (R2, не-потоковый транспорт, факт).** `proxyRequestLlamaCppNonStream`
+доведён до лимита: **907 → 125** строк (318 → 47 операторов) после выноса
+`awaitLoadedModelNonStream` (89), `answerNonStreamUpstreamError` (132:
+нормализация R335.1 + сброс счётчика + n_ctx R83 + passthrough 4xx R60.10 +
+устаревший снимок R160 + обёртка 5xx), `answerEmptyNonStreamBody` (85, R60.40) и
+`writeNonStreamResponse` (112: нативный passthrough R65d/R66, SSE, перевод
+OpenAI→Ollama). Все функции файла ≤ 170 строк / ≤ 53 операторов.
+**Доказательство:** набор строковых литералов файла — **0 различий** (323);
+`go test ./internal/balancer/` и `-race` зелёные. Единственное изменение формы:
+`defer resp.Body.Close()` для тела ответа-ретрая переехал в вызывающий (в стадии
+он закрывал бы тело сразу при возврате).
 **Итог R541 (R2, второй транспорт, факт).** `proxyRequestLlamaCppNonStream`
 (`llamacpp_transport_nonstream.go`) **907 → 510** строк (318 → 192 оператора):
 вынесены `nonStreamPreflight` (preflight окна и отказы 413/404/503),

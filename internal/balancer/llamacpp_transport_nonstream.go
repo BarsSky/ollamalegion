@@ -105,89 +105,18 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	//   2. Если loading — polling /api/models/load/progress (llama.cpp) или
 	//      /api/ps (ollama) до 30 сек.
 	//   3. После успешного polling повторяем client.Do(req) с тем же body.
-	if resp.StatusCode == http.StatusServiceUnavailable {
-		loadingBody, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			loadingBody = []byte(fmt.Sprintf(`{"error":"upstream read error: %v"}`, readErr))
-		}
-		isLoading, loadingModelName, _ := loadingSignalFromBody(resp.StatusCode, loadingBody)
-		if isLoading {
-			if loadingModelName == "" {
-				loadingModelName = modelFromCtx
-			}
-			logger.Get().Infow("proxyRequestLlamaCppNonStream: 503 'model is loading', polling for load completion",
-				"backend", backendID, "model", loadingModelName,
-				"duration_ms", time.Since(nonStreamStart).Milliseconds())
-
-			loaded, waitErr := p.waitForBackendModelLoaded(r.Context(), state.Backend, loadingModelName, backendID)
-			if waitErr != nil {
-				logger.Get().Warnw("proxyRequestLlamaCppNonStream: waitForBackendModelLoaded error",
-					"backend", backendID, "model", loadingModelName, "error", waitErr)
-			}
-			if loaded {
-				nonStreamAttempt++
-				// Пересоздаём req: body — это bytes.NewReader(translatedBody) (т.к. translateOllamaBodyToOpenAI выше).
-				req2, reqErr := http.NewRequestWithContext(r.Context(), r.Method, fullURL, bytes.NewReader(translatedBody))
-				if reqErr != nil {
-					return fmt.Errorf("failed to create retry request: %v", reqErr)
-				}
-				req2.Header.Set("Content-Type", "application/json")
-				req2.Header.Set("Accept", "application/json")
-				for key, values := range r.Header {
-					lowerKey := strings.ToLower(key)
-					if lowerKey == "content-type" || lowerKey == "accept" || lowerKey == "content-length" || lowerKey == "host" {
-						continue
-					}
-					for _, value := range values {
-						req2.Header.Add(key, value)
-					}
-				}
-				// R307: административная ручка воркера закрыта токеном — ретрай тоже.
-				applyWorkerAdminTokenR307(req2.Header, llamacppPath, p.workerAdminToken(backendID))
-				resp, err = client.Do(req2)
-				if err != nil {
-					durationMs := time.Since(nonStreamStart).Milliseconds()
-					errType := determineErrorType(err, r.Context())
-					logger.Get().Errorw("proxyRequestLlamaCppNonStream: upstream Do() failed after loading retry",
-						"backend", backendID, "model", modelFromCtx, "attempt", nonStreamAttempt,
-						"duration_ms", durationMs, "error_type", errType, "error", err)
-					if errType == "unexpected_eof" {
-						p.publishTransportEOF(backendID, modelFromCtx, originalPath, err, time.Duration(durationMs)*time.Millisecond)
-					}
-					return fmt.Errorf("llama.cpp request failed after load retry [backend=%s, attempt=%d, duration_ms=%d, error_type=%s]: %v",
-						backendID, nonStreamAttempt, durationMs, errType, err)
-				}
-				defer resp.Body.Close()
-				logger.Get().Infow("proxyRequestLlamaCppNonStream: retry after load successful",
-					"backend", backendID, "model", modelFromCtx,
-					"attempt", nonStreamAttempt, "duration_ms", time.Since(nonStreamStart).Milliseconds())
-			} else {
-				// Polling исчерпан — отдаём 503 клиенту с понятным сообщением.
-				logger.Get().Warnw("proxyRequestLlamaCppNonStream: load wait timeout, returning 503 to client",
-					"backend", backendID, "model", loadingModelName)
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", "5")
-				w.Header().Set("X-Model-Loading-Retry", "exhausted")
-				errBody, _ := json.Marshal(map[string]interface{}{
-					"error":        fmt.Sprintf("model is still loading after %ds: %s", loadingRetryMaxAttempts*int(loadingRetryInterval.Seconds()), loadingModelName),
-					"loading":      true,
-					"model":        loadingModelName,
-					"retryAfterMs": 5000,
-				})
-				w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
-				w.WriteHeader(http.StatusServiceUnavailable)
-				_, _ = w.Write(errBody)
-				return nil
-			}
-		} else {
-			// 503 без признака loading — восстанавливаем body и идём по обычному пути.
-			resp = &http.Response{
-				StatusCode: http.StatusServiceUnavailable,
-				Body:       io.NopCloser(bytes.NewReader(loadingBody)),
-				Header:     make(http.Header),
-			}
-		}
+	// R541 (R2 читаемости): прозрачная ленивая загрузка (503 + polling) —
+	// стадия awaitLoadedModelNonStream; ретрай возвращает НОВОЕ тело ответа.
+	newResp, loadHandled, loadErr := p.awaitLoadedModelNonStream(w, r, resp, client, state, backendID, modelFromCtx, originalPath, fullURL, translatedBody, llamacppPath, nonStreamStart, nonStreamAttempt)
+	if loadErr != nil {
+		return loadErr
+	}
+	if loadHandled {
+		return nil
+	}
+	if newResp != nil && newResp != resp {
+		resp = newResp
+		defer resp.Body.Close()
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
@@ -200,337 +129,23 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		"body_len", len(respBody),
 		"body", string(respBody)[:min(500, len(respBody))])
 
-	// R335.1 (2026-10-30, поймано стаб-матрицей): форма ошибки нормализуется и на
-	// НЕ-потоковых handler-путях.
-	//
-	// Живой класс: воркер отвечает на неизвестный путь своим http.NotFound —
-	// текстом "404 page not found". R332 нормализовал такие ответы только в
-	// generic-прокси, и на путях вида /v1/completions (их обслуживает handler и
-	// этот транспорт) текстовый 404 уходил клиенту как есть: клиент, разбирающий
-	// тело ошибки как JSON, снова не мог её показать.
-	if resp.StatusCode >= 400 && !jsonBodyLooksLikeJSON(respBody) {
-		resp2 := normalizeUpstreamErrorBodyR332(originalPathOrPath(r), resp)
-		if resp2 != nil && resp2.Body != nil {
-			if raw, err := io.ReadAll(resp2.Body); err == nil {
-				respBody = raw
-				resp.StatusCode = resp2.StatusCode
-				for key, values := range resp2.Header {
-					for _, v := range values {
-						resp.Header.Set(key, v)
-					}
-				}
-			}
-		}
-	}
-
-	// ==== Сброс cycle counter при успешном ответе ====
-	// Если upstream вернул 200 OK — это инференс без n_ctx ошибки.
-	// Сбрасываем счётчик cycle detection, чтобы stale failures не накапливались.
-	if resp.StatusCode == http.StatusOK && len(respBody) > 0 {
-		if p.nctxReload != nil {
-			p.nctxReload.ResetCycleCounter(backendID)
-		}
-	}
-
-	// ==== n_ctx auto-reload: перехват структурированной ошибки от cppworker ====
-	// cppworker при n_ctx overflow отвечает HTTP 400 (Bad Request) с JSON
-	// {error, code: 2 (N_CTX_NEEDS_RELOAD), bridge_info: {...}}. Если
-	// auto-reload включён — перезагружаем модель с большим n_ctx и повторяем.
-	if resp.StatusCode >= 400 {
-		if nctxErr := ParseCppWorkerError(respBody, resp.StatusCode, backendID); nctxErr != nil {
-			if errors.Is(nctxErr, bridge.ErrNCtxNeedsReload) || errors.Is(nctxErr, bridge.ErrPromptTooLong) {
-				logger.Get().Infow("proxyRequestLlamaCppNonStream: detected n_ctx error from cppworker, invoking auto-reload",
-					"backend", backendID, "model", modelFromCtx,
-					"status", resp.StatusCode,
-					"is_n_ctx", errors.Is(nctxErr, bridge.ErrNCtxNeedsReload),
-					"is_prompt_too_long", errors.Is(nctxErr, bridge.ErrPromptTooLong))
-				p.handleNCtxReload(r.Context(), w, r, backendID, modelFromCtx, nctxErr, bodyBuf)
-				return nil
-			}
-		}
-	}
-
-	// R60.10 (2026-09-07): upstream 4xx — pass through AS-IS.
-	//
-	// Pre-R60.10: balancer ALWAYS wrapped upstream errors in 502 + Ollama format.
-	// OpenAI clients (openai-python, OpenWebUI OpenAI mode) calling
-	// /v1/models/{id} etc. получали 502 + `{"done":true,"done_reason":"error",...}`
-	// что ломает их retry-логику (OpenAI клиент retry-ит на 502 но не на 404).
-	//
-	// Post-R60.10:
-	//   - 4xx (400/404/413/etc) → preserve upstream status + body AS-IS
-	//     (upstream уже отдаёт OpenAI-формат `{"error":{"message":...}}` для /v1/*)
-	//   - 5xx (500/502/503) → wrap in 502 with format matching originalPath
-	//     (OpenAI format for /v1/*, Ollama format for /api/*)
-	//
-	// 408/429 (transient) pass through too — client should retry.
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		isTransient4xx := resp.StatusCode == http.StatusRequestTimeout ||
-			resp.StatusCode == http.StatusTooManyRequests
-		if resp.StatusCode < 500 && (resp.StatusCode >= 400 || isTransient4xx) {
-			// Pass through upstream body AS-IS.
-			ct := resp.Header.Get("Content-Type")
-			if ct == "" {
-				ct = "application/json"
-			}
-			w.Header().Set("Content-Type", ct)
-			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
-			// Pass through key headers (X-Request-Id from upstream cppworker).
-			if upstreamReqID := resp.Header.Get("X-Request-Id"); upstreamReqID != "" {
-				w.Header().Set("X-Upstream-Request-Id", upstreamReqID)
-			}
-			w.WriteHeader(resp.StatusCode)
-			w.Write(respBody)
-			logger.Get().Debugw("proxyRequestLlamaCppNonStream: passed through upstream 4xx (R60.10)",
-				"backend", backendID, "status", resp.StatusCode,
-				"original_path", originalPath, "body_len", len(respBody))
-			return nil
-		}
-
-		// R160 (2026-10-17): устаревший снимок «модель загружена» — не 502.
-		// Живой случай: балансер знал модель загруженной на доноре, донор её не
-		// знал ("model ... not found"), клиент получал 502 за 13 мс. Вместо
-		// «плохого шлюза» — обновить снимок, запустить загрузку, ответить 503
-		// с Retry-After (см. stale_model_snapshot_r160.go).
-		if isUpstreamModelAbsent(resp.StatusCode, respBody) && modelFromCtx != "" {
-			p.handleStaleModelSnapshot(w, r, backendID, modelFromCtx, resp.StatusCode, respBody)
-			return nil
-		}
-
-		// 5xx (or other non-2xx): wrap in 502 with format matching originalPath.
-		var errBody []byte
-		if isOpenAIPath(originalPath) {
-			// OpenAI-style error: {"error": {"message": ..., "type": "upstream_error", "code": N}}
-			errBody, _ = json.Marshal(map[string]interface{}{
-				"error": map[string]interface{}{
-					"message": fmt.Sprintf("upstream returned HTTP %d: %s",
-						resp.StatusCode, string(respBody)),
-					"type": "upstream_error",
-					"code": resp.StatusCode,
-				},
-			})
-		} else {
-			// Ollama-style error: {model, created_at, done, done_reason:error, error, message}
-			errBody, _ = json.Marshal(map[string]interface{}{
-				"model":       modelFromCtx,
-				"created_at":  time.Now().UTC().Format(time.RFC3339),
-				"done":        true,
-				"done_reason": "error",
-				"error": fmt.Sprintf("upstream returned HTTP %d: %s",
-					resp.StatusCode, string(respBody)),
-				"message": map[string]interface{}{
-					"role":    "assistant",
-					"content": "",
-				},
-			})
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
-		w.WriteHeader(http.StatusBadGateway)
-		w.Write(errBody)
+	// R541 (R2 читаемости): нормализация формы ошибки (R335.1), сброс счётчика
+	// цикла при успехе, n_ctx-перезагрузка (R83) и ответ на не-2xx
+	// (R60.10/R160) — одной функцией. true — ответ клиенту уже отправлен.
+	if p.answerNonStreamUpstreamError(w, r, resp, respBody, backendID, modelFromCtx, originalPath, bodyBuf) {
 		return nil
 	}
 
-	// Если body пустой и статус 200 — это обычно означает, что cppworker ещё
-	// загружает модель (или вернул мусор). Возвращаем 502 с явной диагностикой,
-	// чтобы OpenWebUI не рендерил "пустое сообщение ассистента".
-	//
-	// R60.40 (2026-09-11): empty body — это именно случай когда OpenWebUI
-	// показывает "Unexpected token '<html>'" потому что upstream молча
-	// вернул 200 OK с пустым телом. Теперь добавляем:
-	//   - bridge_info (если cppworker имел last error с n_ctx overflow)
-	//   - feasible_max_context / gguf_max_context (для actionable suggestion)
-	//   - Retry-After header (отсутствие его вызывало cascade retry loops)
-	//   - suggestion: "Reduce num_predict OR save profile with larger n_ctx"
-	//
-	// ВАЖНО: устанавливаем Content-Length явно — предотвращает TransferEncodingError.
 	if len(respBody) == 0 {
-		logger.Get().Warnw("proxyRequestLlamaCppNonStream: empty body from upstream",
-			"backend", backendID, "model", modelFromCtx)
-		// Build diagnostic response.
-		diag := ServiceUnavailableDiagnostic{
-			Error:         "upstream returned empty response (model may still be loading or n_ctx too small for prompt)",
-			RetryAfterSec: 30,
-			Model:         modelFromCtx,
-			BackendID:     backendID,
-		}
-		if p != nil {
-			diag.FeasibleMaxContext = p.getMaxVRAMNCtxFromMetrics(backendID)
-		}
-		if mm := p.GetMetricsManager(); mm != nil {
-			// R245: снапшот, а не живой указатель (см. metrics_manager.go).
-			if lm, ok := mm.SnapshotLlamaCppMetrics(backendID); ok && lm != nil {
-				diag.GGUFMaxContext = lm.GGUFMaxContext
-			}
-		}
-		diag.Suggestion = fmt.Sprintf(
-			"Model '%s' returned empty response. This usually means: "+
-				"(1) model is still loading after a reload (wait %d sec); "+
-				"(2) prompt exceeds n_ctx (reduce num_predict or set higher n_ctx in your request); "+
-				"(3) feasible_max_context=%d, gguf_max_context=%d — pick n_ctx within these limits.",
-			modelFromCtx, diag.RetryAfterSec, diag.FeasibleMaxContext, diag.GGUFMaxContext)
-
-		// OpenAI-compatible format (для /v1/chat/completions) и Ollama-format (для /api/chat).
-		if isOpenAIPath(originalPath) {
-			// OpenAI-style: {"error": {"message": ..., "type": "upstream_error"}}
-			openAI := map[string]interface{}{
-				"error": map[string]interface{}{
-					"message":              diag.Error,
-					"type":                 "upstream_error",
-					"code":                 http.StatusBadGateway,
-					"model":                modelFromCtx,
-					"target_n_ctx":         diag.TargetNCtx,
-					"feasible_max_context": diag.FeasibleMaxContext,
-					"gguf_max_context":     diag.GGUFMaxContext,
-					"retry_after":          diag.RetryAfterSec,
-					"suggestion":           diag.Suggestion,
-				},
-			}
-			errBody, _ := json.Marshal(openAI)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
-			w.Header().Set("Retry-After", strconv.Itoa(diag.RetryAfterSec))
-			w.WriteHeader(http.StatusBadGateway)
-			w.Write(errBody)
-			return nil
-		}
-		// Ollama-style: {model, created_at, done, done_reason:error, error, message, suggestion}
-		ollama := map[string]interface{}{
-			"model":                modelFromCtx,
-			"created_at":           time.Now().UTC().Format(time.RFC3339),
-			"done":                 true,
-			"done_reason":          "error",
-			"error":                diag.Error,
-			"target_n_ctx":         diag.TargetNCtx,
-			"feasible_max_context": diag.FeasibleMaxContext,
-			"gguf_max_context":     diag.GGUFMaxContext,
-			"retry_after":          diag.RetryAfterSec,
-			"suggestion":           diag.Suggestion,
-			"message": map[string]interface{}{
-				"role":    "assistant",
-				"content": "",
-			},
-		}
-		errBody, _ := json.Marshal(ollama)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
-		w.Header().Set("Retry-After", strconv.Itoa(diag.RetryAfterSec))
-		w.WriteHeader(http.StatusBadGateway)
-		w.Write(errBody)
+		// R541 (R2 читаемости): диагностика пустого тела (R60.40) — отдельной
+		// функцией; ответ клиенту она отправляет сама.
+		p.answerEmptyNonStreamBody(w, backendID, modelFromCtx, originalPath)
 		return nil
 	}
 
-	// Если пришёл SSE (вдруг), собираем — с поддержкой tool_calls
-	contentType := resp.Header.Get("Content-Type")
-	// R66+ (2026-09-21): native Ollama path passthrough.
-	//
-	// Когда shouldRouteOllamaNative(originalPath) = true (см. R65d,
-	// ll-core/native_path.go), балансер отправил cppworker'у НАТИВНЫЙ запрос
-	// (/api/chat, /api/generate, /api/embed*, без перевода в OpenAI-формат).
-	// cppworker'овский handlers_chat.go / handlers_generate.go отвечает
-	// ОЛЛАМА-форматом JSON, а НЕ OpenAI ({model, message, done, ...}).
-	//
-	// Pre-R66 баг: код ниже всё равно гонял respBody через
-	// translateOpenAIResponseToOllama, который ищет OpenAI-схему
-	// (choices[].message.content). Для Ollama-тела не находил choices
-	// → fallback branch ("no choices and no error") → синтетический
-	// 502 `{"error":"upstream returned empty response",...}` вместо реального
-	// ответа модели. OpenWebUI и ollama-CLI видели пустое сообщение.
-	//
-	// Репро 2026-09-21 на Qwen3.8-27B-UD-Q4_K_M (16 GB, partial offload на
-	// RTX 3070): OpenAI-путь /v1/chat/completions → "Меня зовут Qwen.",
-	// Ollama-путь /api/chat → "upstream returned empty response" с тем же телом.
-	//
-	// Fix: для nativePath просто пробрасываем тело as-is. Content-type upstream
-	// сохраняется (cppworker отдаёт либо application/json для non-stream, либо
-	// application/x-ndjson для streamed). Если уж up прислал SSE несмотря на
-	// native-path — тоже не трогаем, нативный SSE-passthrough уже работает в
-	// streaming-пути (proxyRequestLlamaCpp), и эти байты одинаково валидны для
-	// Ollama-клиента (NDJSON внутри SSE-чанков не бывает для native).
-	if nativePath {
-		ct := resp.Header.Get("Content-Type")
-		if ct == "" {
-			ct = "application/json"
-		}
-		w.Header().Set("Content-Type", ct)
-		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
-		forwardUpstreamWarningHeaders(w, resp)
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(respBody)
-		// Native Ollama token usage (prompt_eval_count / eval_count) — это
-		// единственное место где они парсятся для /api/chat native path; без
-		// этого дашборды показывают нулевой usage для Ollama-клиентов.
-		if resp.StatusCode < 400 {
-			var nativeResp map[string]interface{}
-			if json.Unmarshal(respBody, &nativeResp) == nil {
-				prompt := int64(intFromMap(nativeResp, "prompt_eval_count"))
-				completion := int64(intFromMap(nativeResp, "eval_count"))
-				if prompt > 0 || completion > 0 {
-					p.recordTokenUsage(modelFromCtx, prompt, completion)
-				}
-			}
-		}
-		return nil
-	}
-
-	if strings.Contains(contentType, "text/event-stream") || bytes.HasPrefix(respBody, []byte("data:")) {
-		// R541 (R2 читаемости): разбор SSE-потока и сборка тела Ollama —
-		// отдельной функцией (assembleSSEToOllamaBody).
-		ollamaBody := assembleSSEToOllamaBody(respBody, originalPath, modelFromCtx)
-		// R65d (2026-09-20): метрики токенов для нативного non-stream пути.
-		// Нативный /api/chat отдаёт Ollama-поля prompt_eval_count / eval_count
-		// (а не OpenAI usage), поэтому общий блок ниже их не видел.
-		if resp.StatusCode < 400 {
-			var nativeResp map[string]interface{}
-			if json.Unmarshal(ollamaBody, &nativeResp) == nil {
-				prompt := int64(intFromMap(nativeResp, "prompt_eval_count"))
-				completion := int64(intFromMap(nativeResp, "eval_count"))
-				if prompt > 0 || completion > 0 {
-					p.recordTokenUsage(modelFromCtx, prompt, completion)
-				}
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", strconv.Itoa(len(ollamaBody)))
-		// R65d: проброс предупреждений cppworker (context warning / adjusted
-		// n_predict / Retry-After) — строго до WriteHeader.
-		forwardUpstreamWarningHeaders(w, resp)
-		w.WriteHeader(resp.StatusCode)
-		w.Write(ollamaBody)
-		return nil
-	}
-
-	translatedResp, err := translateOpenAIResponseToOllama(originalPath, respBody, modelFromCtx)
-	if err != nil {
-		translatedResp = respBody
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Length", strconv.Itoa(len(translatedResp)))
-	// R65d: проброс предупреждений cppworker (см. выше).
-	forwardUpstreamWarningHeaders(w, resp)
-	w.WriteHeader(resp.StatusCode)
-	w.Write(translatedResp)
-
-	// Round 31 #7 (2026-08-09): record token usage для мониторинга.
-	// Парсим raw OpenAI body (respBody) — usage стандартный OpenAI формат.
-	if resp.StatusCode < 400 {
-		var openaiResp map[string]interface{}
-		if json.Unmarshal(respBody, &openaiResp) == nil {
-			if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
-				var prompt, completion int64
-				if v, ok := usage["prompt_tokens"].(float64); ok {
-					prompt = int64(v)
-				}
-				if v, ok := usage["completion_tokens"].(float64); ok {
-					completion = int64(v)
-				}
-				if prompt > 0 || completion > 0 {
-					p.recordTokenUsage(modelFromCtx, prompt, completion)
-				}
-			}
-		}
-	}
-	return nil
+	// R541 (R2 читаемости): запись ответа клиенту (нативный passthrough, SSE,
+	// перевод OpenAI→Ollama) — отдельной функцией.
+	return p.writeNonStreamResponse(w, resp, respBody, originalPath, modelFromCtx, nativePath)
 }
 
 // ============================================================================
@@ -1002,4 +617,458 @@ func assembleSSEToOllamaBody(respBody []byte, originalPath, modelFromCtx string)
 		ollamaBody, _ = json.Marshal(resp)
 	}
 	return ollamaBody
+}
+
+// awaitLoadedModelNonStream — R541 (R2 читаемости): прозрачная ленивая
+// загрузка не-потокового пути (см. loading_retry.go).
+//
+// cppworker при первом inference-запросе к незагруженной модели отвечает HTTP 503
+// с body {"error":"model is loading: <name>","loading":true,...}. Без retry
+// OpenWebUI/Cline видел оборванный JSON-ответ. Теперь:
+//  1. Читаем 503 body.
+//  2. Если loading — polling /api/models/load/progress (llama.cpp) или
+//     /api/ps (ollama) до 30 сек.
+//  3. После успешного polling повторяем client.Do(req) с тем же body.
+//
+// Возвращает новое тело ответа (nil — не менялось), признак «ответ клиенту
+// уже отправлен» и ошибку. Тело ответа ретрая закрывает вызывающий.
+func (p *Proxy) awaitLoadedModelNonStream(w http.ResponseWriter, r *http.Request, resp *http.Response,
+	client *http.Client, state *BackendState, backendID, modelFromCtx, originalPath, fullURL string,
+	translatedBody []byte, llamacppPath string, nonStreamStart time.Time, attempt int) (*http.Response, bool, error) {
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		return nil, false, nil
+	}
+	var err error
+	loadingBody, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		loadingBody = []byte(fmt.Sprintf(`{"error":"upstream read error: %v"}`, readErr))
+	}
+	isLoading, loadingModelName, _ := loadingSignalFromBody(resp.StatusCode, loadingBody)
+	if isLoading {
+		if loadingModelName == "" {
+			loadingModelName = modelFromCtx
+		}
+		logger.Get().Infow("proxyRequestLlamaCppNonStream: 503 'model is loading', polling for load completion",
+			"backend", backendID, "model", loadingModelName,
+			"duration_ms", time.Since(nonStreamStart).Milliseconds())
+
+		loaded, waitErr := p.waitForBackendModelLoaded(r.Context(), state.Backend, loadingModelName, backendID)
+		if waitErr != nil {
+			logger.Get().Warnw("proxyRequestLlamaCppNonStream: waitForBackendModelLoaded error",
+				"backend", backendID, "model", loadingModelName, "error", waitErr)
+		}
+		if loaded {
+			attempt++
+			// Пересоздаём req: body — это bytes.NewReader(translatedBody) (т.к. translateOllamaBodyToOpenAI выше).
+			req2, reqErr := http.NewRequestWithContext(r.Context(), r.Method, fullURL, bytes.NewReader(translatedBody))
+			if reqErr != nil {
+				return nil, false, fmt.Errorf("failed to create retry request: %v", reqErr)
+			}
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("Accept", "application/json")
+			for key, values := range r.Header {
+				lowerKey := strings.ToLower(key)
+				if lowerKey == "content-type" || lowerKey == "accept" || lowerKey == "content-length" || lowerKey == "host" {
+					continue
+				}
+				for _, value := range values {
+					req2.Header.Add(key, value)
+				}
+			}
+			// R307: административная ручка воркера закрыта токеном — ретрай тоже.
+			applyWorkerAdminTokenR307(req2.Header, llamacppPath, p.workerAdminToken(backendID))
+			resp, err = client.Do(req2)
+			if err != nil {
+				durationMs := time.Since(nonStreamStart).Milliseconds()
+				errType := determineErrorType(err, r.Context())
+				logger.Get().Errorw("proxyRequestLlamaCppNonStream: upstream Do() failed after loading retry",
+					"backend", backendID, "model", modelFromCtx, "attempt", attempt,
+					"duration_ms", durationMs, "error_type", errType, "error", err)
+				if errType == "unexpected_eof" {
+					p.publishTransportEOF(backendID, modelFromCtx, originalPath, err, time.Duration(durationMs)*time.Millisecond)
+				}
+				return nil, false, fmt.Errorf("llama.cpp request failed after load retry [backend=%s, attempt=%d, duration_ms=%d, error_type=%s]: %v",
+					backendID, attempt, durationMs, errType, err)
+			}
+			// Тело ответа закрывает вызывающий (defer зарегистрирован там же).
+			logger.Get().Infow("proxyRequestLlamaCppNonStream: retry after load successful",
+				"backend", backendID, "model", modelFromCtx,
+				"attempt", attempt, "duration_ms", time.Since(nonStreamStart).Milliseconds())
+		} else {
+			// Polling исчерпан — отдаём 503 клиенту с понятным сообщением.
+			logger.Get().Warnw("proxyRequestLlamaCppNonStream: load wait timeout, returning 503 to client",
+				"backend", backendID, "model", loadingModelName)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "5")
+			w.Header().Set("X-Model-Loading-Retry", "exhausted")
+			errBody, _ := json.Marshal(map[string]interface{}{
+				"error":        fmt.Sprintf("model is still loading after %ds: %s", loadingRetryMaxAttempts*int(loadingRetryInterval.Seconds()), loadingModelName),
+				"loading":      true,
+				"model":        loadingModelName,
+				"retryAfterMs": 5000,
+			})
+			w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write(errBody)
+			return nil, true, nil
+		}
+	} else {
+		// 503 без признака loading — восстанавливаем body и идём по обычному пути.
+		resp = &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       io.NopCloser(bytes.NewReader(loadingBody)),
+			Header:     make(http.Header),
+		}
+	}
+	return resp, false, nil
+}
+
+// answerNonStreamUpstreamError — R541 (R2 читаемости): всё, что транспорт
+// делает с ошибочным ответом воркера: нормализация формы ошибки (R335.1),
+// сброс счётчика цикла при успехе, перехват n_ctx-ошибки с адресной
+// перезагрузкой (R83), passthrough 4xx (R60.10), устаревший снимок модели
+// (R160) и обёртка 5xx. true — ответ клиенту уже отправлен.
+func (p *Proxy) answerNonStreamUpstreamError(w http.ResponseWriter, r *http.Request, resp *http.Response,
+	respBody []byte, backendID, modelFromCtx, originalPath string, bodyBuf []byte) bool {
+	// R335.1 (2026-10-30, поймано стаб-матрицей): форма ошибки нормализуется и на
+	// НЕ-потоковых handler-путях.
+	//
+	// Живой класс: воркер отвечает на неизвестный путь своим http.NotFound —
+	// текстом "404 page not found". R332 нормализовал такие ответы только в
+	// generic-прокси, и на путях вида /v1/completions (их обслуживает handler и
+	// этот транспорт) текстовый 404 уходил клиенту как есть: клиент, разбирающий
+	// тело ошибки как JSON, снова не мог её показать.
+	if resp.StatusCode >= 400 && !jsonBodyLooksLikeJSON(respBody) {
+		resp2 := normalizeUpstreamErrorBodyR332(originalPathOrPath(r), resp)
+		if resp2 != nil && resp2.Body != nil {
+			if raw, err := io.ReadAll(resp2.Body); err == nil {
+				respBody = raw
+				resp.StatusCode = resp2.StatusCode
+				for key, values := range resp2.Header {
+					for _, v := range values {
+						resp.Header.Set(key, v)
+					}
+				}
+			}
+		}
+	}
+
+	// ==== Сброс cycle counter при успешном ответе ====
+	// Если upstream вернул 200 OK — это инференс без n_ctx ошибки.
+	// Сбрасываем счётчик cycle detection, чтобы stale failures не накапливались.
+	if resp.StatusCode == http.StatusOK && len(respBody) > 0 {
+		if p.nctxReload != nil {
+			p.nctxReload.ResetCycleCounter(backendID)
+		}
+	}
+
+	// ==== n_ctx auto-reload: перехват структурированной ошибки от cppworker ====
+	// cppworker при n_ctx overflow отвечает HTTP 400 (Bad Request) с JSON
+	// {error, code: 2 (N_CTX_NEEDS_RELOAD), bridge_info: {...}}. Если
+	// auto-reload включён — перезагружаем модель с большим n_ctx и повторяем.
+	if resp.StatusCode >= 400 {
+		if nctxErr := ParseCppWorkerError(respBody, resp.StatusCode, backendID); nctxErr != nil {
+			if errors.Is(nctxErr, bridge.ErrNCtxNeedsReload) || errors.Is(nctxErr, bridge.ErrPromptTooLong) {
+				logger.Get().Infow("proxyRequestLlamaCppNonStream: detected n_ctx error from cppworker, invoking auto-reload",
+					"backend", backendID, "model", modelFromCtx,
+					"status", resp.StatusCode,
+					"is_n_ctx", errors.Is(nctxErr, bridge.ErrNCtxNeedsReload),
+					"is_prompt_too_long", errors.Is(nctxErr, bridge.ErrPromptTooLong))
+				p.handleNCtxReload(r.Context(), w, r, backendID, modelFromCtx, nctxErr, bodyBuf)
+				return true
+			}
+		}
+	}
+
+	// R60.10 (2026-09-07): upstream 4xx — pass through AS-IS.
+	//
+	// Pre-R60.10: balancer ALWAYS wrapped upstream errors in 502 + Ollama format.
+	// OpenAI clients (openai-python, OpenWebUI OpenAI mode) calling
+	// /v1/models/{id} etc. получали 502 + `{"done":true,"done_reason":"error",...}`
+	// что ломает их retry-логику (OpenAI клиент retry-ит на 502 но не на 404).
+	//
+	// Post-R60.10:
+	//   - 4xx (400/404/413/etc) → preserve upstream status + body AS-IS
+	//     (upstream уже отдаёт OpenAI-формат `{"error":{"message":...}}` для /v1/*)
+	//   - 5xx (500/502/503) → wrap in 502 with format matching originalPath
+	//     (OpenAI format for /v1/*, Ollama format for /api/*)
+	//
+	// 408/429 (transient) pass through too — client should retry.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		isTransient4xx := resp.StatusCode == http.StatusRequestTimeout ||
+			resp.StatusCode == http.StatusTooManyRequests
+		if resp.StatusCode < 500 && (resp.StatusCode >= 400 || isTransient4xx) {
+			// Pass through upstream body AS-IS.
+			ct := resp.Header.Get("Content-Type")
+			if ct == "" {
+				ct = "application/json"
+			}
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+			// Pass through key headers (X-Request-Id from upstream cppworker).
+			if upstreamReqID := resp.Header.Get("X-Request-Id"); upstreamReqID != "" {
+				w.Header().Set("X-Upstream-Request-Id", upstreamReqID)
+			}
+			w.WriteHeader(resp.StatusCode)
+			w.Write(respBody)
+			logger.Get().Debugw("proxyRequestLlamaCppNonStream: passed through upstream 4xx (R60.10)",
+				"backend", backendID, "status", resp.StatusCode,
+				"original_path", originalPath, "body_len", len(respBody))
+			return true
+		}
+
+		// R160 (2026-10-17): устаревший снимок «модель загружена» — не 502.
+		// Живой случай: балансер знал модель загруженной на доноре, донор её не
+		// знал ("model ... not found"), клиент получал 502 за 13 мс. Вместо
+		// «плохого шлюза» — обновить снимок, запустить загрузку, ответить 503
+		// с Retry-After (см. stale_model_snapshot_r160.go).
+		if isUpstreamModelAbsent(resp.StatusCode, respBody) && modelFromCtx != "" {
+			p.handleStaleModelSnapshot(w, r, backendID, modelFromCtx, resp.StatusCode, respBody)
+			return true
+		}
+
+		// 5xx (or other non-2xx): wrap in 502 with format matching originalPath.
+		var errBody []byte
+		if isOpenAIPath(originalPath) {
+			// OpenAI-style error: {"error": {"message": ..., "type": "upstream_error", "code": N}}
+			errBody, _ = json.Marshal(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": fmt.Sprintf("upstream returned HTTP %d: %s",
+						resp.StatusCode, string(respBody)),
+					"type": "upstream_error",
+					"code": resp.StatusCode,
+				},
+			})
+		} else {
+			// Ollama-style error: {model, created_at, done, done_reason:error, error, message}
+			errBody, _ = json.Marshal(map[string]interface{}{
+				"model":       modelFromCtx,
+				"created_at":  time.Now().UTC().Format(time.RFC3339),
+				"done":        true,
+				"done_reason": "error",
+				"error": fmt.Sprintf("upstream returned HTTP %d: %s",
+					resp.StatusCode, string(respBody)),
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": "",
+				},
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write(errBody)
+		return true
+	}
+	return false
+}
+
+// answerEmptyNonStreamBody — R541 (R2 читаемости): body пустой при 200 — это
+// обычно означает, что cppworker ещё загружает модель (или вернул мусор).
+// Отвечаем 502 с явной диагностикой, чтобы OpenWebUI не рендерил «пустое
+// сообщение ассистента» (R60.40): числа feasible/gguf, Retry-After и подсказка.
+func (p *Proxy) answerEmptyNonStreamBody(w http.ResponseWriter, backendID, modelFromCtx, originalPath string) {
+	// загружает модель (или вернул мусор). Возвращаем 502 с явной диагностикой,
+	// чтобы OpenWebUI не рендерил "пустое сообщение ассистента".
+	//
+	// R60.40 (2026-09-11): empty body — это именно случай когда OpenWebUI
+	// показывает "Unexpected token '<html>'" потому что upstream молча
+	// вернул 200 OK с пустым телом. Теперь добавляем:
+	//   - bridge_info (если cppworker имел last error с n_ctx overflow)
+	//   - feasible_max_context / gguf_max_context (для actionable suggestion)
+	//   - Retry-After header (отсутствие его вызывало cascade retry loops)
+	//   - suggestion: "Reduce num_predict OR save profile with larger n_ctx"
+	//
+	// ВАЖНО: устанавливаем Content-Length явно — предотвращает TransferEncodingError.
+	logger.Get().Warnw("proxyRequestLlamaCppNonStream: empty body from upstream",
+		"backend", backendID, "model", modelFromCtx)
+	// Build diagnostic response.
+	diag := ServiceUnavailableDiagnostic{
+		Error:         "upstream returned empty response (model may still be loading or n_ctx too small for prompt)",
+		RetryAfterSec: 30,
+		Model:         modelFromCtx,
+		BackendID:     backendID,
+	}
+	if p != nil {
+		diag.FeasibleMaxContext = p.getMaxVRAMNCtxFromMetrics(backendID)
+	}
+	if mm := p.GetMetricsManager(); mm != nil {
+		// R245: снапшот, а не живой указатель (см. metrics_manager.go).
+		if lm, ok := mm.SnapshotLlamaCppMetrics(backendID); ok && lm != nil {
+			diag.GGUFMaxContext = lm.GGUFMaxContext
+		}
+	}
+	diag.Suggestion = fmt.Sprintf(
+		"Model '%s' returned empty response. This usually means: "+
+			"(1) model is still loading after a reload (wait %d sec); "+
+			"(2) prompt exceeds n_ctx (reduce num_predict or set higher n_ctx in your request); "+
+			"(3) feasible_max_context=%d, gguf_max_context=%d — pick n_ctx within these limits.",
+		modelFromCtx, diag.RetryAfterSec, diag.FeasibleMaxContext, diag.GGUFMaxContext)
+
+	// OpenAI-compatible format (для /v1/chat/completions) и Ollama-format (для /api/chat).
+	if isOpenAIPath(originalPath) {
+		// OpenAI-style: {"error": {"message": ..., "type": "upstream_error"}}
+		openAI := map[string]interface{}{
+			"error": map[string]interface{}{
+				"message":              diag.Error,
+				"type":                 "upstream_error",
+				"code":                 http.StatusBadGateway,
+				"model":                modelFromCtx,
+				"target_n_ctx":         diag.TargetNCtx,
+				"feasible_max_context": diag.FeasibleMaxContext,
+				"gguf_max_context":     diag.GGUFMaxContext,
+				"retry_after":          diag.RetryAfterSec,
+				"suggestion":           diag.Suggestion,
+			},
+		}
+		errBody, _ := json.Marshal(openAI)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
+		w.Header().Set("Retry-After", strconv.Itoa(diag.RetryAfterSec))
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write(errBody)
+		return
+	}
+	// Ollama-style: {model, created_at, done, done_reason:error, error, message, suggestion}
+	ollama := map[string]interface{}{
+		"model":                modelFromCtx,
+		"created_at":           time.Now().UTC().Format(time.RFC3339),
+		"done":                 true,
+		"done_reason":          "error",
+		"error":                diag.Error,
+		"target_n_ctx":         diag.TargetNCtx,
+		"feasible_max_context": diag.FeasibleMaxContext,
+		"gguf_max_context":     diag.GGUFMaxContext,
+		"retry_after":          diag.RetryAfterSec,
+		"suggestion":           diag.Suggestion,
+		"message": map[string]interface{}{
+			"role":    "assistant",
+			"content": "",
+		},
+	}
+	errBody, _ := json.Marshal(ollama)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(errBody)))
+	w.Header().Set("Retry-After", strconv.Itoa(diag.RetryAfterSec))
+	w.WriteHeader(http.StatusBadGateway)
+	w.Write(errBody)
+	return
+}
+
+// writeNonStreamResponse — R541 (R2 читаемости): запись ответа не-потокового
+// пути: нативный passthrough (R65d/R66), сборка из SSE и перевод OpenAI→Ollama.
+// Возвращает только ошибку записи; ответ клиенту уже отправлен.
+func (p *Proxy) writeNonStreamResponse(w http.ResponseWriter, resp *http.Response, respBody []byte, originalPath, modelFromCtx string, nativePath bool) error {
+	// Если пришёл SSE (вдруг), собираем — с поддержкой tool_calls
+	contentType := resp.Header.Get("Content-Type")
+	// R66+ (2026-09-21): native Ollama path passthrough.
+	//
+	// Когда shouldRouteOllamaNative(originalPath) = true (см. R65d,
+	// ll-core/native_path.go), балансер отправил cppworker'у НАТИВНЫЙ запрос
+	// (/api/chat, /api/generate, /api/embed*, без перевода в OpenAI-формат).
+	// cppworker'овский handlers_chat.go / handlers_generate.go отвечает
+	// ОЛЛАМА-форматом JSON, а НЕ OpenAI ({model, message, done, ...}).
+	//
+	// Pre-R66 баг: код ниже всё равно гонял respBody через
+	// translateOpenAIResponseToOllama, который ищет OpenAI-схему
+	// (choices[].message.content). Для Ollama-тела не находил choices
+	// → fallback branch ("no choices and no error") → синтетический
+	// 502 `{"error":"upstream returned empty response",...}` вместо реального
+	// ответа модели. OpenWebUI и ollama-CLI видели пустое сообщение.
+	//
+	// Репро 2026-09-21 на Qwen3.8-27B-UD-Q4_K_M (16 GB, partial offload на
+	// RTX 3070): OpenAI-путь /v1/chat/completions → "Меня зовут Qwen.",
+	// Ollama-путь /api/chat → "upstream returned empty response" с тем же телом.
+	//
+	// Fix: для nativePath просто пробрасываем тело as-is. Content-type upstream
+	// сохраняется (cppworker отдаёт либо application/json для non-stream, либо
+	// application/x-ndjson для streamed). Если уж up прислал SSE несмотря на
+	// native-path — тоже не трогаем, нативный SSE-passthrough уже работает в
+	// streaming-пути (proxyRequestLlamaCpp), и эти байты одинаково валидны для
+	// Ollama-клиента (NDJSON внутри SSE-чанков не бывает для native).
+	if nativePath {
+		ct := resp.Header.Get("Content-Type")
+		if ct == "" {
+			ct = "application/json"
+		}
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+		forwardUpstreamWarningHeaders(w, resp)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(respBody)
+		// Native Ollama token usage (prompt_eval_count / eval_count) — это
+		// единственное место где они парсятся для /api/chat native path; без
+		// этого дашборды показывают нулевой usage для Ollama-клиентов.
+		if resp.StatusCode < 400 {
+			var nativeResp map[string]interface{}
+			if json.Unmarshal(respBody, &nativeResp) == nil {
+				prompt := int64(intFromMap(nativeResp, "prompt_eval_count"))
+				completion := int64(intFromMap(nativeResp, "eval_count"))
+				if prompt > 0 || completion > 0 {
+					p.recordTokenUsage(modelFromCtx, prompt, completion)
+				}
+			}
+		}
+		return nil
+	}
+
+	if strings.Contains(contentType, "text/event-stream") || bytes.HasPrefix(respBody, []byte("data:")) {
+		// R541 (R2 читаемости): разбор SSE-потока и сборка тела Ollama —
+		// отдельной функцией (assembleSSEToOllamaBody).
+		ollamaBody := assembleSSEToOllamaBody(respBody, originalPath, modelFromCtx)
+		// R65d (2026-09-20): метрики токенов для нативного non-stream пути.
+		// Нативный /api/chat отдаёт Ollama-поля prompt_eval_count / eval_count
+		// (а не OpenAI usage), поэтому общий блок ниже их не видел.
+		if resp.StatusCode < 400 {
+			var nativeResp map[string]interface{}
+			if json.Unmarshal(ollamaBody, &nativeResp) == nil {
+				prompt := int64(intFromMap(nativeResp, "prompt_eval_count"))
+				completion := int64(intFromMap(nativeResp, "eval_count"))
+				if prompt > 0 || completion > 0 {
+					p.recordTokenUsage(modelFromCtx, prompt, completion)
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(ollamaBody)))
+		// R65d: проброс предупреждений cppworker (context warning / adjusted
+		// n_predict / Retry-After) — строго до WriteHeader.
+		forwardUpstreamWarningHeaders(w, resp)
+		w.WriteHeader(resp.StatusCode)
+		w.Write(ollamaBody)
+		return nil
+	}
+
+	translatedResp, err := translateOpenAIResponseToOllama(originalPath, respBody, modelFromCtx)
+	if err != nil {
+		translatedResp = respBody
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(translatedResp)))
+	// R65d: проброс предупреждений cppworker (см. выше).
+	forwardUpstreamWarningHeaders(w, resp)
+	w.WriteHeader(resp.StatusCode)
+	w.Write(translatedResp)
+
+	// Round 31 #7 (2026-08-09): record token usage для мониторинга.
+	// Парсим raw OpenAI body (respBody) — usage стандартный OpenAI формат.
+	if resp.StatusCode < 400 {
+		var openaiResp map[string]interface{}
+		if json.Unmarshal(respBody, &openaiResp) == nil {
+			if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
+				var prompt, completion int64
+				if v, ok := usage["prompt_tokens"].(float64); ok {
+					prompt = int64(v)
+				}
+				if v, ok := usage["completion_tokens"].(float64); ok {
+					completion = int64(v)
+				}
+				if prompt > 0 || completion > 0 {
+					p.recordTokenUsage(modelFromCtx, prompt, completion)
+				}
+			}
+		}
+	}
+	return nil
 }

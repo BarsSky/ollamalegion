@@ -1,4 +1,4 @@
-// OllamaLegion i18n - English translations
+﻿// OllamaLegion i18n - English translations
 window.I18N_EN = {
   // Nav
   "nav.dashboard": "Dashboard",
@@ -2537,6 +2537,11 @@ window.I18N_EN = {
   "reference.error.timeout": "The balancer did not respond in time",
   "reference.error.generic": "The request could not be completed",
   "reference.error.no_api": "The page HTTP layer is not loaded (Api.reference) — refresh the page.",
-  "reference.error.no_modal": "The apply-progress modal (CppWorkerParams) is not loaded — refresh the page."
+  "reference.error.no_modal": "The apply-progress modal (CppWorkerParams) is not loaded — refresh the page.",
+  // R594 (2026-11-19): VRAM reserve shadow in the backend card — both window ceilings.
+  "monitor.vram_window_applied": "window ceiling",
+  "monitor.vram_window_reserve": "reserve",
+  "monitor.vram_window_unreserved": "without reserve",
+  "monitor.vram_window_over": "window is above the ceiling: there may be no VRAM left for buffers",
+  "monitor.vram_window_hint": "Window ceiling by VRAM: with the compute-buffer reserve (decisions are made by this one) and without reserve (as the C bridge counts)"
 };
-

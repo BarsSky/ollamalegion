@@ -325,6 +325,26 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 					autoTuneReport := balancer.AnalyzeBackend(
 						s.proxy, backend.ID, string(backend.Type), loaded, freeVRAM, freeRAM, totalVRAM)
 					backendData["autoTune"] = autoTuneReport
+
+					// R594 (2026-11-19): «тень» резерва VRAM в карточке бэкенда.
+					//
+					// ЗАЧЕМ. Оператор видел в ошибке декода одно число (max_vram_n_ctx
+					// без резерва — его считает мост), а балансер принимал решения по
+					// другому (с резервом CPPWORKER_VRAM_OVERHEAD_MB). Живой факт
+					// 27B/A10 (2026-11-19): окно 201216 при безрезервном потолке 251254
+					// оставило 414 MB свободной VRAM из 22 502, и декод промпта 33 812
+					// токенов упал с `code 1` при `compute buffer = 316.75 MiB`.
+					//
+					// Решение по окну НЕ меняется (решение владельца: сначала показать):
+					// оба числа уходят в ответ /api/v1/backends, рисует их карточка.
+					// Отдаём только когда хоть одно измерено — нули как «факт» не выдаём.
+					if lm.MaxVRAMNCtx > 0 || lm.MaxVRAMNCtxUnreserved > 0 || lm.VRAMReserveMB > 0 {
+						backendData["vramWindow"] = map[string]interface{}{
+							"maxVramNCtx":           lm.MaxVRAMNCtx,
+							"maxVramNCtxUnreserved": lm.MaxVRAMNCtxUnreserved,
+							"reserveMB":             lm.VRAMReserveMB,
+						}
+					}
 				} else {
 					backendData["loadingModels"] = []types.LlamaCppModel{}
 					backendData["loadingModelCount"] = 0

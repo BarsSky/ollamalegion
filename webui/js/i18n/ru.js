@@ -1,4 +1,4 @@
-// OllamaLegion i18n - Russian translations
+﻿// OllamaLegion i18n - Russian translations
 window.I18N_RU = {
   // Nav
   "nav.dashboard": "Дашборд",
@@ -2565,5 +2565,11 @@ window.I18N_RU = {
   "reference.error.timeout": "Балансер не ответил вовремя",
   "reference.error.generic": "Не удалось выполнить запрос",
   "reference.error.no_api": "Слой HTTP страницы не загружен (Api.reference) — обновите страницу.",
-  "reference.error.no_modal": "Модалка прогресса применения (CppWorkerParams) не загружена — обновите страницу."
+  "reference.error.no_modal": "Модалка прогресса применения (CppWorkerParams) не загружена — обновите страницу.",
+  // R594 (2026-11-19): «тень» резерва VRAM в карточке бэкенда — оба потолка окна.
+  "monitor.vram_window_applied": "потолок окна",
+  "monitor.vram_window_reserve": "резерв",
+  "monitor.vram_window_unreserved": "без резерва",
+  "monitor.vram_window_over": "окно выше потолка: VRAM под буферы может не остаться",
+  "monitor.vram_window_hint": "Потолок окна по VRAM: с резервом под compute-buffer (по нему принимаются решения) и без резерва (как считает C-мост)"
 };

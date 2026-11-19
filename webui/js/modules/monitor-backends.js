@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Monitor Backends Module
  * Backend table rendering with sorting and filtering
  * Used by: monitor.html
@@ -557,7 +557,7 @@ const MonitorBackends = (() => {
             <td><strong>${MA.esc(b.id)}</strong> ${hasAgent}${imageBadges}${typeBadge}${roleSelect(b)}${rpcNodeBadge(b)}${vramRemoteSourceNote(b)}</td>
             <td><span class="badge ${scs}">${b.status}</span></td>
             <td>${bar(gu)} ${gu.toFixed(0)}%</td>
-            <td>${bar(vu)} ${vu.toFixed(0)}%</td>
+            <td>${bar(vu)} ${vu.toFixed(0)}%${vramWindowNote(b)}</td>
             <td>${bar(cu)} ${cu.toFixed(0)}%</td>
             <td>${bar(ru)} ${ru.toFixed(0)}%</td>
             <td class="col-right">${a}/${mr}</td>
@@ -573,6 +573,56 @@ const MonitorBackends = (() => {
         const p = Math.max(0, Math.min(100, value || 0));
         const c = p >= 80 ? 'var(--danger)' : p >= 50 ? 'var(--warning)' : 'var(--success)';
         return `<span class="bar-track"><span class="bar-fill" style="width:${p}%;background:${c}"></span></span>`;
+    }
+
+    // vramWindowNote — R594 (2026-11-19): строка диагностики окна в карточке
+    // бэкенда: ДВА потолка окна и предупреждение, если загруженное окно выше того,
+    // под который оставлен резерв под compute-buffer.
+    //
+    // ЗАЧЕМ. Оператор видел в тексте отказа декода одно число (его считает мост —
+    // без резерва), а балансер принимал решения по другому (с резервом
+    // CPPWORKER_VRAM_OVERHEAD_MB). Живой факт 27B/A10 (2026-11-19): окно 201216
+    // при безрезервном потолке 251254 оставило 414 MB свободной VRAM из 22 502, и
+    // декод промпта 33 812 токенов упал с `code 1` при `compute buffer = 316.75 MiB`.
+    //
+    // Числа НЕ влияют на решения (решение владельца: сначала показать). Если данных
+    // нет — возвращается пустая строка: нули как «факт» не показываем.
+    function vramWindowNote(b) {
+        if (!b) return '';
+        const w = b.vramWindow || {};
+        const applied = Number(w.maxVramNCtx) || 0;          // с резервом — по нему решают
+        const unreserved = Number(w.maxVramNCtxUnreserved) || 0; // как считает мост
+        const reserveMB = Number(w.reserveMB) || 0;
+        if (applied <= 0 && unreserved <= 0) return '';
+
+        const fmt = function (n) { return Number(n).toLocaleString('ru-RU'); };
+        let parts = [];
+        if (applied > 0) {
+            parts.push((window.I18N ? I18N.t('monitor.vram_window_applied', 'потолок окна') : 'потолок окна') +
+                ' ' + fmt(applied) + (reserveMB > 0 ? (' (' + (window.I18N ? I18N.t('monitor.vram_window_reserve', 'резерв') : 'резерв') + ' ' + fmt(reserveMB) + ' MB)') : ''));
+        }
+        if (unreserved > 0) {
+            parts.push((window.I18N ? I18N.t('monitor.vram_window_unreserved', 'без резерва') : 'без резерва') + ' ' + fmt(unreserved));
+        }
+        let text = parts.join(' · ');
+
+        // Загруженное окно выше того, под который оставлен резерв: буферам может не
+        // остаться VRAM. Это и был живой отказ — предупреждаем ДО падения декода.
+        const loaded = Array.isArray(b.loadedModels) ? b.loadedModels : [];
+        const ctx = loaded.length > 0 ? (Number(loaded[0].contextLength || loaded[0].context_size) || 0) : 0;
+        const over = applied > 0 && ctx > applied;
+        if (over) {
+            text += ' — ' + (window.I18N
+                ? I18N.t('monitor.vram_window_over', 'окно выше потолка: VRAM под буферы может не остаться')
+                : 'окно выше потолка: VRAM под буферы может не остаться');
+        }
+        const cls = over ? 'vram-window-note vram-window-note-over' : 'vram-window-note';
+        const title = (window.I18N
+            ? I18N.t('monitor.vram_window_hint', 'Потолок окна по VRAM: с резервом под compute-buffer (по нему принимаются решения) и без резерва (как считает C-мост)')
+            : 'Потолок окна по VRAM: с резервом под compute-buffer (по нему принимаются решения) и без резерва (как считает C-мост)');
+        return '<div class="' + cls + '" title="' + MA.esc(title) + '" style="font-size:var(--font-size-xs);color:' +
+            (over ? 'var(--warning,#f0ad4e)' : 'var(--text-muted)') + ';margin-top:2px;">' +
+            MA.esc(text) + '</div>';
     }
 
     function formatBytes(bytes) {
@@ -675,6 +725,7 @@ const MonitorBackends = (() => {
         // R133: состояние узла раскладки и источник вклада узлов — для тестов.
         rpcNodeBadge,
         vramRemoteSourceNote,
+        vramWindowNote,
         // R185: уведомление «архитектура не поддерживается» — для теста
         // (monitor-arch-r185.test.js).
         archBannerHtml,

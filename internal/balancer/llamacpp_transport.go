@@ -179,94 +179,18 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	logger.Get().Infow("proxyRequestLlamaCpp: sending request",
 		"backend", backendID, "url", fullURL, "stream", isStreaming)
 
-	client := p.client
-	if isStreaming {
-		client = p.streamingClient
-	}
+	// R537 (R2 читаемости): клиент запроса и его таймауты (per-model stream
+	// timeout, FirstByteTimeout) вынесены в upstreamHTTPClientFor и
+	// streamRequestContext.
+	clientForReq := p.upstreamHTTPClientFor(isStreaming, modelFromCtx)
 
-	reqCtx := r.Context()
-	if isStreaming {
-		// Per-model адаптивный таймаут для streaming inference.
-		streamTimeout := p.getModelStreamTimeout(modelFromCtx)
-		if streamTimeout > 0 {
-			var cancel context.CancelFunc
-			reqCtx, cancel = context.WithTimeout(r.Context(), streamTimeout)
-			defer cancel()
-			logger.Get().Debugw("proxyRequestLlamaCpp: using per-model stream timeout",
-				"backend", backendID, "model", modelFromCtx,
-				"stream_timeout_sec", streamTimeout.Seconds())
-		} else {
-			// R60.55 follow-up: streamTimeout=0 means "no timeout" (LB_STREAMING_NEVER_TIMEOUT=1).
-			// R60.55-pre bug: context.WithTimeout(parent, 0) creates an immediately-expired
-			// context (deadline = time.Now()), causing every request to fail with
-			// "context deadline exceeded" before reaching upstream. Fix: skip WithTimeout
-			// entirely when streamTimeout<=0 — reqCtx stays as r.Context() (inherits client
-			// cancel only, no artificial deadline).
-			logger.Get().Debugw("proxyRequestLlamaCpp: stream timeout disabled (0)",
-				"backend", backendID, "model", modelFromCtx)
-		}
-	}
+	reqCtx, cancelReq := p.streamRequestContext(r, isStreaming, backendID, modelFromCtx)
+	defer cancelReq()
 
-	req, err := http.NewRequestWithContext(reqCtx, r.Method, fullURL, bytes.NewReader(translatedBody))
+	// R537 (R2 читаемости): запрос к воркеру и его заголовки — одной функцией.
+	req, clientRealIP, err := p.newUpstreamRequest(reqCtx, r, fullURL, translatedBody, llamacppPath, backendID)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	for key, values := range r.Header {
-		lowerKey := strings.ToLower(key)
-		if lowerKey == "content-type" || lowerKey == "accept" || lowerKey == "content-length" || lowerKey == "host" {
-			continue
-		}
-		for _, value := range values {
-			req.Header.Add(key, value)
-		}
-	}
-	// R376: id клиента — в воркер (отмена по request_id, см. upstream_request_id_r376.go).
-	stampUpstreamRequestIDFromRequestR376(req, r)
-	// R307: административные ручки воркера закрыты токеном. Клиентский токен
-	// (для балансера) воркеру не годится — подставляем токен ЭТОГО воркера.
-	applyWorkerAdminTokenR307(req.Header, llamacppPath, p.workerAdminToken(backendID))
-
-	clientRealIP := p.getClientRealIP(r)
-	if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
-		req.Header.Set("X-Forwarded-For", existingXFF)
-	} else {
-		req.Header.Set("X-Forwarded-For", clientRealIP)
-	}
-	req.Header.Set("X-Real-IP", clientRealIP)
-
-	// PF-5 FIX (2026-06-27): применяем FirstByteTimeout на уровне HTTP-Transport
-	// через per-request клонирование streamingTransport. По умолчанию
-	// ResponseHeaderTimeout=0 (off), что позволяет зависшему upstream держать
-	// соединение бесконечно. С FirstByteTimeout>0 upstream, не отправивший
-	// HTTP-заголовки за указанное время, получает от Go HTTP-клиента ошибку
-	// "net/http: timeout awaiting response headers" — balancer транслирует её
-	// в понятный клиенту ответ.
-	//
-	// Применяется ТОЛЬКО для streaming + когда задан явный FirstByteTimeout.
-	// Для non-streaming RequestTimeout уже покрывается контекстом выше.
-	clientForReq := client
-	if isStreaming {
-		firstByte := p.getModelFirstByteTimeout(modelFromCtx)
-		// R189 (2026-10-20): ГРАНИЦА НА ПЕРВЫЙ БАЙТ ПО УМОЛЧАНИЮ.
-		//
-		// ЖИВОЙ РАЗБОР. /api/chat с tools[] не отдавал клиенту ни байта 300 с
-		// (`upstream Do() failed, duration_ms=300021`), потому что первый байт
-		// ограничивался только если профиль/окружение задали FirstByteTimeout
-		// явно. Клиент всё это время ждал молча. Теперь для стрима действует
-		// значение по умолчанию (180 с, LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC),
-		// чтобы «нет данных» превращалось в понятную ошибку, а не в тишину до
-		// таймаута клиента. 0 отключает границу.
-		if firstByte <= 0 {
-			// R498 / аудит T-1: дефолт считается ПО РАЗМЕРУ МОДЕЛИ (эстиматор), а не
-			// плоскими 180 с: холодная загрузка 16–27B идёт 140–485 с, и граница
-			// обрывала её. Явная настройка (в т.ч. 0 = выключено) сильнее оценки.
-			firstByte = p.defaultFirstByteTimeoutForModelR498(modelFromCtx)
-		}
-		if firstByte > 0 {
-			clientForReq = p.newStreamingClientWithResponseHeaderTimeout(firstByte)
-		}
 	}
 
 	// F.0.4 (2026-06-28): session F — EOF retry перед записью заголовков клиенту.
@@ -2863,4 +2787,119 @@ func applyStreamResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("Cache-Control", "no-cache")
 	forwardUpstreamWarningHeaders(w, resp)
+}
+
+// upstreamHTTPClientFor — HTTP-клиент ЭТОГО запроса вместе с его таймаутами.
+//
+// PF-5 FIX (2026-06-27): применяем FirstByteTimeout на уровне HTTP-Transport
+// через per-request клонирование streamingTransport. По умолчанию
+// ResponseHeaderTimeout=0 (off), что позволяет зависшему upstream держать
+// соединение бесконечно. С FirstByteTimeout>0 upstream, не отправивший
+// HTTP-заголовки за указанное время, получает от Go HTTP-клиента ошибку
+// "net/http: timeout awaiting response headers" — balancer транслирует её
+// в понятный клиенту ответ.
+//
+// Применяется ТОЛЬКО для streaming + когда задан явный FirstByteTimeout.
+// Для non-streaming RequestTimeout уже покрывается контекстом запроса.
+//
+// R537 (R2 читаемости): вынесено из proxyRequestLlamaCpp дословно; выбор
+// клиента и граница на первый байт — те же.
+func (p *Proxy) upstreamHTTPClientFor(isStreaming bool, modelFromCtx string) *http.Client {
+	client := p.client
+	if isStreaming {
+		client = p.streamingClient
+	}
+	if !isStreaming {
+		return client
+	}
+	firstByte := p.getModelFirstByteTimeout(modelFromCtx)
+	// R189 (2026-10-20): ГРАНИЦА НА ПЕРВЫЙ БАЙТ ПО УМОЛЧАНИЮ.
+	//
+	// ЖИВОЙ РАЗБОР. /api/chat с tools[] не отдавал клиенту ни байта 300 с
+	// (`upstream Do() failed, duration_ms=300021`), потому что первый байт
+	// ограничивался только если профиль/окружение задали FirstByteTimeout
+	// явно. Клиент всё это время ждал молча. Теперь для стрима действует
+	// значение по умолчанию (180 с, LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC),
+	// чтобы «нет данных» превращалось в понятную ошибку, а не в тишину до
+	// таймаута клиента. 0 отключает границу.
+	if firstByte <= 0 {
+		// R498 / аудит T-1: дефолт считается ПО РАЗМЕРУ МОДЕЛИ (эстиматор), а не
+		// плоскими 180 с: холодная загрузка 16–27B идёт 140–485 с, и граница
+		// обрывала её. Явная настройка (в т.ч. 0 = выключено) сильнее оценки.
+		firstByte = p.defaultFirstByteTimeoutForModelR498(modelFromCtx)
+	}
+	if firstByte > 0 {
+		client = p.newStreamingClientWithResponseHeaderTimeout(firstByte)
+	}
+	return client
+}
+
+// streamRequestContext — контекст запроса к воркеру: клиентский cancel плюс
+// per-model таймаут стрима. Возвращённый cancel идемпотентен и безопасен для
+// `defer` на обоих путях (когда таймаута нет — это no-op).
+//
+// R537 (R2 читаемости): вынесено из proxyRequestLlamaCpp дословно.
+func (p *Proxy) streamRequestContext(r *http.Request, isStreaming bool, backendID, modelFromCtx string) (context.Context, context.CancelFunc) {
+	reqCtx := r.Context()
+	if !isStreaming {
+		return reqCtx, func() {}
+	}
+	// Per-model адаптивный таймаут для streaming inference.
+	streamTimeout := p.getModelStreamTimeout(modelFromCtx)
+	if streamTimeout > 0 {
+		ctx, cancel := context.WithTimeout(r.Context(), streamTimeout)
+		logger.Get().Debugw("proxyRequestLlamaCpp: using per-model stream timeout",
+			"backend", backendID, "model", modelFromCtx,
+			"stream_timeout_sec", streamTimeout.Seconds())
+		return ctx, cancel
+	}
+	// R60.55 follow-up: streamTimeout=0 means "no timeout" (LB_STREAMING_NEVER_TIMEOUT=1).
+	// R60.55-pre bug: context.WithTimeout(parent, 0) creates an immediately-expired
+	// context (deadline = time.Now()), causing every request to fail with
+	// "context deadline exceeded" before reaching upstream. Fix: skip WithTimeout
+	// entirely when streamTimeout<=0 — reqCtx stays as r.Context() (inherits client
+	// cancel only, no artificial deadline).
+	logger.Get().Debugw("proxyRequestLlamaCpp: stream timeout disabled (0)",
+		"backend", backendID, "model", modelFromCtx)
+	return reqCtx, func() {}
+}
+
+// newUpstreamRequest — запрос к воркеру: тело, заголовки клиента (кроме
+// Content-Type/Accept/Content-Length/Host), id запроса R376, токен
+// административных ручек R307 и адрес клиента (X-Forwarded-For/X-Real-IP).
+// clientRealIP возвращается, потому что повтор после ленивой загрузки (ниже в
+// proxyRequestLlamaCpp) собирает запрос заново и ставит тот же адрес.
+//
+// R537 (R2 читаемости): вынесено из proxyRequestLlamaCpp дословно.
+func (p *Proxy) newUpstreamRequest(reqCtx context.Context, r *http.Request, fullURL string,
+	translatedBody []byte, llamacppPath, backendID string) (*http.Request, string, error) {
+	req, err := http.NewRequestWithContext(reqCtx, r.Method, fullURL, bytes.NewReader(translatedBody))
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	for key, values := range r.Header {
+		lowerKey := strings.ToLower(key)
+		if lowerKey == "content-type" || lowerKey == "accept" || lowerKey == "content-length" || lowerKey == "host" {
+			continue
+		}
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	// R376: id клиента — в воркер (отмена по request_id, см. upstream_request_id_r376.go).
+	stampUpstreamRequestIDFromRequestR376(req, r)
+	// R307: административные ручки воркера закрыты токеном. Клиентский токен
+	// (для балансера) воркеру не годится — подставляем токен ЭТОГО воркера.
+	applyWorkerAdminTokenR307(req.Header, llamacppPath, p.workerAdminToken(backendID))
+
+	clientRealIP := p.getClientRealIP(r)
+	if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
+		req.Header.Set("X-Forwarded-For", existingXFF)
+	} else {
+		req.Header.Set("X-Forwarded-For", clientRealIP)
+	}
+	req.Header.Set("X-Real-IP", clientRealIP)
+	return req, clientRealIP, nil
 }

@@ -20,7 +20,9 @@
 #include "csrc/vision_mtmd.h"
 #include "prefix_cache.h" // R493: кэш префилла (см. prefix_cache.h)
 #include "window_fit.h"   // R493: окно СЛОТА и текст отказа декода (см. window_fit.h)
+#include "kv_budget.h"    // R590: KV на токен и потолок n_ctx по VRAM (см. kv_budget.h)
 #include "llama.h"
+#include "kv_budget_ggml.h" // R590: адаптер GGML_TYPE_* → kv_budget_type (нужен llama.h)
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -1969,9 +1971,11 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
     // ВАЖНО: если KV помещается — решение не трогаем. Кламп gpu_layers
     // уже сделан memfit'ом на Go-стороне, а его оценка точнее C-оценки.
     //
-    // Формула (GQA): per_token = 2 (K+V) * n_kv_layers * n_kv_heads * head_dim * type_size
+    // Формула (GQA): per_token = n_kv_layers * (row_K + row_V),
+    //   row = n_kv_heads * head_dim * (байт в блоке / элементов в блоке).
     //   head_dim = n_embd / n_heads  (для Qwen3.8/KV256 это attention.key_length,
     //   которое llama_model_n_embd/n_head не воспроизводит — см. R83 §1 хендоффа)
+    // Считает её kv_budget.c (R590), с тестом и с типами K/V РАЗДЕЛЬНО.
     // Если данных нет (CPU-only, не CUDA) — оставляем 0 (unknown).
     // ============================================================
 #ifdef GGML_USE_CUDA
@@ -2043,28 +2047,32 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
                 kv_head_dim = config->kv_head_dim;
             }
 
-            // Тип KV-кэша влияет на per-token размер в 2-3 раза
-            // (R83 §3.4: тип обязан совпадать с тем, что видит гейт).
-            unsigned long long type_size = 2; // f16 default
-            switch (ctx_params.type_k) {
-                case GGML_TYPE_Q8_0: type_size = 34; break; // 32 элемента + 2B scale
-                case GGML_TYPE_Q4_0: type_size = 18; break; // 32 элемента + 2B scale
-                default:             type_size = 32; break; // f16: 32 * 2B
-            }
-            // kv_per_token — байты НА ТОКЕН для K+V.
-            //   row_bytes = n_kv_heads * kv_head_dim * (type_size / elements_per_block)
-            // Для f16 elements_per_block=1, для q8_0/q4_0 = 32.
-            unsigned long long elems_per_block = (type_size == 32) ? 1 : 32;
-            unsigned long long row_bytes =
-                (unsigned long long)n_kv_heads * (unsigned long long)kv_head_dim *
-                type_size / elems_per_block;
-            int64_t kv_per_token = 2 * (int64_t)kv_layers * (int64_t)row_bytes;
+            // R590 (2026-11-19): арифметика KV вынесена в kv_budget.c — она
+            // считается ПО ТИПАМ K и V раздельно и проверяется standalone-тестом
+            // (c/bridge/tests/test_kv_budget.c), а не только на живой карте.
+            //
+            // ЧТО БЫЛО СЛОМАНО ЗДЕСЬ. Для f16 (дефолт, когда оператор не задал
+            // kvCacheType) формула брала «32 байта на элемент» вместо «2 байта на
+            // элемент» и делила на блок из 1 элемента, то есть давала row_bytes в
+            // 16 раз больше. Живое подтверждение (2026-11-19, RTX 3070, 4B, KV
+            // f16): мост печатал kv_per_token=2359296, а llama.cpp на той же
+            // загрузке выделял 4608 MiB на 32768 ячеек = 147456 B/токен.
+            // Следствие: max_vram_n_ctx для f16-моделей занижался в 16 раз, и
+            // балансер видел «физический потолок» в 16 раз меньше настоящего.
+            // Подробный разбор — kv_budget.h.
+            kv_budget_type kv_type_k = kv_budget_type_from_ggml(ctx_params.type_k);
+            kv_budget_type kv_type_v = kv_budget_type_from_ggml(ctx_params.type_v);
+            kv_budget_shape kv_shape;
+            kv_shape.n_kv_heads = n_kv_heads;
+            kv_shape.kv_head_dim = kv_head_dim;
+            kv_shape.kv_layers = kv_layers;
+            int64_t kv_per_token = kv_budget_per_token(&kv_shape, kv_type_k, kv_type_v);
 
             // estimated_max — оценка БЕЗ clamp'а. 0 если
             // free_for_kv < kv_per_token (модель не влезает в VRAM).
             int estimated_max = 0;
             if (kv_per_token > 0) {
-                estimated_max = (int)(free_for_kv / kv_per_token);
+                estimated_max = (int)kv_budget_max_n_ctx(free_for_kv, kv_per_token);
             }
             // Верхний предел (8M токенов) для защиты от вырожденных
             // случаев (e.g. модель 1B на H100 80GB).
@@ -2119,13 +2127,16 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
             printf("[bridge] VRAM-estimated max n_ctx = %d "
                    "(free=%lld MB, gpu_model=%llu MB, "
                    "n_layers=%d n_embd=%d n_heads=%d n_kv_heads=%d "
-                   "kv_layers=%d kv_head_dim=%d kv_per_token=%lld bytes, "
+                   "kv_layers=%d kv_head_dim=%d kv_type_k=%s kv_type_v=%s "
+                   "kv_per_token=%lld bytes, "
                    "requested n_ctx=%u)\n",
                    estimated_max,
                    (long long)(free_bytes / (1024 * 1024)),
                    (unsigned long long)(model_size_bytes / (1024 * 1024)),
                    n_layers, n_embd, n_heads, n_kv_heads,
-                   kv_layers, kv_head_dim, (long long)kv_per_token,
+                   kv_layers, kv_head_dim,
+                   kv_budget_type_name(kv_type_k), kv_budget_type_name(kv_type_v),
+                   (long long)kv_per_token,
                    ctx_params.n_ctx);
         } else {
             printf("[bridge] cuMemGetInfo failed — cannot estimate VRAM-based n_ctx\n");

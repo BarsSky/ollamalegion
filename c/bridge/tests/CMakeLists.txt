@@ -267,6 +267,21 @@ target_include_directories(test_window_fit PRIVATE
 target_compile_features(test_window_fit PRIVATE c_std_99)
 add_test(NAME test_window_fit COMMAND test_window_fit)
 
+# test_kv_budget — R590 (2026-11-19): арифметика KV-cache и потолка n_ctx по
+# свободной VRAM. Без libllama: только числа. Живой факт, ради которого это есть
+# (2026-11-19, RTX 3070, 4B, KV f16): мост печатал kv_per_token=2359296, а
+# llama.cpp выделял 4608 MiB на 32768 ячеек = 147456 B/токен — в 16 раз меньше.
+# См. c/bridge/kv_budget.h.
+add_executable(test_kv_budget
+    test_kv_budget.c
+    ../kv_budget.c
+)
+target_include_directories(test_kv_budget PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_compile_features(test_kv_budget PRIVATE c_std_99)
+add_test(NAME test_kv_budget COMMAND test_kv_budget)
+
 add_test(NAME test_prefix_cache COMMAND test_prefix_cache)
 add_test(NAME test_batch_n_tokens COMMAND test_batch_n_tokens)
 add_test(NAME test_batched_batch COMMAND test_batched_batch)
@@ -280,7 +295,7 @@ add_test(NAME abort_syntax_test COMMAND abort_syntax_test)
 add_custom_target(bridge-tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
     DEPENDS test_prefix_cache test_batch_n_tokens test_batched_batch test_abort_api
-            test_embeddings_mode abort_syntax_test
+            test_embeddings_mode abort_syntax_test test_window_fit test_kv_budget
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running bridge regression tests (ctest)"
 )

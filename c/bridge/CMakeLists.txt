@@ -101,6 +101,10 @@ set(BRIDGE_SOURCES
     # отдельном файле, чтобы её можно было прогнать standalone-тестом в CI.
     prefix_cache.c
     window_fit.c
+    # R590 (2026-11-19): арифметика KV-cache и потолка n_ctx по свободной VRAM.
+    # Вынесена из bridge.c, чтобы её проверял standalone-тест: в ней жила
+    # регрессия «f16 в 16 раз больше» (см. kv_budget.h).
+    kv_budget.c
     csrc/chat_thinking.cpp
     csrc/vision_mtmd.cpp
 )
@@ -110,6 +114,8 @@ set(BRIDGE_HEADERS
     bridge.h
     prefix_cache.h
     window_fit.h
+    kv_budget.h
+    kv_budget_ggml.h
 )
 
 # Собираем статическую библиотеку bridge

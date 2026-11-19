@@ -32,7 +32,7 @@
 | **growth ceiling** | до какого окна разрешён АВТО-рост | `internal/balancer/nctx_declared_r255.go:139` (`effectiveAutoReloadCeiling`) = `max(env, declared)` |
 | **effectiveContextLength** | то же число в терминах профиля (для WebUI) | `internal/balancer/nctx_ceiling_r267.go:87` (`ProfileEffectiveWindow`) |
 | **GGUF max** | физический потолок модели из метаданных | `cmd/cppworker/handlers_model.go:1505` (`gguf_context_length`), зеркало в балансере — `internal/balancer/llamacpp_metrics_poller.go:518` |
-| **feasible / max_vram_n_ctx** | сколько окна влезает в VRAM при текущей раскладке | `cmd/cppworker/nctx_feasibility.go:347` (`nctxModeFields`), `internal/cppbackend/backend.go:2154` |
+| **feasible / max_vram_n_ctx** | сколько окна влезает в VRAM при текущей раскладке | `cmd/cppworker/nctx_feasibility.go:347` (`nctxModeFields`), `internal/cppbackend/backend.go:2154`; **для загружаемой модели это число считает мост** — `c/bridge/kv_budget.c` (`kv_budget_per_token`, вызов из `bridge.c` перед `llama_init_from_model`), формула и история дефекта — `c/bridge/kv_budget.h` |
 | **needed (роста)** | «сколько токенов нужно запросу» = оценка промпта + бюджет вывода, но не меньше запрошенного клиентом | `internal/balancer/growth_needed_rule_r330.go:33` (`neededWindowTokensR330`) |
 
 Правило llama.cpp, на котором всё стоит:

@@ -1,6 +1,6 @@
-package balancer
+﻿package balancer
 
-// stream_abort_frames_r296.go — R296 (2026-10-29): КАДРЫ ЗАВЕРШЕНИЯ СТРИМА.
+// stream_abort_frames.go — R296 (2026-10-29): КАДРЫ ЗАВЕРШЕНИЯ СТРИМА.
 //
 // ЖИВОЙ ДЕФЕКТ (Cline). При `docker kill` cppworker посреди стрима клиент получил
 // ОДИН кадр, который одновременно сообщал причину и закрывал ход:

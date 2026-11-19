@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // drain_streams_r219_test.go — R219 (2026-10-21).
 //
@@ -141,19 +141,19 @@ func TestR219_StreamAccountingWiredInBothPaths(t *testing.T) {
 	// и это была «проверка на слово»: новый путь мог не зарегистрироваться. Теперь
 	// регистрация одна и не зависит от транспорта (streamOpenAIWithSinkR493), а
 	// проверка требует, чтобы она стояла ДО запуска цикла.
-	check("stream_openai_sink_r493.go", "streamOpenAIWithSinkR493")
-	if raw, err := os.ReadFile("stream_openai_sink_r493.go"); err == nil {
+	check("stream_openai_sink.go", "streamOpenAIWithSinkR493")
+	if raw, err := os.ReadFile("stream_openai_sink.go"); err == nil {
 		src := string(raw)
 		add := strings.Index(src, "beginClientStreamR271(")
 		loop := strings.Index(src, "runOpenAISSEStreamR493(")
 		if add < 0 || loop < 0 {
-			t.Fatal("stream_openai_sink_r493.go: нет регистрации стрима или запуска цикла")
+			t.Fatal("stream_openai_sink.go: нет регистрации стрима или запуска цикла")
 		}
 		if add > loop {
 			t.Error("стрим регистрируется ПОСЛЕ запуска цикла — Shutdown может не увидеть его")
 		}
 	} else {
-		t.Fatalf("не читается stream_openai_sink_r493.go: %v", err)
+		t.Fatalf("не читается stream_openai_sink.go: %v", err)
 	}
 
 	// Сам учёт для graceful shutdown обязан остаться внутри помощника.

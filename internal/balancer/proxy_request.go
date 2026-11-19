@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"bytes"
@@ -882,7 +882,7 @@ func (p *Proxy) isStreamingRequest(r *http.Request) bool {
 
 	// R484: тот же разбор, что и на остальных путях. Дефолт здесь — true
 	// (историческое поведение этого вызова); различия в дефолте видны в одном
-	// месте — stream_flag_r484.go.
+	// месте — stream_flag.go.
 	stream, _, ok := streamFlagFromBodyR484(body, true)
 	if !ok {
 		return false

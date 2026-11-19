@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // hijack_keepalive_r219_test.go — R219 (2026-10-21).
 //
@@ -20,9 +20,9 @@ import (
 
 func TestR219_HijackDoesNotAdvertiseKeepAlive(t *testing.T) {
 	// 2026-11-14 (этап 6): заголовки hijack-ответа пишет открыватель транспорта.
-	raw, err := os.ReadFile("stream_openai_sink_r493.go")
+	raw, err := os.ReadFile("stream_openai_sink.go")
 	if err != nil {
-		t.Fatalf("не читается stream_openai_sink_r493.go: %v", err)
+		t.Fatalf("не читается stream_openai_sink.go: %v", err)
 	}
 	src := string(raw)
 
@@ -47,9 +47,9 @@ func TestR219_HijackDoesNotAdvertiseKeepAlive(t *testing.T) {
 // инкрементирует activeStreams.
 func TestR219_HijackRegistersStreamBeforeDrain(t *testing.T) {
 	// 2026-11-14 (этап 6): цикл и регистрация — в одном месте.
-	raw, err := os.ReadFile("stream_openai_sink_r493.go")
+	raw, err := os.ReadFile("stream_openai_sink.go")
 	if err != nil {
-		t.Fatalf("не читается stream_openai_sink_r493.go: %v", err)
+		t.Fatalf("не читается stream_openai_sink.go: %v", err)
 	}
 	src := string(raw)
 	addIdx := strings.Index(src, "beginClientStreamR271(")

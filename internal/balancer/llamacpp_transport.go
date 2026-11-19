@@ -142,7 +142,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// не трогал её: сессию удалял абсолютный TTL, а запись клиента в мониторе
 	// вычищалась через 60 с простоя — хотя ответ всё это время шёл.
 	//
-	// R252: логика вынесена в общий startStreamSession (stream_session_r252.go),
+	// R252: логика вынесена в общий startStreamSession (stream_session.go),
 	// чтобы пути не расходились. Stop() снимает флаги на любом выходе и
 	// идемпотентен.
 	streamSess := startStreamSession(p, r, c.modelFromCtx)

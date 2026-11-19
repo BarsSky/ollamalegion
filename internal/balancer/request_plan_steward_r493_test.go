@@ -1,10 +1,10 @@
-package balancer
+﻿package balancer
 
 // request_plan_steward_r493_test.go — этап 1: страж «решения о запросе живут в
 // плане, а не по месту».
 //
 // ЗАЧЕМ СТРАЖ. Инвентаризация (docs/architecture/request-plan-r493.md) показала:
-// решение о стриме уже посчитано один раз (stream_flag_r484.go), но его
+// решение о стриме уже посчитано один раз (stream_flag.go), но его
 // перепроверяют напрямую 14 раз через isStreamingFromBody, а клиентское окно —
 // 17 раз через ExtractNumCtxFromBody мимо parsedRequest.NumCtx. Пока миграция
 // идёт пошагово (план собирается, потребители переключаются по одному), нужен

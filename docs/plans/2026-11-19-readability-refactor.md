@@ -502,3 +502,5 @@ R493e-сторож ищет файл с публикацией инстанса 
 ctx_*, window_*, growth_*). Два файла с одинаковым смысловым именем различены по ответственности: 
 ctx_ceiling_source.go (источник потолка) и 
 ctx_ceiling_cluster.go (кластерный потолок). Счётчик: собственный 212 → 195, structure_report.ps1 203 → 186. Остаток: internal/balancer (138) и cmd/cppworker (57).
+
+**R5 — продолжение (R605, 0.7.409).** Тема «стриминг ответа» в internal/balancer — 10 файлов stream_*. Счётчик: собственный 195 → 185, structure_report.ps1 186 → 176. Остаток: internal/balancer (128) и cmd/cppworker (57).

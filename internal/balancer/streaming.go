@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"encoding/json"
@@ -47,7 +47,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// R252.1 (2026-10-28): «клиент виден как живой» — через ОДИН помощник пакета
-	// (stream_session_r252.go), как на hijack/legacy/transport-путях. Раньше здесь
+	// (stream_session.go), как на hijack/legacy/transport-путях. Раньше здесь
 	// жила третья копия (SetStreamActive + markRecentClientStreamActive +
 	// HeartbeatStream), и пути расходились в поведении.
 	streamSess := startStreamSession(p, r, modelFromCtx)

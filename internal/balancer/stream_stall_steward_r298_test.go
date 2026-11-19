@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 // stream_stall_steward_r298_test.go — R298 (2026-10-29): СТЮАРД «ни один
 // стриминговый путь не обходится без сторожа тишины».
@@ -39,10 +39,10 @@ var stallPathRegistryR298 = map[string]stallPathStatus{
 	// Сторож подключён.
 	//
 	// 2026-11-14 (этап 6): цикл SSE /v1 стал ОДНИМ и живёт в
-	// stream_openai_sse_r493.go — там же создаётся сторож, а не в одном из
+	// stream_openai_sse.go — там же создаётся сторож, а не в одном из
 	// транспортов. Записи proxy_request.go и proxy_request_hijack.go убраны: они
 	// больше не читают стрим (тела переехали), и реестр не должен врать.
-	"stream_openai_sse_r493.go": {covered: true},
+	"stream_openai_sse.go": {covered: true},
 	"llamacpp_transport.go":     {covered: true},
 
 	"proxy_request_openai_auto_stream.go": {

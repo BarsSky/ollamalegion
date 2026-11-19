@@ -1,9 +1,9 @@
-package balancer
+﻿package balancer
 
 // request_plan_r493.go — этап 1 рефакторинга: одно решение о запросе.
 //
 // ЗАЧЕМ. До этого решения о запросе принимались в разных местах и в разной
-// форме: стрим разбирался в stream_flag_r484.go (и 14 раз перепроверялся через
+// форме: стрим разбирался в stream_flag.go (и 14 раз перепроверялся через
 // isStreamingFromBody), модель — в parseRequestBody/requestModelHint, окно —
 // `ExtractNumCtxFromBody` ПОМИМО parsedRequest.NumCtx (17 прямых вызовов), а
 // лимит вывода не решался вообще: `max_tokens`/`num_predict` уходили как есть и
@@ -33,7 +33,7 @@ type requestPlanR493 struct {
 	Surface requestSurface
 
 	// Stream — решение «клиент ждёт поток». Это НЕ транспорт: на /v1/*
-	// транспорт выбирается по ответу upstream (stream_openai_sink_r493.go), а
+	// транспорт выбирается по ответу upstream (stream_openai_sink.go), а
 	// клиентское поле влияет только на авто-стрим R258.
 	Stream bool
 	// StreamSource — откуда решение: "client" (поле stream в теле) или

@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 // stream_single_write_steward_r493_test.go — R493-12r (этап 6): «в цикле стрима
 // ОДНА точка записи клиенту».
@@ -61,11 +61,11 @@ func funcBodyR493(t *testing.T, file, signature, marker string) string {
 // через сток (run.writeFrame), а не напрямую в ResponseWriter.
 //
 // ПОЧЕМУ СТРАЖ ПЕРЕЕХАЛ. До этапа 6 у каждого транспорта был свой цикл, и страж
-// смотрел в оба тела. Теперь цикл ОДИН (stream_openai_sse_r493.go): если в нём
+// смотрел в оба тела. Теперь цикл ОДИН (stream_openai_sse.go): если в нём
 // появится прямая запись, она обойдёт и счётчик, и флаш, и терминатор — то есть
 // вернёт ровно тот класс дефектов, ради которого этап 6 и делался.
 func TestR493r_SSELoopWritesOnlyThroughTheSink(t *testing.T) {
-	body := funcBodyR493(t, "stream_openai_sse_r493.go",
+	body := funcBodyR493(t, "stream_openai_sse.go",
 		"func (p *Proxy) runOpenAISSEStreamR493(", "")
 
 	if !strings.Contains(body, "run.writeFrame(") {
@@ -94,7 +94,7 @@ func TestR493r_SSELoopWritesOnlyThroughTheSink(t *testing.T) {
 // стоку, а не открывателю транспорта: там только решение «перехватить или нет» и
 // заголовки.
 func TestR493r_HijackTransportOwnsFraming(t *testing.T) {
-	body := funcBodyR493(t, "stream_openai_sink_r493.go",
+	body := funcBodyR493(t, "stream_openai_sink.go",
 		"func (p *Proxy) openOpenAIStreamSinkR493(", "")
 
 	if !strings.Contains(body, "newHijackStreamSinkR493(") {
@@ -127,7 +127,7 @@ func TestR493r_StreamLinePlanIsTheOnlyDecisionPoint(t *testing.T) {
 	// копией правила и уже разошёлся (не приводил форму tool_call и не закрывал
 	// поток по кадру-ошибке).
 	loops := map[string]string{
-		"stream_openai_sse_r493.go":                "func (p *Proxy) runOpenAISSEStreamR493(",
+		"stream_openai_sse.go":                "func (p *Proxy) runOpenAISSEStreamR493(",
 		"proxy_request_openai_auto_stream_r258.go": "func (p *Proxy) streamUpstreamSSEToClient(",
 	}
 	for file, sig := range loops {
@@ -169,7 +169,7 @@ func checkSSEPipelineStewardR493(t *testing.T, file, sig string) {
 	// Обратная сторона: само правило обязано содержать все шаги. Если кто-то
 	// «упростит» план, выкинув нормализацию или придержанный finish, это будет
 	// видно здесь, а не у клиента.
-	plan := funcBodyR493(t, "stream_line_plan_r493.go", "func planStreamLineR493(", "")
+	plan := funcBodyR493(t, "stream_line_plan.go", "func planStreamLineR493(", "")
 	for _, needle := range []string{
 		"filterAssistantEgressForClient(", "normalizeOpenAISSEPayload(",
 		"tryHoldFinishFrame(", "isUpstreamErrorPayload(", "finalizeStreamFramesR493(",

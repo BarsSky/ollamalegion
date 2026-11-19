@@ -1,4 +1,4 @@
-// cancel_upstream_payload_r360_test.go — R360 (2026-10-31), аудит abort A5.
+﻿// cancel_upstream_payload_r360_test.go — R360 (2026-10-31), аудит abort A5.
 //
 // ЖИВОЙ ДЕФЕКТ. Балансер при обрыве клиента / таймауте / тишине upstream слал воркеру
 // {"model": ...}. Воркер на такой приказ вызывает CancelByModel("", model) — то есть
@@ -73,7 +73,7 @@ func TestR360_PayloadEmptyIsBroadcast(t *testing.T) {
 func TestR360_CancelPathsPassRequestID_STEWARD(t *testing.T) {
 	// 2026-11-14 (этап 6): цикл SSE /v1 переехал в общий,
 	// поэтому отмена с request_id проверяется там, где она теперь вызывается.
-	files := []string{"llamacpp_transport.go", "stream_openai_sink_r493.go"}
+	files := []string{"llamacpp_transport.go", "stream_openai_sink.go"}
 	for _, name := range files {
 		var src string
 		for _, p := range []string{name, "internal/balancer/" + name} {

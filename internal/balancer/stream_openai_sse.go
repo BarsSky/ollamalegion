@@ -1,4 +1,4 @@
-// stream_openai_sse_r493.go — R493, этап 6 (2026-11-14): ОДИН цикл SSE-ответа
+﻿// stream_openai_sse.go — R493, этап 6 (2026-11-14): ОДИН цикл SSE-ответа
 // OpenAI для обоих транспортов.
 //
 // ЧТО БЫЛО. `/v1/chat/completions` в стриме обслуживали ДВЕ почти одинаковые
@@ -61,7 +61,7 @@ type sseStreamRunR493 struct {
 	backendID string
 	model     string
 	// transport — форма кадра: от неё зависят пропуск пустых строк и граница
-	// события (см. stream_line_plan_r493.go).
+	// события (см. stream_line_plan.go).
 	transport streamLineTransportR493
 }
 

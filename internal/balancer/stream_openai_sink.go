@@ -1,4 +1,4 @@
-// stream_openai_sink_r493.go — R493, этап 6 (2026-11-14): РЕШЕНИЕ О ТРАНСПОРТЕ
+﻿// stream_openai_sink.go — R493, этап 6 (2026-11-14): РЕШЕНИЕ О ТРАНСПОРТЕ
 // живёт в стоке, а не в вызывающем.
 //
 // ЧТО БЫЛО. `proxyRequestOpenAIStreaming` сам проверял `w.(http.Hijacker)` и звал

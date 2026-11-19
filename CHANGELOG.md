@@ -1,4 +1,33 @@
-﻿## [0.7.408 - R604: R5 — тема «окно контекста» в балансере (17 файлов), 2026-11-19]
+﻿## [0.7.409 - R605: R5 — тема «стриминг ответа» в балансере (10 файлов), 2026-11-19]
+
+Седьмой шаг R5. Тема — **стриминг ответа в `internal/balancer`**: 10 файлов `stream_*` с
+номером раунда. Имена уже были по делу, снят только номер — но это именно тот случай,
+когда номер в имени начинал вводить в заблуждение: `stream_stall_r297.go` рядом с
+`stream_stall_watchdog_r548.go` выглядел как «две версии одного», хотя это разные вещи
+(таймаут зависшего потока против сторожа тишины).
+
+| Было | Стало |
+|---|---|
+| `stream_abort_frames_r296.go` | `stream_abort_frames.go` |
+| `stream_flag_r484.go` | `stream_flag.go` |
+| `stream_growth_r385.go` | `stream_growth.go` |
+| `stream_limit_r259.go` | `stream_limit.go` |
+| `stream_line_plan_r493.go` | `stream_line_plan.go` |
+| `stream_openai_sink_r493.go` | `stream_openai_sink.go` |
+| `stream_openai_sse_r493.go` | `stream_openai_sse.go` |
+| `stream_session_r252.go` | `stream_session.go` |
+| `stream_sink_r493.go` | `stream_sink.go` |
+| `stream_stall_r297.go` | `stream_stall.go` |
+
+**Числа (измеренные):** боевые `*.go` без `_test.go`: **195 → 185**;
+`scripts/structure_report.ps1`: **186 → 176**. Ссылки обновлены с границей слова:
+21 файл, остаток старых токенов — **0**.
+
+**Проверено:** `go build -tags llama_stub ./...` = 0; `./internal/balancer` (172.9 s) —
+зелёные (golden-тесты SSE/NDJSON и сторожа тишины входят в набор).
+
+**Остаток R5:** 185 боевых файлов — `internal/balancer` (128) и `cmd/cppworker` (57).
+## [0.7.408 - R604: R5 — тема «окно контекста» в балансере (17 файлов), 2026-11-19]
 
 Шестой шаг R5. Тема — **окно контекста в `internal/balancer`**: 17 файлов
 (`nctx_*`, `window_*`, `growth_*`) с номером раунда в имени. Это одна предметная

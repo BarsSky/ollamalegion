@@ -1,6 +1,6 @@
-package balancer
+﻿package balancer
 
-// stream_session_r252.go — R252 (2026-10-28): ОДИН вход в стрим и гарантия [DONE].
+// stream_session.go — R252 (2026-10-28): ОДИН вход в стрим и гарантия [DONE].
 //
 // ЖИВОЙ ДЕФЕКТ, который это лечит (Cline, длинная серия tool-call'ов):
 //

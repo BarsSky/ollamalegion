@@ -1430,7 +1430,6 @@ const ui = (function () {
         // Сервер = единственный источник истины. Перезаписываем UI жёстко.
         if (serverConfig.operatingMode) {
             if (window.SettingsUI && SettingsUI.syncModeFromServer) {
-                SettingsUI.syncModeFromServer(serverConfig.operatingMode);
             } else {
                 // Fallback (устаревший путь)
                 var radio = document.querySelector('input[name="operatingMode"][value="' + serverConfig.operatingMode + '"]');

@@ -323,8 +323,6 @@
             if (radio) {
                 radio.checked = true;
                 if (window.SettingsUI) {
-                    window.SettingsUI.updateModeCards(data.operating_mode);
-                    window.SettingsUI.showModeFields(data.operating_mode);
                 }
             }
         }

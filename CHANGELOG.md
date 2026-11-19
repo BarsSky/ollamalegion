@@ -1,3 +1,30 @@
+## [0.7.367 - R564: W1 (шаг 4) — мёртвые mode-функции отвязаны от всех вызовов, 2026-11-19]
+
+Завершение W1 по §7.4 плана (`docs/plans/2026-11-19-webui-pages-and-setup.md`).
+
+**Что сделано.** Функции режима больше **никем не вызываются и не экспортируются** —
+убраны все связи, а не только разметка:
+
+| Убрано | Где |
+|---|---|
+| `updateModeCards(current)` / `showModeFields(current)` | `settings-ui.js` (`setupModeSelector`) |
+| `updateModeCards(serverMode)` / `showModeFields(serverMode)` | `settings-ui.js` (`syncModeFromServer`) |
+| `updateModeCards(mode)` / `showModeFields(mode)` | `settings-ui.js` (обработчик выбора карточки: карточек нет) |
+| `showModeFields:` и `updateModeCards:` из `window.SettingsUI` | `settings-ui.js` (экспорт) |
+| `window.SettingsUI.updateModeCards/showModeFields(...)` | `config-io.js` (применение импортированного конфига) |
+| `SettingsUI.syncModeFromServer(serverConfig.operatingMode)` | `app.js` (`applyServerConfig`) |
+
+**Почему отвязка, а не удаление тел одним махом.** Тела `updateModeCards`/`showModeFields`/
+`updateVariantSections`/`navMap` имеют внутренние зависимости (единственный вызов
+`updateVariantSections` — из `showModeFields`), и удалять их надо вместе, отследив все связи.
+Отвязка (нет вызовов, нет экспорта) уже даёт главное: **невозможно вызвать несуществующую
+функцию**, и нет «тихо работающего» мёртвого механизма. Сами тела — следующий шаг, теперь
+безопасный: у них не осталось ни одного потребителя.
+
+**Проверки.** WebUI — **120 наборов зелёные**; синтаксис трёх изменённых файлов проверен
+разбором. Тест `sidebar-nav-r497` (он требовал экспорт `updateModeCards` после аудита §4.4)
+**инвертирован**: экспорт не должен вернуться, секция режимов не должна вернуться.
+**1 мутация** красный→зелёный: вернуть `updateModeCards:` в экспорт — тест краснеет (exit 1).
 ## [0.7.366 - R563: W1 (шаг 3) — сохранение настроек больше не сбрасывает серверный режим, 2026-11-19]
 
 Хвост W1, и попутно — **регрессия, которую внёс R562**, найденная при разборе вызовов.

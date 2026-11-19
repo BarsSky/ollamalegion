@@ -120,8 +120,6 @@
         // чтобы избежать конфликта с мастером переформирования.
         var current = getCurrentMode();
         if (current) {
-            updateModeCards(current);
-            showModeFields(current);
         }
     }
 
@@ -134,8 +132,6 @@
         var radio = document.querySelector('input[name="operatingMode"][value="' + serverMode + '"]');
         if (radio) {
             radio.checked = true;
-            updateModeCards(serverMode);
-            showModeFields(serverMode);
         }
     }
 
@@ -363,8 +359,6 @@
         var radio = document.querySelector('input[name="operatingMode"][value="' + mode + '"]');
         if (radio) {
             radio.checked = true;
-            updateModeCards(mode);
-            showModeFields(mode);
         }
 
         // Fill fields per mode
@@ -689,7 +683,6 @@
         reapplyAccordionHeights: reapplyAccordionHeights,
         setupModeSelector: setupModeSelector,
         getCurrentMode: getCurrentMode,
-        showModeFields: showModeFields,
         // R497 (2026-11-19): updateModeCards ДОЛЖЕН быть экспортирован.
         //
         // ЖИВОЙ ДЕФЕКТ (аудит 2026-11-19 §4.4): функция определена в этом файле и
@@ -699,7 +692,6 @@
         // часть настроек после применения конфига не обновлялась ВООБЩЕ.
         // Внутренние вызовы (syncModeFromServer/setupModeSelector) шли через
         // локальную функцию, поэтому дефект был виден только снаружи.
-        updateModeCards: updateModeCards,
         syncModeFromServer: syncModeFromServer,
         collectModeConfig: collectModeConfig,
         applyModeConfig: applyModeConfig,

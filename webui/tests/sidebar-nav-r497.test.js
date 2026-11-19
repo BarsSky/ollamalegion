@@ -86,18 +86,15 @@ check('список режимных страниц не размножен по
         '(navModeDependent + navModeIndependent), иначе новая страница снова «потеряется»');
 });
 
-check('updateModeCards экспортирован и вызывается снаружи', () => {
+check('R564 (W1): режимы удалены из UI, экспорт updateModeCards снят', () => {
+    // БЫЛО (аудит §4.4): updateModeCards вызывался, но не экспортировался → TypeError.
+    // СТАЛО (W1): режимы снесены (R560-R563), вызовов не осталось — проверяем, что
+    // экспорт НЕ вернулся и что режимов нет в разметке.
     const exported = /window\.SettingsUI = \{[\s\S]*?updateModeCards: updateModeCards[\s\S]*?\};/.test(settingsUi);
-    assert.ok(exported,
-        'updateModeCards не экспортирован из SettingsUI — снаружи будет TypeError ' +
-        '(аудит §4.4), и applyServerConfig не обновит часть настроек');
-
-    const callers = ['js/modules/config-io.js'];
-    for (const file of callers) {
-        const src = read(file);
-        assert.ok(/SettingsUI\.updateModeCards\s*\(/.test(src),
-            file + ': вызов SettingsUI.updateModeCards пропал — проверка потеряла смысл');
-    }
+    assert.strictEqual(exported, false,
+        'updateModeCards снова экспортирован: режимы удалены, экспорт без потребителя — мёртвый код');
+    const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+    assert.strictEqual(html.indexOf('section-mode'), -1, 'секция режимов вернулась в разметку');
 });
 
 if (failures.length) {

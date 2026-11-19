@@ -202,11 +202,9 @@ func TestR301_BackendWithLoadedModel(t *testing.T) {
 //     «координатор выключен», то есть его не обходит ни один путь;
 //   - на поверхности :18080 проверка стоит ДО admission-очереди.
 func TestR301_StewardNoStreamingBypass(t *testing.T) {
-	src, err := os.ReadFile("nctx_reload_handlers.go")
-	if err != nil {
-		t.Fatalf("read nctx_reload_handlers.go: %v", err)
-	}
-	text := string(src)
+	// R631: слой перезагрузки окна разложен на пять файлов — читаем весь слой
+	// (см. nctx_reload_sources_r631_test.go), иначе сторож краснел бы на переносе.
+	text := readNCtxReloadSourcesR631(t)
 	// Область поиска — сама функция: в файле есть другие «p.nctxReload == nil»
 	// (preflightNCtxReloadIfNeededSync и др.), и глобальный Index показал бы не ту.
 	fn := strings.Index(text, "func (p *Proxy) preflightNCtxReloadIfNeeded(")

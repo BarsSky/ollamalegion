@@ -31,7 +31,6 @@ internal/balancer/image_resources.go
 internal/balancer/image_tool.go
 internal/balancer/model_management.go
 internal/balancer/nctx_reload.go
-internal/balancer/nctx_reload_handlers.go
 internal/balancer/preflight_nctx.go
 webui/js/app.js
 webui/js/i18n/en.js

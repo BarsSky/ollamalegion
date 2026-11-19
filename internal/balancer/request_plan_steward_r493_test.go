@@ -35,13 +35,14 @@ var requestDecisionAllowlistR493 = map[string]int{
 	"llamacpp_handlers_inference.go": 3,
 	"llamacpp_translate_req.go":      1,
 	"llamacpp_transport.go":          1,
-	"nctx_reload_handlers.go":        3,
+	"nctx_reload_handlers.go":        2, // R631: было 3 — третье решение уехало вместе с preflight-функцией
+	"nctx_reload_preflight.go":       1, // R631: preflightNCtxReloadIfNeeded (ПЕРЕНОС, не новое решение)
 	"preflight_stream_dialog.go":     1,
 	"primary_model_policy.go":        1,
 	"proxy_request.go":               1,
 	// Модуль плана — последнее место, где прямой разбор ещё допустим
 	// (fallback для внутренних вызовов без разобранного тела).
-	"request_plan.go":           1,
+	"request_plan.go": 1,
 }
 
 func TestR493_RequestDecisionsOnlyInPlan(t *testing.T) {

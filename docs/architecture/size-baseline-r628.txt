@@ -24,7 +24,6 @@
 
 c/bridge/bridge.c
 c/bridge/bridge.go
-cmd/cppworker/tool_calls.go
 internal/api/handlers_cluster_models.go
 webui/js/app.js
 webui/js/i18n/en.js

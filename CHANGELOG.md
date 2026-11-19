@@ -1,4 +1,39 @@
-﻿## [0.7.406 - R602: R5 — пакет `internal/api` переименован (22 файла) + починен страж статических маршрутов, 2026-11-19]
+﻿## [0.7.407 - R603: R5 — тема «обработка tool-call» в cppworker (16 файлов), 2026-11-19]
+
+Пятый шаг R5. Тема — **обработка tool-call в `cmd/cppworker`**: 16 файлов с префиксами
+`tool_`/`tools_` и номером раунда. Имена даны по функции файла, а не по номеру.
+
+| Было | Стало |
+|---|---|
+| `tools_hold_r482.go` | `tools_hold_max_bytes.go` |
+| `tools_hold_r485.go` | `tools_hold_reasoning.go` |
+| `tools_stream_markers_r414.go` | `tools_stream_markers.go` |
+| `tools_stream_r83.go` | `tools_stream_content.go` |
+| `tools_stream_reasoning_r404.go` | `tools_stream_reasoning.go` |
+| `tools_terminal_reason_r394.go` | `tools_terminal_reason.go` |
+| `tool_angle_form_r119.go` | `tool_angle_form.go` |
+| `tool_args_schema_r113.go` | `tool_args_schema.go` |
+| `tool_calls_envelope_r433.go` | `tool_calls_envelope.go` |
+| `tool_choice_r246.go` | `tool_choice.go` |
+| `tool_code_form_r246.go` | `tool_code_form.go` |
+| `tool_followup_greedy_r248.go` | `tool_followup_greedy.go` |
+| `tool_guard_r496.go` | `tool_guard.go` |
+| `tool_history_callformat_r475.go` | `tool_history_callformat.go` |
+| `tool_history_r246.go` | `tool_history.go` |
+| `tool_schema_validate_r247.go` | `tool_schema_validate.go` |
+
+Ссылки в шапках/комментариях обновлены с границей слова: 23 файла, остаток старых
+токенов — **0**.
+
+**Числа (измеренные):** боевые `*.go` без `_test.go`: **228 → 212**;
+`scripts/structure_report.ps1`: **218 → 203**.
+
+**Проверено:** `go build -tags llama_stub ./...` = 0; `./cmd/cppworker` (37.3 s) —
+зелёные (включая наборы tool-совместимости, которые проверяют именно эти файлы).
+
+**Остаток R5:** 212 боевых файлов — `internal/balancer` (155) и остаток
+`cmd/cppworker` (57), дальше по темам.
+## [0.7.406 - R602: R5 — пакет `internal/api` переименован (22 файла) + починен страж статических маршрутов, 2026-11-19]
 
 Четвёртый шаг R5. Тема — **весь пакет `internal/api`**: 22 файла с номером раунда в
 имени. Имена даны по ответственности (обработчик/хелпер), номер раунда остался только

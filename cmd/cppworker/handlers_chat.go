@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -975,7 +975,7 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 		// chat_template_guard.go).
 		//
 		// R246 (2026-10-26): форма tool-истории выбирается по шаблону модели
-		// (см. tool_history_r246.go). Структурные вызовы + role="tool" с
+		// (см. tool_history.go). Структурные вызовы + role="tool" с
 		// tool_call_id — единственный вид, из которого шаблон gemma-4 рисует и
 		// вызов, и результат инструмента; на паре role+content результат
 		// терялся целиком и модель просила «подождать вывод».
@@ -1621,7 +1621,7 @@ func toolsStopReasonR320(fullOutput, visibleOutput, prompt string, toolCalls int
 }
 
 // R113 (2026-10-13): tools — определения инструментов из ЗАПРОСА. Нужны, чтобы
-// привести arguments вызова к объекту по их схеме (см. tool_args_schema_r113.go):
+// привести arguments вызова к объекту по их схеме (см. tool_args_schema.go):
 // без этого клиент получает arguments-массив/голую строку, не может выполнить
 // вызов и считает задачу завершённой после первой итерации.
 func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, jsonMode bool, thinkOverride *bool, tools []openAITool, promptNoThink string, clientCapped bool) {
@@ -1661,7 +1661,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// Buffer full output for final tool_calls detection.
 	var outputBuf strings.Builder
 
-	// R482: сторож удержания вывода. См. tools_hold_r482.go: без него шаблон,
+	// R482: сторож удержания вывода. См. tools_hold_max_bytes.go: без него шаблон,
 	// который не закрывает канал размышлений до конца хода, держит ВЕСЬ ответ
 	// до финального чанка («одним огромным куском», живая жалоба на 27B).
 	var holdSince time.Time
@@ -1713,7 +1713,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// JSON tool call»), из-за чего на медленном инстансе клиент не получал ни
 	// одного токена до конца генерации и отваливался по своему таймауту.
 	// Теперь prose уходит по мере генерации, а маркер tool call удерживается
-	// окном toolsStreamHoldback (см. tools_stream_r83.go).
+	// окном toolsStreamHoldback (см. tools_stream_content.go).
 	streamContent := toolsStreamContentEnabled()
 	// R190 (2026-10-20): удержание из-за блока размышлений снимается, когда блок ЗАКРЫТ.
 	// Раньше 	oolsHold после reasoning-маркера больше не снимался, и видимый ответ

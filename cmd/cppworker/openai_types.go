@@ -1,4 +1,4 @@
-// openai_types.go — Shared types for OpenAI-compatible tool calling (function calling).
+﻿// openai_types.go — Shared types for OpenAI-compatible tool calling (function calling).
 package main
 
 import (
@@ -24,7 +24,7 @@ type openAIFunction struct {
 	// параметров объявленной схеме (OpenAI structured outputs, LangChain,
 	// Pydantic-AI). Поле принималось и раньше, но не использовалось; теперь по
 	// нему включается проверка аргументов и один повтор генерации
-	// (см. tool_schema_validate_r247.go).
+	// (см. tool_schema_validate.go).
 	Strict bool `json:"strict,omitempty"`
 }
 

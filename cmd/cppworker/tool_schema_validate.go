@@ -1,4 +1,4 @@
-// tool_schema_validate_r247.go — R247, этап A плана
+﻿// tool_schema_validate.go — R247, этап A плана
 // (docs/plans/2026-10-26-clients-agents-contract-r247.md).
 //
 // ЗАЧЕМ. Клиенты structured-output (OpenAI SDK `strict:true`, LangChain,

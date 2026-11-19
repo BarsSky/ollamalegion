@@ -1,4 +1,4 @@
-// tool_history_r246.go — R246 (2026-10-26): tool-история доезжает до шаблона
+﻿// tool_history.go — R246 (2026-10-26): tool-история доезжает до шаблона
 // модели СТРУКТУРНО, а не JSON-текстом в content.
 //
 // ЖИВОЙ ДЕФЕКТ (DeepSeek Harness → балансер → cppworker → gemma-4,
@@ -261,7 +261,7 @@ func buildNativeToolHistory(msgs []chatMessage, caps templateToolCaps) []bridge.
 // role="tool" ничего не знает.
 //
 // R475 (2026-11-07): если шаблон описывает вызовы формой `<function=…>`, дамп
-// вызова показывается в НЕЙ (см. tool_history_callformat_r475.go). JSON-дамп
+// вызова показывается в НЕЙ (см. tool_history_callformat.go). JSON-дамп
 // `[[…]]` остаётся только для шаблонов без такой формы: там он и был уместен.
 func buildLegacyToolHistory(msgs []chatMessage, caps templateToolCaps) []bridge.ChatMessage {
 	out := make([]bridge.ChatMessage, 0, len(msgs))

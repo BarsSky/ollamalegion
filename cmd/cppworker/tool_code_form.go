@@ -1,4 +1,4 @@
-// tool_code_form_r246.go — R246 (2026-10-26): диалект gemma <<tool_code>> в
+﻿// tool_code_form.go — R246 (2026-10-26): диалект gemma <<tool_code>> в
 // выводе модели.
 //
 // ЖИВОЙ ДЕФЕКТ (DeepSeek Harness -> балансер -> cppworker -> gemma-4, 25

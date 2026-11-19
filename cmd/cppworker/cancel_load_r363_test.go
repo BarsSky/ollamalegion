@@ -1,4 +1,4 @@
-// cancel_load_r363_test.go — R363 (2026-10-31), аудит abort A4.
+﻿// cancel_load_r363_test.go — R363 (2026-10-31), аудит abort A4.
 //
 // РЕШЕНИЕ ОПЕРАТОРА (дословно): «Да загрузку прерывать при отмене».
 //
@@ -78,9 +78,9 @@ func TestR363_HandlerUsesAbortLoad_STEWARD(t *testing.T) {
 			"загрузки (а сторожевые обрывы НЕ должны её прерывать)")
 	}
 
-	helper := read("cancel_load_r363.go")
+	helper := read("cancel_load.go")
 	if helper == "" {
-		t.Fatal("не удалось прочитать cancel_load_r363.go")
+		t.Fatal("не удалось прочитать cancel_load.go")
 	}
 	if !strings.Contains(helper, "backend.AbortLoad(") {
 		t.Error("отмена загрузки не идёт через backend.AbortLoad: это единственный путь, " +

@@ -1,4 +1,4 @@
-// outgoing_tool_args_log_r440.go — R440 (2026-11-05): диагностика ТОГО, ЧТО
+﻿// outgoing_tool_args_log.go — R440 (2026-11-05): диагностика ТОГО, ЧТО
 // уходит клиенту в tool_calls.
 //
 // ЗАЧЕМ. Живой отказ Cline («Invalid input: expected string, received undefined →

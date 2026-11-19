@@ -892,7 +892,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	waitSync, waitTimeoutMs := parseLoadWaitParams(r)
 	estimatedMs := estimateLoadTimeMs(modelPath, opts.ContextSize)
 
-	// R303: мёртвую заявку на загрузку снимаем сами (см. load_progress_r303.go).
+	// R303: мёртвую заявку на загрузку снимаем сами (см. load_progress.go).
 	reclaimStaleClaimR303(modelName, "load-with-params")
 	lockOk, lockErr := backend.TryLockLoadR303(modelName, "load-with-params")
 	if lockErr != nil {
@@ -2811,7 +2811,7 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 
 	if !lockOk {
 		// R303: ожидание ограничено — вместо бесконечного WaitForLoad клиент
-		// получает типизированный отказ с возрастом заявки (см. load_progress_r303.go).
+		// получает типизированный отказ с возрастом заявки (см. load_progress.go).
 		logger.Get().Infow("reload: another goroutine is already loading this model, waiting",
 			"name", req.Name, "wait_limit_sec", loadWaitMaxR303().Seconds())
 		loaded, timedOut := waitLoadBoundedR303(req.Name)

@@ -226,7 +226,7 @@ func diagBundleBalancerLogsR476() string {
 // diagFieldValueR476 — значение поля в одну строку.
 //
 // R493-12a-dump: формат переехал в pkg/logger (FieldValueText), потому что тот же
-// дамп пишет воркер (`cmd/cppworker/debug_bundle_r476.go`), и два независимых
+// дамп пишет воркер (`cmd/cppworker/debug_bundle.go`), и два независимых
 // форматтера расходились бы порядком ключей и кавычками. Оставлено как тонкая
 // обёртка: имя используется в тестах и в логах разбора.
 func diagFieldValueR476(v interface{}) string { return logger.FieldValueText(v) }

@@ -1,4 +1,4 @@
-// inference.go ? Inference core, token counting, RAM fallback, and reload helpers.
+﻿// inference.go ? Inference core, token counting, RAM fallback, and reload helpers.
 package main
 
 import (
@@ -954,7 +954,7 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 	if !lockOk {
 		// другая горутина грузит эту модель — ждём
 		// R303: ожидание ограничено — иначе мёртвая заявка на загрузку вешает
-		// RAM-fallback навсегда (см. load_progress_r303.go).
+		// RAM-fallback навсегда (см. load_progress.go).
 		if loaded, _ := backend.WaitForLoadTimeoutR303(modelName, loadWaitMaxR303()); loaded {
 			return true, nil
 		}

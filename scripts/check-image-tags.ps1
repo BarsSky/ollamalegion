@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   R83 (2026-09-25): проверка согласованности тегов образов в продовом compose.
 
@@ -295,6 +295,94 @@ if (Test-Path $manifestPath) {
 } else {
     Write-Host ""
     Write-Host "манифеста $ManifestFile нет — сверка выпуска пропущена (появится после scripts/release-all.ps1)" -ForegroundColor DarkGray
+}
+
+# --- CUDA_ARCH: .env ↔ образ (R597) ---------------------------------------
+#
+# ЗАЧЕМ. `CUDA_ARCH` в deployments/.env обещает, под какие карты собран образ, но
+# до этой проверки никто не сверял обещание с фактом. Живой случай (2026-11-19):
+# в .env записано `CUDA_ARCH=75;86;120`, а образ собран только под 86 — на карте
+# sm_75 или sm_120 он упал бы с «no kernel image is available for execution on the
+# device», и искать причину пришлось бы в логах воркера.
+#
+# ИСТОЧНИК ФАКТА. В образе архива нет отдельной метки, поэтому берём описание OCI
+# (`org.opencontainers.image.description`, Dockerfile.gpu печатает туда
+# `CUDA_ARCH=<список>` — это build-arg, то есть ровно то, с чем собрали ядра).
+# НАСТОЯЩЕЕ доказательство — `cuda_arch_built` в `/api/info` ЖИВОГО воркера
+# (его отдаёт сам бинарь); здесь мы ловим расхождение ДО раскатки, когда воркера
+# ещё нет.
+#
+# Если образа в локальном демоне нет (CI, свежий клон) — проверка пропускается с
+# явной пометкой: «неизвестно» не выдаём за «совпало».
+function Normalize-ArchList([string]$value) {
+    if ([string]::IsNullOrWhiteSpace($value)) { return @() }
+    return @(($value -replace 'sm_', '' -split '[;,]') |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ } |
+        Sort-Object -Unique)
+}
+
+$cudaArchEnv = ''
+$envFileFull = Join-Path (Split-Path -Parent $PSCommandPath) "..\deployments\$EnvFile"
+if (-not (Test-Path $envFileFull)) { $envFileFull = Join-Path (Get-Location) $EnvFile }
+if (Test-Path $envFileFull) {
+    $m = Select-String -Path $envFileFull -Pattern '^\s*CUDA_ARCH\s*=\s*(.+)$' | Select-Object -First 1
+    if ($m) { $cudaArchEnv = ($m.Matches[0].Groups[1].Value -replace '#.*$', '').Trim() }
+}
+if ($cudaArchEnv) {
+    Write-Host ""
+    Write-Host "CUDA_ARCH: .env=$cudaArchEnv ↔ образ cppworker" -ForegroundColor Cyan
+    $cppRepo = $effective.Keys | Where-Object { $_ -like '*cppworker' } | Select-Object -First 1
+    if (-not $cppRepo) {
+        Write-Host "  ПРОПУСК  образа cppworker нет в $ComposeFile" -ForegroundColor DarkGray
+    } else {
+        $cppRef = "${cppRepo}:$($effective[$cppRepo])"
+        # Метки читаем через `{{json .Config.Labels}}`, а не `{{index …}}`: в
+        # Windows PowerShell шаблон `{{index .Config.Labels "org…"}}` приходит в
+        # docker искажённым и падает с «function "org" not defined» — проверено.
+        # Тем же способом читает метки scripts/lib-release-manifest.ps1, так что
+        # «как читать метку» остаётся в одной форме на два скрипта.
+        $desc = ''
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $rawLabels = (& docker image inspect $cppRef --format '{{json .Config.Labels}}' 2>$null | Out-String)
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+        if (-not [string]::IsNullOrWhiteSpace($rawLabels)) {
+            try {
+                $labelObj = $rawLabels | ConvertFrom-Json
+                if ($labelObj -and $labelObj.PSObject.Properties['org.opencontainers.image.description']) {
+                    $desc = [string]$labelObj.'org.opencontainers.image.description'
+                }
+            } catch {
+                $desc = ''
+            }
+        }
+        $desc = ([string]$desc).Trim()
+        if (-not $desc -or $desc -eq '<no value>') {
+            Write-Host "  ПРОПУСК  образа $cppRef нет в локальном демоне — сверка архива невозможна" -ForegroundColor DarkGray
+        } else {
+            $builtRaw = ''
+            $bm = [regex]::Match($desc, 'CUDA_ARCH=([0-9;,]+)')
+            if ($bm.Success) { $builtRaw = $bm.Groups[1].Value }
+            $want = Normalize-ArchList $cudaArchEnv
+            $built = Normalize-ArchList $builtRaw
+            if ($built.Count -eq 0) {
+                $problems.Add("${cppRef}: в метках образа нет CUDA_ARCH (описание '$desc') — какая архитектура собрана, неизвестно")
+            } elseif ((($want -join ';') -ne ($built -join ';'))) {
+                $missing = @($want | Where-Object { $built -notcontains $_ })
+                $problems.Add("${cppRef} собран под [$($built -join ';')], а deployments/$EnvFile обещает CUDA_ARCH=$cudaArchEnv" +
+                    $(if ($missing.Count -gt 0) { " — не собрано под: $($missing -join ';'). На этих картах воркер упадёт с 'no kernel image is available'" } else { "" }))
+            } else {
+                Write-Host "  OK  образ $cppRef собран под $($built -join ';') — совпадает с .env" -ForegroundColor DarkGray
+            }
+        }
+    }
+} else {
+    Write-Host ""
+    Write-Host "CUDA_ARCH в $EnvFile не задан — сверка архива с образом пропущена" -ForegroundColor DarkGray
 }
 
 # --- итог ------------------------------------------------------------------

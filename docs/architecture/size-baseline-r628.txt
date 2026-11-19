@@ -29,7 +29,6 @@ internal/api/handlers_cluster_models.go
 internal/balancer/autotune.go
 internal/balancer/image_resources.go
 internal/balancer/image_tool.go
-internal/balancer/llamacpp_transport.go
 internal/balancer/model_management.go
 internal/balancer/nctx_reload.go
 internal/balancer/nctx_reload_handlers.go

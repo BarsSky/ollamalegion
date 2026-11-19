@@ -43,7 +43,9 @@ var stallPathRegistryR298 = map[string]stallPathStatus{
 	// транспортов. Записи proxy_request.go и proxy_request_hijack.go убраны: они
 	// больше не читают стрим (тела переехали), и реестр не должен врать.
 	"stream_openai_sse.go": {covered: true},
-	"llamacpp_transport.go":     {covered: true},
+	// R630: транспорт разложен на пять файлов; сторож тишины создаётся в слое
+	// чтения апстрима (startUpstreamReaders), а не в самом транспортном файле.
+	"llamacpp_stream_upstream.go": {covered: true},
 
 	"proxy_request_openai_auto_stream.go": {
 		why: "авто-стрим для клиентов, попросивших stream:false (не агентский путь)",
@@ -93,11 +95,9 @@ func TestR298_EveryStreamingPathIsRegistered(t *testing.T) {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(".", name))
-		if err != nil {
-			t.Fatalf("ReadFile %s: %v", name, err)
-		}
-		src := string(data)
+		// Обнаружение — по ОДНОМУ файлу: склейка слоя сделала бы «читающим стрим»
+		// каждый его файл (R630).
+		src := stallWatchFileSourceR298(t, name)
 		hasRead := false
 		for _, pat := range blockingStreamReadPatterns {
 			if strings.Contains(src, pat) {
@@ -113,7 +113,6 @@ func TestR298_EveryStreamingPathIsRegistered(t *testing.T) {
 			unregistered = append(unregistered, name)
 		}
 	}
-
 	sort.Strings(unregistered)
 	if len(unregistered) > 0 {
 		t.Fatalf("новые стриминговые пути без решения про сторож тишины (R298): %v\n"+
@@ -139,11 +138,10 @@ func TestR298_CoveredPathsActuallyUseTheSharedWatch(t *testing.T) {
 		if !st.covered {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(".", name))
-		if err != nil {
-			t.Fatalf("ReadFile %s: %v", name, err)
-		}
-		src := string(data)
+		// «covered» проверяется по источнику проверки: для файлов транспортного слоя —
+		// весь слой (R630: создание сторожа и его остановка оказались в разных файлах
+		// одного слоя), для остальных — ровно один файл.
+		src := stallWatchCoverageSourceR298(t, name)
 		if !strings.Contains(src, "newStreamStallWatch(") {
 			t.Errorf("%s помечен как covered, но не создаёт сторож через newStreamStallWatch", name)
 		}
@@ -157,4 +155,33 @@ func TestR298_CoveredPathsActuallyUseTheSharedWatch(t *testing.T) {
 			t.Errorf("%s: данные не сбрасывают отсчёт тишины (stallWatch.Touch отсутствует) — сторож сработает на живом стриме", name)
 		}
 	}
+}
+
+// stallWatchCoverageSourceR298 — текст, по которому проверяется «covered».
+//
+// R630: сторож тишины теперь живёт в ДВУХ файлах одного слоя — создаётся и
+// запускается в llamacpp_stream_upstream.go (startUpstreamReaders), а
+// останавливается `defer st.stallWatch.Stop()` в llamacpp_transport.go, там же,
+// где начинается стрим. Проверка «в файле есть все четыре маркера» после такого
+// переноса краснела бы на корректном коде, поэтому для файлов транспортного слоя
+// читается весь слой (см. llamacpp_sources_r630_test.go). Требования не
+// ослаблены: все маркеры обязаны быть в слое, просто не в одной строке одного файла.
+func stallWatchCoverageSourceR298(t *testing.T, name string) string {
+	t.Helper()
+	for _, layerFile := range llamaCppTransportLayerFilesR630 {
+		if layerFile == name {
+			return readLlamaCppSourcesR630(t)
+		}
+	}
+	return stallWatchFileSourceR298(t, name)
+}
+
+// stallWatchFileSourceR298 — текст РОВНО одного файла (без склейки слоя).
+func stallWatchFileSourceR298(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(".", name))
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", name, err)
+	}
+	return string(data)
 }

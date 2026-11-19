@@ -20,7 +20,6 @@
 package balancer
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -73,18 +72,11 @@ func TestR360_PayloadEmptyIsBroadcast(t *testing.T) {
 func TestR360_CancelPathsPassRequestID_STEWARD(t *testing.T) {
 	// 2026-11-14 (этап 6): цикл SSE /v1 переехал в общий,
 	// поэтому отмена с request_id проверяется там, где она теперь вызывается.
-	files := []string{"llamacpp_transport.go", "stream_openai_sink.go"}
-	for _, name := range files {
-		var src string
-		for _, p := range []string{name, "internal/balancer/" + name} {
-			if b, err := os.ReadFile(p); err == nil {
-				src = string(b)
-				break
-			}
-		}
-		if src == "" {
-			t.Fatalf("не удалось прочитать %s", name)
-		}
+	// R630: транспорт разложен на пять файлов — читаем весь слой одним текстом
+	// (см. llamacpp_sources_r630_test.go).
+	src := readLlamaCppSourcesR630(t)
+	{
+		name := "llamacpp_*.go"
 		idx := 0
 		calls := 0
 		for {

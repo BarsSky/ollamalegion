@@ -19,12 +19,9 @@ import (
 )
 
 func TestR493_TransportPassesStatsWindows(t *testing.T) {
-	const path = "llamacpp_transport.go"
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("не прочитать %s: %v", path, err)
-	}
-	src := string(raw)
+	// R630: транспорт разложен на пять файлов — читаем весь слой
+	// (см. llamacpp_sources_r630_test.go), иначе сторож краснел бы на переносе.
+	src := readLlamaCppSourcesR630(t)
 
 	required := []struct {
 		needle string

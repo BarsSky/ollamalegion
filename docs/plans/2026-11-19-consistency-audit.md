@@ -68,7 +68,7 @@
 | T-4 | К | `proxy_request_openai_auto_stream_r258.go:43`, `stream_stall_r297.go:51` | Два капа по 300 с взведены по умолчанию вопреки доктрине «таймаут только opt-in» (`timeout_policy.go:20-23`) |
 | T-5 | К | `feature-switches.ru.md:46` vs `proxy_timeout.go:40-47`, `stack.yml:357` | Док объявляет `LB_STREAMING_NEVER_TIMEOUT` «вкл», код — выключено |
 | T-6 | В | `nctx_reload.go:224-227` vs `preflight_nctx.go:1587-1609` | `Retry-After` клампится на 120 с при оценке reload ≈186 с (16.4 ГБ / 131072) и живых 280–480 с → второй reload |
-| T-7 | В | `session_manager.go:255-262` | Порог «зомби» 120 с удаляет сессию с **живым** стримом (`LastRequestAt` не обновляется в стриме) |
+| T-7 | В | `session_manager.go:255-262` | ~~Порог «зомби» 120 с удаляет сессию с **живым** стримом (`LastRequestAt` не обновляется в стриме)~~ — **проверено: основная часть закрыта R252** (`startStreamSession` → `HeartbeatStream` каждые 15 с, `Stop()` снимает флаг); **остаток закрыт R546**: heartbeat ≥ порога зомби был ловушкой конфига, теперь heartbeat применяется как `min(заданный, порог/2)` с Warn-ом |
 | T-8 | В | `llamacpp_handlers_inference.go:347-351` vs `llamacpp_transport.go:383` | Дефолт 180 с применяется только на нативном пути: один запрос, разное поведение по URL |
 | T-9 | В | `loading_retry.go:42,45`; `cppbackend/load_stall_r227.go:31-45` | Ожидание загрузки 30 с и сторож 300 с против живых 140–485 с; комментарий `:16` говорит «не прерывает load», код `:76-82` вызывает `onStall()` |
 | T-10 | В | `model_latency_tracker.go` | «Адаптивные тиры» не получают семплов никогда (`RecordSample` только в тестах), а код ссылается на них как на рабочие (`proxy_timeout.go:183-200`) |

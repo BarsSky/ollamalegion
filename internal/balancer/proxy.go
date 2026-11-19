@@ -522,6 +522,37 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		zombieThreshold = defaultZombieSessionThreshold
 	}
 
+	// R546 (T-7 аудита согласованности): heartbeat живого стрима обязан быть
+	// ЧАЩЕ половины порога «зомби».
+	//
+	// Что уже было в порядке: R252 оживляет сессию во время стрима —
+	// startStreamSession() зовёт HeartbeatStream() каждые getHeartbeatInterval()
+	// (дефолт 15 с) и снимает флаг на Stop(). Поэтому утверждение аудита
+	// «LastRequestAt не обновляется в стриме» на сегодня неверно.
+	//
+	// Что оставалось ДЕФЕКТОМ: обе величины задаются оператором независимо
+	// (AdvancedTiming.HeartbeatIntervalSec и ZombieSessionThresholdSec), и при
+	// heartbeat ≥ порога живой стрим снова попадает под cleanup() — ровно та
+	// жалоба, с которой начали («сессия исчезает посреди генерации»). Проверить
+	// это на стенде дорого (нужен стрим длиннее порога), поэтому правило
+	// применяется здесь: heartbeat = min(заданный, порог/2), а расхождение
+	// печатается Warn-ом с обоими числами — молча менять политику нельзя.
+	if hbSec := config.Balancing.AdvancedTiming.HeartbeatIntervalSec; hbSec > 0 {
+		hb := time.Duration(hbSec) * time.Second
+		if hb*2 > zombieThreshold {
+			applied := zombieThreshold / 2
+			if applied < time.Second {
+				applied = time.Second
+			}
+			logger.Get().Warnw("R546: heartbeat стрима реже половины порога зомби — живой стрим считался бы мёртвым",
+				"heartbeat_sec", hb.Seconds(),
+				"zombie_threshold_sec", zombieThreshold.Seconds(),
+				"applied_heartbeat_sec", applied.Seconds(),
+				"config", "balancing.advancedTiming (HeartbeatIntervalSec / ZombieSessionThresholdSec)")
+			config.Balancing.AdvancedTiming.HeartbeatIntervalSec = int(applied.Seconds())
+		}
+	}
+
 	p := &Proxy{
 		config:        config,
 		backends:      make(map[string]*BackendState),

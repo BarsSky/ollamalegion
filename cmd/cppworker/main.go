@@ -1,4 +1,4 @@
-// CppBackend Worker — HTTP сервер для llama.cpp GGUF моделей
+﻿// CppBackend Worker — HTTP сервер для llama.cpp GGUF моделей
 //
 // Предоставляет REST API для загрузки/выгрузки GGUF моделей,
 // инференса (синхронного и стриминг), управления multi-GPU,
@@ -312,7 +312,7 @@ func applyLayoutEnvOverrides(cfgPtr *cppbackend.Config, log *zap.SugaredLogger) 
 
 	// R101 (S1 плана 2026-10-07): раскладка модели между узлами через llama.cpp RPC.
 	//
-	// R115 (2026-10-13): РАЗБОР ВЫНЕСЕН В resolveRPCMode (rpc_mode_r115.go).
+	// R115 (2026-10-13): РАЗБОР ВЫНЕСЕН В resolveRPCMode (rpc_mode.go).
 	//
 	// ЧТО БЫЛО НЕ ТАК. Список узлов безусловно ставил `RPCEnabled = true`, поэтому
 	// `CPPWORKER_RPC_ENABLE=false` не выключал раскладку: мастер продолжал

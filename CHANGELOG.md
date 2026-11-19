@@ -1,4 +1,43 @@
-﻿## [0.7.404 - R600: R5 — пакет `internal/i18n` переименован по содержимому (14 файлов), 2026-11-19]
+﻿## [0.7.405 - R601: R5 — пакет `internal/cppbackend` переименован (15 файлов), 2026-11-19]
+
+Третий шаг R5. Тема — **весь пакет `internal/cppbackend`**: 15 файлов с номером раунда
+в имени. Имена даны по ответственности файла (по его функциям), а не по номеру.
+
+| Было | Стало |
+|---|---|
+| `donor_role_r304.go` | `donor_role.go` |
+| `layout_verify_r176.go` | `layout_verify.go` |
+| `link_bench_r129.go` | `link_bench.go` |
+| `load_claims_r303.go` | `load_claims.go` |
+| `load_stall_r227.go` | `load_stall.go` |
+| `load_without_unready_node_r380.go` | `load_without_unready_node.go` |
+| `rpc_enum_guard_r382.go` | `rpc_enum_guard.go` |
+| `rpc_mode_r115.go` | `rpc_mode.go` |
+| `rpc_node_external_r171.go` | `rpc_node_external.go` |
+| `rpc_peers_r125.go` | `rpc_peers.go` |
+| `rpc_reach_r229.go` | `rpc_reach.go` |
+| `rpc_ready_budget_r215.go` | `rpc_ready_budget.go` |
+| `rpc_server_log_r172.go` | `rpc_server_log.go` |
+| `rpc_session_lost_r224.go` | `rpc_session_lost.go` |
+| `rpc_version_gate_r115.go` | `rpc_version_gate.go` |
+
+**Главная ловушка этого шага — подстрочные совпадения.** В репозитории есть файлы с
+похожими именами в ДРУГИХ пакетах (`cmd/cppworker/handlers_rpc_peers_r125.go`,
+`handlers_link_bench_r129.go`, `handlers_rpc_server_log_r172.go`, `load_progress_r303.go`),
+и слепая замена `rpc_peers_r125.go` → `rpc_peers.go` испортила бы их имена на
+`handlers_rpc_peers.go`. Поэтому замена сделана с границей слова
+(`(?<![A-Za-z0-9_])`): обновлено 10 файлов, 21 ссылка в шапках/комментариях, остаток
+старых токенов — **0** (проверено тем же регулярным выражением).
+
+**Числа (измеренные):** боевые `*.go` без `_test.go`: **265 → 250**;
+`scripts/structure_report.ps1`: **255 → 240**.
+
+**Проверено:** `go build -tags llama_stub ./...` = 0; `./internal/cppbackend` (51.6 s) —
+зелёные.
+
+**Остаток R5:** 250 боевых файлов; следующий шаг — `internal/api` (22) как одна тема,
+затем `cmd/cppworker` (73) и `internal/balancer` (155) по темам.
+## [0.7.404 - R600: R5 — пакет `internal/i18n` переименован по содержимому (14 файлов), 2026-11-19]
 
 Второй шаг R5. Тема коммита — **весь пакет `internal/i18n`**: там лежат только таблицы
 сообщений, и номер раунда в имени файла не сообщал ничего, кроме «когда завели».

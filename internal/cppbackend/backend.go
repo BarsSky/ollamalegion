@@ -1,4 +1,4 @@
-package cppbackend
+﻿package cppbackend
 
 import (
 	"fmt"
@@ -175,7 +175,7 @@ type Backend struct {
 	rpcDevKey string
 
 	// R229 (2026-10-22): узлы, исключённые как НЕДОСТУПНЫЕ на время работы с
-	// моделью (TCP-проба, см. rpc_reach_r229.go). Отдаётся в /api/models как
+	// моделью (TCP-проба, см. rpc_reach.go). Отдаётся в /api/models как
 	// rpc_excluded: оператор видит, почему модель работает без донора.
 	// Отдельный мьютекс: b.mu/rpcDevMu не должны пересекаться с этим полем.
 	excludedRPCMu sync.Mutex
@@ -183,14 +183,14 @@ type Backend struct {
 	excludedRPCAt time.Time
 	// R215 (2026-10-21): сколько гейтов готовности узла подряд не смогли получить
 	// устройства. Два подряд при доступном по TCP узле = он завис и держит VRAM
-	// прошлой сессии (см. rpc_ready_budget_r215.go); счётчик отдаётся в
+	// прошлой сессии (см. rpc_ready_budget.go); счётчик отдаётся в
 	// /api/models как rpc_layout.stuck_suspected.
 	rpcReadyTimeoutStreak atomic.Int32
 	// R224 (2026-10-22): восстановление после потери RPC-сессии ВО ВРЕМЯ
 	// генерации. Сессия с узлом может умереть после загрузки (узел пересоздан,
 	// сеть порвана): декодирование падает, а модель остаётся загруженной с мёртвым
 	// устройством — каждая генерация падает, пока её не выгрузят вручную.
-	// Выгружаем сами по факту сбоя (см. rpc_session_lost_r224.go), не чаще
+	// Выгружаем сами по факту сбоя (см. rpc_session_lost.go), не чаще
 	// rpcSessionUnloadCooldown на модель.
 	sessionLostMu sync.Mutex
 	sessionLostAt map[string]time.Time
@@ -234,7 +234,7 @@ type Backend struct {
 	loading map[string]chan struct{}
 	// R303: метаданные заявок на загрузку (кто взял, когда). Позволяют отличить
 	// «грузится» от «заявка осталась от умершей горутины» и дать оператору
-	// возраст заявки вместо бесконечного ожидания. См. load_claims_r303.go.
+	// возраст заявки вместо бесконечного ожидания. См. load_claims.go.
 	loadClaims map[string]*loadClaimMetaR303
 	loadMu     sync.Mutex
 

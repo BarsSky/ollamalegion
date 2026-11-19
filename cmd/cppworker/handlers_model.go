@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"errors"
@@ -1655,7 +1655,7 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			entry["active_queries"] = inflight.Get(m.Name)
 			// R303: возраст самого долгого активного запроса по модели. Нужен,
 			// чтобы «мусор в in_flat» был виден как возраст, а не как вечный 1
-			// (см. load_claims_r303.go / inflight.go).
+			// (см. load_claims.go / inflight.go).
 			if ages := inflight.AgesR303(); len(ages) > 0 {
 				if age, ok := ages[m.Name]; ok {
 					entry["active_query_age_sec"] = age

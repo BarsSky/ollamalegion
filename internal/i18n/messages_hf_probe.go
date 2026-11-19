@@ -1,4 +1,4 @@
-package i18n
+﻿package i18n
 
 // messagesCore — R234 (2026-10-24): сообщения ядра репозитория, батч r234.
 //
@@ -105,7 +105,7 @@ var messagesCore = map[string]map[Lang]string{
 			"may be a VAE/text encoder/LoRA rather than a diffusion file)",
 	},
 
-	// === internal/cppbackend/rpc_version_gate_r115.go =================
+	// === internal/cppbackend/rpc_version_gate.go =================
 	"cppbackend.rpc_version_gate.node_addr_invalid": {
 		RU: "некорректный адрес узла %q",
 		EN: "invalid node address %q",
@@ -127,7 +127,7 @@ var messagesCore = map[string]map[Lang]string{
 		EN: "update the node image to the same commit; a mismatch leads to GGML_ABORT on the master",
 	},
 
-	// === internal/cppbackend/load_stall_r227.go =======================
+	// === internal/cppbackend/load_stall.go =======================
 	"cppbackend.load_stall.blocked": {
 		RU: "загрузка заблокирована: предыдущая загрузка не завершилась за %s (вероятно, " +
 			"зависла в native load — см. ERROR со стеком горутин в логе воркера)",

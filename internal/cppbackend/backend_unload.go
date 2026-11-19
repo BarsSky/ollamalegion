@@ -1,4 +1,4 @@
-package cppbackend
+﻿package cppbackend
 
 import (
 	"fmt"
@@ -465,7 +465,7 @@ func (b *Backend) tryLockLoad(name, requester string) (bool, error) {
 	// Создаём канал, который будет закрыт после завершения загрузки
 	b.loading[name] = make(chan struct{})
 	// R303: фиксируем владельца и время — по ним отличаем «грузится» от
-	// «заявка осталась от умершей горутины» (load_claims_r303.go).
+	// «заявка осталась от умершей горутины» (load_claims.go).
 	b.claimMetaLockedR303(name, requester)
 	return true, nil
 }

@@ -1,4 +1,4 @@
-package i18n
+﻿package i18n
 
 // messagesCppbackend — R234 (2026-10-24): сообщения бэкендов воркера, батч r234.
 //
@@ -333,7 +333,7 @@ var messagesCppbackend = map[string]map[Lang]string{
 		EN: "TCP does not answer before generation",
 	},
 
-	// === internal/cppbackend/rpc_session_lost_r224.go ================
+	// === internal/cppbackend/rpc_session_lost.go ================
 	"cppbackend.rpc_session_lost_r224.session_lost_error": {
 		RU: "RPC-сессия с узлом раскладки %s потеряна во время генерации: узел не отвечает " +
 			"по TCP. Это не OOM и не n_ctx: узел ушёл. Модель выгружена — повторите " +
@@ -403,7 +403,7 @@ var messagesCppbackend = map[string]map[Lang]string{
 			"disable enableBatchedParallel for this model if that is critical)",
 	},
 
-	// === internal/cppbackend/rpc_reach_r229.go =======================
+	// === internal/cppbackend/rpc_reach.go =======================
 	"cppbackend.rpc_reach_r229.node_excluded": {
 		RU: "раскладка: недоступный узел исключён на время работы с моделью",
 		EN: "layout: an unreachable node was excluded for the duration of the work with the model",

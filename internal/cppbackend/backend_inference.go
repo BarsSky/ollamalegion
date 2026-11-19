@@ -1,4 +1,4 @@
-package cppbackend
+﻿package cppbackend
 
 import (
 	"context"
@@ -109,7 +109,7 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 
 	result, inferErr = inst.handle.Infer(prompt, params)
 	// R224: по факту сбоя уточняем причину (узлы раскладки живы?) и при потере
-	// сессии запускаем выгрузку модели — см. rpc_session_lost_r224.go.
+	// сессии запускаем выгрузку модели — см. rpc_session_lost.go.
 	if inferErr != nil {
 		inferErr = b.diagnoseInferenceFailure(inst, modelName, inferErr)
 	}

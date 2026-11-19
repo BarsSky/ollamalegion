@@ -1,4 +1,4 @@
-// memfit_adapter.go — адаптеры между cppbackend и internal/memfit.
+﻿// memfit_adapter.go — адаптеры между cppbackend и internal/memfit.
 //
 // R83, шаги 2–3 миграции. Сначала это был мост для shadow-сравнения (считаем и
 // старым кодом, и memfit, решение принимает старый). После переключения решений
@@ -369,7 +369,7 @@ func (b *Backend) rpcDeviceSnapshot() []bridge.DeviceInfo {
 	// неизвестный) узел из раскладки исключается, а не «пробуется».
 	// R229 (2026-10-22): планирование по-прежнему НЕ ДОЗВАНИВАЕТСЯ до узлов (R115:
 	// опрос памяти через RPC во время работы роняет мастер на GGML_ABORT). Мёртвый
-	// донор исключается на пути ЗАГРУЗКИ (rpc_reach_r229.go) и балансерским гардом,
+	// донор исключается на пути ЗАГРУЗКИ (rpc_reach.go) и балансерским гардом,
 	// который снимает узел из конфига — тогда список ниже меняется сам.
 	servers := b.admittedRPCServers()
 	if len(servers) == 0 {
@@ -476,7 +476,7 @@ func (b *Backend) rpcDeviceSnapshot() []bridge.DeviceInfo {
 	// Маркер ставится ПЕРЕД вызовом и снимается после успешного возврата. Маркер
 	// на месте = прошлая попытка не вернулась → RPC-перечисление пропускаем на
 	// время остывания и планируем только по локальной карте.
-	// R382: сам вызов идёт под предохранителем (см. rpc_enum_guard_r382.go).
+	// R382: сам вызов идёт под предохранителем (см. rpc_enum_guard.go).
 	snapshot, skipped := collectDevicesWithGuardR382(bridge.ModelConfig{
 		SplitMode:  b.cfg.DefaultSplitMode,
 		RPCServers: servers,

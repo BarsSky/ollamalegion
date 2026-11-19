@@ -239,6 +239,35 @@ inline `display:none` из `index.html:1483,1489,1495,1501` → скрытые �
    списка читаемых файлов в `selection-ui-r493`, поправить границу секций в `settings-overlap-r317`.
 5. **CSS оставить.** Классы `.mode-wizard-overlay`/`.mode-wizard-modal` используются другими модулями
    (`cppworker-params.js:753`, `image-profiles.js:1005`, `image-backends-page.js:863`) — это НЕ часть режимов.
+### 7.2 Уточнение после попытки (2026-11-19, раунд без коммита): W1 — ОДИН проход, а не пять шагов
+
+Попытка выполнить шаг 1 из §7.1 в одиночку (удалить `#section-mode` + `mode-wizard.js`) была
+**откачена целиком**: два набора законно покраснели, и оба — по делу.
+
+| Тест | Почему краснеет от шага 1 |
+|---|---|
+| `webui/js/modules/unverified-modes-hidden-r118.test.js` | требует 5 карточек режимов; после удаления требование надо **инвертировать** (проверка «разметки режимов нет»), а не удалять |
+| `webui/js/modules/settings-overlap-r317.test.js` | держит границу `#section-hot-settings` ↔ `#section-mode` **и** наличие полей `#modelReplicationIdleUnload` внутри секции; его же текст говорит «поле нельзя удалять на этом этапе» |
+
+Вывод: «разметка + мастер» и «переписать тесты» — **независимыми коммитами не являются**.
+`settings-overlap-r317` проверяет карту секций настроек целиком, поэтому после удаления
+`#section-mode` его проверки теряют смысл и переписываются В ТОМ ЖЕ коммите.
+
+Порядок для следующего прохода (один коммит, полный прогон WebUI-набора):
+
+1. удалить блок `index.html:1436-1609` (`#section-mode`, 5 радио `operatingMode`), тег
+   `<script src="js/modules/mode-wizard.js…">` и сам файл;
+2. убрать mode-часть `settings-ui.js` (`updateModeCards:147`, `showModeFields:167`,
+   `updateVariantSections:186`, `navMap:262`) и вызовы в `app.js:1641`, `config-io.js:326`,
+   `backend-type-filter.js` (`toggleModeCards`);
+3. переписать `unverified-modes-hidden-r118` на «разметки режимов нет»; в
+   `settings-overlap-r317` заменить карту секций (без `#section-mode` и без полей
+   `#modelReplication*`, которые уходят вместе с секцией); в `selection-ui-r493` убрать
+   `mode-wizard.js` из списка читаемых файлов; в `sidebar-nav-r497` убрать его из `callers`;
+4. CSS `.mode-wizard-overlay/.mode-wizard-modal` **оставить** (используются
+   `cppworker-params.js:753`, `image-profiles.js:1005`, `image-backends-page.js:863`);
+5. прогнать `node scripts/run-webui-tests.js` (120 наборов) и `go test -tags llama_stub
+   ./internal/api/` (серверное поле `operatingMode` остаётся для миграции — `mode_migration.go`).
 ## 8. Чего не делать
 
 - **Не «починить экспорт `updateModeCards`» в отрыве** (§4.4): починка включит `showModeFields` на следующей строке

@@ -174,18 +174,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// цикле (R422), а defer читает его В МОМЕНТ выполнения.
 	defer autoTuneOnReturn(p, backendID, &modelFromCtx)()
 
-	fullURL := targetURL + llamacppPath
-	// R60.9 (2026-09-07): для /api/models/unload cppworker требует ?name= в
-	// QUERY STRING, не в body. Извлекаем name из body и добавляем в query.
-	if originalPath == "/api/models/unload" {
-		name, modBody := extractNameFromBody(translatedBody)
-		if name != "" {
-			translatedBody = modBody
-			fullURL = fullURL + "?name=" + url.QueryEscape(name)
-			logger.Get().Debugw("proxyRequestLlamaCpp: moved name to query (R60.9 unload fix)",
-				"backend", backendID, "model", name)
-		}
-	}
+	// R534 (R2 читаемости): URL и перенос name в query для /api/models/unload.
+	fullURL, translatedBody := buildUpstreamURLAndBody(targetURL, llamacppPath, originalPath, backendID, translatedBody)
 	logger.Get().Infow("proxyRequestLlamaCpp: sending request",
 		"backend", backendID, "url", fullURL, "stream", isStreaming)
 
@@ -2842,4 +2832,22 @@ func makeUpstreamPathAndBody(originalPath string, nativePath bool, bodyBuf []byt
 		}
 	}
 	return llamacppPath, isStreaming, translatedBody
+}
+
+// buildUpstreamURLAndBody — полный URL запроса к воркеру и (для
+// /api/models/unload) перенос name из тела в query (R60.9: cppworker требует
+// ?name= именно в query string). R534, R2 читаемости: вынесено дословно.
+func buildUpstreamURLAndBody(targetURL, llamacppPath, originalPath, backendID string, translatedBody []byte) (fullURL string, body []byte) {
+	fullURL = targetURL + llamacppPath
+	body = translatedBody
+	if originalPath == "/api/models/unload" {
+		name, modBody := extractNameFromBody(body)
+		if name != "" {
+			body = modBody
+			fullURL = fullURL + "?name=" + url.QueryEscape(name)
+			logger.Get().Debugw("proxyRequestLlamaCpp: moved name to query (R60.9 unload fix)",
+				"backend", backendID, "model", name)
+		}
+	}
+	return fullURL, body
 }

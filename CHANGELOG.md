@@ -1,4 +1,12 @@
-﻿## [0.7.336 - R533: R2 читаемости — путь и тело для cppworker вынесены, 2026-11-18]
+﻿## [0.7.337 - R534: R2 читаемости — URL и перенос name для unload вынесены, 2026-11-18]
+
+Пункт 3 очереди R2. `buildUpstreamURLAndBody(targetURL, llamacppPath, originalPath,
+backendID, translatedBody)` считает полный URL запроса к воркеру и для
+`/api/models/unload` переносит `name` из тела в query (R60.9: cppworker требует
+`?name=` именно в query string). `proxyRequestLlamaCpp` **2305 → 2300**, новая
+функция — 15 строк / 6 операторов. Проверки: `gofmt`/`build`/`vet` чисто,
+тесты (unload/query) зелёные.
+## [0.7.336 - R533: R2 читаемости — путь и тело для cppworker вынесены, 2026-11-18]
 
 Пункт 2 очереди R2. `proxyRequestLlamaCpp` **2316 → 2305**: путь для cppworker,
 признак стрима и тело запроса считает `makeUpstreamPathAndBody(originalPath,
@@ -26506,6 +26514,7 @@ reload семантика (n_ctx иммутабельна без reload) соб�
 - Разбор JSON-полей конфигурации (`target_backends`, `labels`) — унифицирован тип `[]string`
 - Состояние кластера при отключении бэкенда — корректная очистка моделей и сессий
 - AutoPull моделей — исправлена гонка при одновременной загрузке одной модели несколькими запросами
+
 
 
 

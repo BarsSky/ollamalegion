@@ -1,4 +1,4 @@
-// Package balancer — обработчик n_ctx auto-reload (Stage 3.3).
+﻿// Package balancer — обработчик n_ctx auto-reload (Stage 3.3).
 //
 // handleNCtxReload — главная логика, которая вызывается из llamacpp_router.go
 // когда proxyRequestLlamaCpp* / handleOpenAIChatCompletions вернул *NCtxError
@@ -763,7 +763,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	//     «окно меньше нужного» снова уезжало в воркер;
 	//   - вердикт не перезагружает модель (это делает не-стриминговый путь), он
 	//     только приводит num_ctx к загруженному окну либо отказывает с числами.
-	// См. growth_stream_guard_r301.go — там же живой дефект и обоснование.
+	// См. growth_stream_guard.go — там же живой дефект и обоснование.
 	// R304 (2026-10-30): перезагрузка окна — это тоже «поднять копию на узле».
 	// Донор свою не держит: его VRAM отдана слоям модели мастера. Проверка стоит
 	// ПЕРВОЙ, до любого решения об окне, потому что при роли донора окно менять
@@ -886,7 +886,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		// «reload already in progress, retry later» без указания, сколько нужно
 		// и сколько есть, — оператор не мог понять, вырастет ли окно вообще.
 		estimated, loaded, needed := p.contextGrowthNumbers(backendID, modelName, bodyBuf, requestPath)
-		// R299: числа берём из общего источника (growth_guard_r299.go), поэтому
+		// R299: числа берём из общего источника (growth_guard.go), поэтому
 		// activeStreams здесь — максимум из учёта по бэкенду и по модели, а не
 		// одно наблюдение, которое могло не увидеть стрим под расходящимся именем.
 		active, pending := growthBlockersR288(p, backendID, modelName)

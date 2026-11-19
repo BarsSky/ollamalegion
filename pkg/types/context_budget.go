@@ -1,9 +1,9 @@
-// context_budget.go — R502 (2026-11-19), аудит S4 (N-9): ОДИН бюджет ответа на
+﻿// context_budget.go — R502 (2026-11-19), аудит S4 (N-9): ОДИН бюджет ответа на
 // оба конца.
 //
 // ЖИВОЙ ДЕФЕКТ. «Влезает ли промпт» решали два разных числа:
 //
-//   - балансер (`internal/balancer/growth_request_need_r447.go`) считал, что под
+//   - балансер (`internal/balancer/growth_request_need.go`) считал, что под
 //     ответ достаточно места `256` токенов; если меньше — растим окно;
 //   - воркер (`cmd/cppworker/inference.go`) требует жёсткие `512`
 //     (`minNPredictClamp`): при `promptTokens + 512 + 1 > n_ctx` он отвечает

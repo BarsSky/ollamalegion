@@ -192,7 +192,7 @@ type Proxy struct {
 	rpcLinkMeasured map[string]rpcLinkMeasurement
 
 	// R118.7 (2026-10-14): запомненные отказы «окно физически недостижимо»
-	// (nctx_infeasible_r118.go): cppworker ответил 422 на перезагрузку окна.
+	// (nctx_infeasible.go): cppworker ответил 422 на перезагрузку окна.
 	// Пока запись жива, preflight не планирует перезагрузку выше потолка, а
 	// отвечает клиенту 413 с причиной. Ключ — backendID|model. Под p.mu.
 	nctxInfeasible map[string]nctxInfeasible

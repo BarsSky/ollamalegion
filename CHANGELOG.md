@@ -1,4 +1,45 @@
-﻿## [0.7.407 - R603: R5 — тема «обработка tool-call» в cppworker (16 файлов), 2026-11-19]
+﻿## [0.7.408 - R604: R5 — тема «окно контекста» в балансере (17 файлов), 2026-11-19]
+
+Шестой шаг R5. Тема — **окно контекста в `internal/balancer`**: 17 файлов
+(`nctx_*`, `window_*`, `growth_*`) с номером раунда в имени. Это одна предметная
+область — потолок окна, его рост и решение «обслужить как есть / перезагрузить»,
+поэтому она и взята одним коммитом.
+
+| Было | Стало |
+|---|---|
+| `nctx_ceiling_r267.go` | `nctx_ceiling_source.go` (источник потолка по профилю) |
+| `nctx_ceiling_r319.go` | `nctx_ceiling_cluster.go` (кластерный потолок) |
+| `nctx_declared_r255.go` | `nctx_declared.go` |
+| `nctx_growth_target_r493.go` | `nctx_growth_target.go` |
+| `nctx_infeasible_r118.go` | `nctx_infeasible.go` |
+| `window_align_r494.go` | `window_align.go` |
+| `window_decision_r493.go` | `window_decision.go` |
+| `window_decision_paths_r493.go` | `window_decision_paths.go` |
+| `window_estimate_cap_r466.go` | `window_estimate_cap.go` |
+| `window_feasible_r297.go` | `window_feasible.go` |
+| `window_serve_as_is_r447.go` | `window_serve_as_is.go` |
+| `window_truth_r294.go` | `window_truth.go` |
+| `growth_guard_r299.go` | `growth_guard.go` |
+| `growth_needed_rule_r330.go` | `growth_needed_rule.go` |
+| `growth_numbers_ctx_r447.go` | `growth_numbers_ctx.go` |
+| `growth_request_need_r447.go` | `growth_request_need.go` |
+| `growth_stream_guard_r301.go` | `growth_stream_guard.go` |
+
+**Два файла с одинаковым «смысловым» именем** (`nctx_ceiling_r267` и
+`nctx_ceiling_r319`) различил по ответственности, а не по номеру: `source` — откуда
+взят потолок (профиль/env/GGUF), `cluster` — кластерный потолок (`ClusterNCtxCeiling`).
+Иначе после снятия номера они бы столкнулись.
+
+**Числа (измеренные):** боевые `*.go` без `_test.go`: **212 → 195**;
+`scripts/structure_report.ps1`: **203 → 186**. Ссылки в комментариях обновлены с
+границей слова: 25 файлов, остаток старых токенов — **0**.
+
+**Проверено:** `go build -tags llama_stub ./...` = 0; `./internal/balancer` (174.2 s) —
+зелёные (включая golden-тесты окон и правила роста, которые эти файлы и держат).
+
+**Остаток R5:** 195 боевых файлов — `internal/balancer` (138) и `cmd/cppworker` (57),
+дальше по темам.
+## [0.7.407 - R603: R5 — тема «обработка tool-call» в cppworker (16 файлов), 2026-11-19]
 
 Пятый шаг R5. Тема — **обработка tool-call в `cmd/cppworker`**: 16 файлов с префиксами
 `tool_`/`tools_` и номером раунда. Имена даны по функции файла, а не по номеру.

@@ -1,4 +1,4 @@
-package i18n
+﻿package i18n
 
 // messages_balancer3 — R234 (2026-10-24): сообщения балансера, батч r234 #3.
 //
@@ -398,7 +398,7 @@ var messagesBalancer3 = map[string]map[Lang]string{
 			"unload another model on this backend, reduce the context/quant, or add a layout node [%s]",
 	},
 
-	// === nctx_infeasible_r118.go: потолок окна от cppworker =============
+	// === nctx_infeasible.go: потолок окна от cppworker =============
 	"balancer.nctx_infeasible.ceiling_remembered_warn": {
 		RU: "nctxInfeasible: перезагрузка окна отвергнута cppworker'ом — запомнил потолок",
 		EN: "nctxInfeasible: the window reload was rejected by the cppworker — the ceiling was recorded",

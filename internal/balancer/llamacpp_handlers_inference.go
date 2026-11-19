@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"bytes"
@@ -274,7 +274,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		meta.RequestID = RequestIDFromContext(r.Context())
 		if blocked, needed, loaded := lr.proxy.contextGrowthBlocker(backendID, model, meta); blocked {
 			// R299: в теле отказа — живые activeStreams и reloadPending (см.
-			// growth_guard_r299.go): «active streams=0» без reloadPending
+			// growth_guard.go): «active streams=0» без reloadPending
 			// читалось оператором как «никто не мешает».
 			active, pending := growthBlockersR288(lr.proxy, backendID, model)
 			writeContextGrowthDeferred(w, model, needed, loaded, active, pending)
@@ -1005,7 +1005,7 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		meta.RequestID = RequestIDFromContext(r.Context())
 		if blocked, needed, loaded := lr.proxy.contextGrowthBlocker(backendID, model, meta); blocked {
 			// R299: в теле отказа — живые activeStreams и reloadPending (см.
-			// growth_guard_r299.go): «active streams=0» без reloadPending
+			// growth_guard.go): «active streams=0» без reloadPending
 			// читалось оператором как «никто не мешает».
 			active, pending := growthBlockersR288(lr.proxy, backendID, model)
 			writeContextGrowthDeferred(w, model, needed, loaded, active, pending)
@@ -1197,7 +1197,7 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 		meta.RequestID = RequestIDFromContext(r.Context())
 		if blocked, needed, loaded := lr.proxy.contextGrowthBlocker(backendID, model, meta); blocked {
 			// R299: в теле отказа — живые activeStreams и reloadPending (см.
-			// growth_guard_r299.go): «active streams=0» без reloadPending
+			// growth_guard.go): «active streams=0» без reloadPending
 			// читалось оператором как «никто не мешает».
 			active, pending := growthBlockersR288(lr.proxy, backendID, model)
 			writeContextGrowthDeferred(w, model, needed, loaded, active, pending)

@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"bufio"
@@ -171,7 +171,7 @@ func (p *Proxy) nonStreamPreflight(w http.ResponseWriter, r *http.Request, backe
 	var preflightStatus int
 	var retryAfter int = 30 // Round 23 (2026-08-04): 5 → 30 (реальное время reload)
 	var preflightBody []byte
-	// R447: слот под числа вердикта R301/R385 (см. growth_numbers_ctx_r447.go).
+	// R447: слот под числа вердикта R301/R385 (см. growth_numbers_ctx.go).
 	preflightCtx, _ := growthNumbersSlotR447(r.Context())
 	if p.config != nil && p.config.Balancing.PreflightSyncEnabled {
 		preflightBody, preflightOK, preflightMsg, preflightStatus, retryAfter =
@@ -256,7 +256,7 @@ func (p *Proxy) nonStreamPreflight(w http.ResponseWriter, r *http.Request, backe
 	logger.Get().Infow("proxyRequestLlamaCppNonStream: preflight n_ctx reload, returning 503",
 		"backend", backendID, "model", modelFromCtx,
 		"msg", preflightMsg, "status", preflightStatus, "retry_after", retryAfter)
-	// R299 (2026-10-29): единое тело отказа (см. growth_guard_r299.go) вместо
+	// R299 (2026-10-29): единое тело отказа (см. growth_guard.go) вместо
 	// самописного `{"decision":"async_reload",...}`. Причина та же: клиент
 	// должен разбирать один формат, а не угадывать по строке.
 	w.Header().Set("X-NCtx-Reload-Decision", "async-reload")

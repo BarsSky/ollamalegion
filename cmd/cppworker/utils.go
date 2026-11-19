@@ -254,8 +254,13 @@ func writeCppWorkerErrorWithBridgeInfo(w http.ResponseWriter, status int, prefix
 		"n_predict":      info.NPredict,
 		"n_ctx_override": info.NCtxOverride,
 		"max_vram_n_ctx": info.MaxVRAMNCtx,
-		"message":        info.Message,
-		"known":          known,
+		// R593 (2026-11-19): справочная «тень» резерва VRAM. Решение по окну
+		// принимается по max_vram_n_ctx выше; эти два числа показывают, сколько
+		// осталось бы, если оставить буферам CPPWORKER_VRAM_OVERHEAD_MB.
+		"max_vram_n_ctx_reserved": info.MaxVRAMNCtxReserved,
+		"vram_reserve_mb":         info.MaxVRAMNCtxReserveMB,
+		"message":                 info.Message,
+		"known":                   known,
 	}
 	if !known {
 		// Числа НЕ измерены: ошибка пришла не из моста (или мост не успел

@@ -885,6 +885,19 @@ static BridgeErrorInfo g_last_error_info = {
 // Оценочный максимум n_ctx, доступный текущей VRAM. Заполняется из bridge_load_model,
 // читается bridge_check_ctx_capacity для поля max_vram_n_ctx. 0 = unknown.
 static int g_max_vram_n_ctx = 0;
+// R593 (2026-11-19): ВТОРОЕ число того же потолка — после вычета резерва под
+// compute-buffer/graph/фрагментацию (CPPWORKER_VRAM_OVERHEAD_MB, дефолт 2048).
+//
+// ЗАЧЕМ. Решение владельца (2026-11-19): резерв сначала ПОКАЗАТЬ, а не применять.
+// g_max_vram_n_ctx (выше) остаётся тем, что применялось и раньше — «вся свободная
+// VRAM / KV на токен»; это число — «сколько осталось бы, если оставить буферам
+// резерв». Живой факт, ради которого это появилось (27B/A10, 2026-11-19): мост
+// сообщил max_vram_n_ctx=251254, окно подняли до 201216, после загрузки свободно
+// 414 MB из 22 502, и декод промпта 33 812 токенов упал с `code 1` при измеренном
+// `CUDA0 compute buffer = 316.75 MiB`.
+static int g_max_vram_n_ctx_reserved = 0;
+// Резерв, который был вычтен при расчёте g_max_vram_n_ctx_reserved (MB).
+static int g_max_vram_n_ctx_reserve_mb = 0;
 // R83 §3.2 (2026-09-26): сколько слоёв РЕАЛЬНО ушло на GPU в последнем
 // bridge_load_model (= model_params.n_gpu_layers после возможного клампа
 // из-за VRAM). -1 = неизвестно (load ещё не выполнялся / CUDA отсутствует).
@@ -904,6 +917,13 @@ static void set_error_info(int code, const char* msg,
     g_last_error_info.n_predict = n_predict;
     g_last_error_info.n_ctx_override = n_ctx_override;
     g_last_error_info.max_vram_n_ctx = max_vram_n_ctx;
+    // R593: справочная пара (потолок с резервом и размер резерва) берётся из
+    // глобалов, которые заполняет bridge_load_model. Отдельным параметром её не
+    // передаём намеренно: у set_error_info шесть вызовов, и любой забытый аргумент
+    // молча обнулил бы числа в тексте отказа (этот класс уже стоил оператору
+    // «current_n_ctx=0» в ошибке — см. formatBridgeNumbers в bridge.go).
+    g_last_error_info.max_vram_n_ctx_reserved = g_max_vram_n_ctx_reserved;
+    g_last_error_info.max_vram_n_ctx_reserve_mb = g_max_vram_n_ctx_reserve_mb;
     if (msg != NULL) {
         strncpy(g_last_error_info.message, msg, sizeof(g_last_error_info.message) - 1);
         g_last_error_info.message[sizeof(g_last_error_info.message) - 1] = '\0';
@@ -2078,9 +2098,28 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
             // случаев (e.g. модель 1B на H100 80GB).
             if (estimated_max > 8388608) estimated_max = 8388608;
 
+            // R593: ВТОРОЕ число — тот же потолок, но с резервом под
+            // compute-buffer/graph/фрагментацию. Резерв читается из того же
+            // CPPWORKER_VRAM_OVERHEAD_MB, что и Go-сторона (дефолт 2048 MB):
+            // одно число, один источник, один смысл. Решение по окну это НЕ
+            // меняет (решение владельца 2026-11-19: сначала «тень»), число нужно
+            // оператору и в тексте ошибки, чтобы было видно, из-за чего декод
+            // упёрся в память.
+            int reserve_mb = kv_budget_reserve_mb(getenv("CPPWORKER_VRAM_OVERHEAD_MB"));
+            long long reserve_bytes = (long long)reserve_mb * 1024LL * 1024LL;
+            int estimated_max_reserved = 0;
+            if (kv_per_token > 0) {
+                estimated_max_reserved = (int)kv_budget_max_n_ctx_reserved(free_for_kv, reserve_bytes, kv_per_token);
+            }
+            if (estimated_max_reserved > 8388608) estimated_max_reserved = 8388608;
+
             err_mutex_lock();
             g_max_vram_n_ctx = estimated_max;
             g_last_error_info.max_vram_n_ctx = estimated_max;
+            g_max_vram_n_ctx_reserved = estimated_max_reserved;
+            g_last_error_info.max_vram_n_ctx_reserved = estimated_max_reserved;
+            g_max_vram_n_ctx_reserve_mb = reserve_mb;
+            g_last_error_info.max_vram_n_ctx_reserve_mb = reserve_mb;
             err_mutex_unlock();
 
             // R115 (2026-10-13): условия с rpc_endpoints_len убраны вместе с
@@ -2138,6 +2177,11 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
                    kv_budget_type_name(kv_type_k), kv_budget_type_name(kv_type_v),
                    (long long)kv_per_token,
                    ctx_params.n_ctx);
+            // R593: оба потолка рядом, чтобы разницу можно было прочитать в логе
+            // без калькулятора. Решение НЕ меняется — печатаем справочное число.
+            printf("[bridge] R593: max n_ctx с резервом VRAM = %d "
+                   "(резерв=%d MB, без резерва=%d)\n",
+                   estimated_max_reserved, reserve_mb, estimated_max);
         } else {
             printf("[bridge] cuMemGetInfo failed — cannot estimate VRAM-based n_ctx\n");
         }

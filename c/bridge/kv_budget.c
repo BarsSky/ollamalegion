@@ -76,3 +76,70 @@ const char *kv_budget_type_name(kv_budget_type type) {
             return "f16";
     }
 }
+
+// kv_budget_default_reserve_mb — дефолт резерва VRAM. Обязан совпадать с
+// defaultVRAMOverheadMB в internal/cppbackend/kv_cache_type.go (2048).
+#define KV_BUDGET_DEFAULT_RESERVE_MB 2048
+
+int kv_budget_reserve_mb(const char* env_value) {
+    if (env_value == 0) {
+        return KV_BUDGET_DEFAULT_RESERVE_MB;
+    }
+    // Пробелы и пустая строка — «не задано»: как у Go (strings.TrimSpace + "").
+    const char* p = env_value;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+        p++;
+    }
+    if (*p == '\0') {
+        return KV_BUDGET_DEFAULT_RESERVE_MB;
+    }
+    // Знак разбираем явно: strtol вернул бы отрицательное, а по контракту
+    // отрицательное = «мусор» → дефолт (в Go: `err != nil || n < 0`).
+    int negative = 0;
+    if (*p == '+' || *p == '-') {
+        negative = (*p == '-');
+        p++;
+    }
+    long value = 0;
+    int digits = 0;
+    while (*p >= '0' && *p <= '9') {
+        if (value > 100000000L) { // защита от переполнения: такое значение всё равно мусор
+            return KV_BUDGET_DEFAULT_RESERVE_MB;
+        }
+        value = value * 10 + (long)(*p - '0');
+        digits++;
+        p++;
+    }
+    if (digits == 0) {
+        return KV_BUDGET_DEFAULT_RESERVE_MB; // не число
+    }
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+        p++;
+    }
+    if (*p != '\0') {
+        return KV_BUDGET_DEFAULT_RESERVE_MB; // хвост после числа — мусор
+    }
+    if (negative) {
+        return KV_BUDGET_DEFAULT_RESERVE_MB;
+    }
+    if (value > (long)(2147483647)) {
+        return KV_BUDGET_DEFAULT_RESERVE_MB;
+    }
+    return (int)value;
+}
+
+long long kv_budget_max_n_ctx_reserved(long long free_bytes, long long reserve_bytes,
+                                       long long kv_per_token) {
+    if (kv_per_token <= 0 || free_bytes <= 0) {
+        return 0;
+    }
+    if (reserve_bytes < 0) {
+        reserve_bytes = 0;
+    }
+    if (reserve_bytes >= free_bytes) {
+        // Резерв съел всю свободную VRAM: места под KV нет вообще. Ноль, а не
+        // отрицательное число — «не влезает» не должно мимикрировать под «влезает».
+        return 0;
+    }
+    return (free_bytes - reserve_bytes) / kv_per_token;
+}

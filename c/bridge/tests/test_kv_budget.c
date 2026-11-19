@@ -112,6 +112,37 @@ int main(void) {
     check_ll(kv_budget_max_n_ctx(-4096, 147456), 0, "отрицательная свободная VRAM → потолок 0");
     check_ull(kv_budget_row_bytes(0, 128, KV_BUDGET_TYPE_F16), 0, "row_bytes при 0 голов = 0");
 
+    // ---- 8) R593: резерв VRAM и потолок с резервом ------------------------
+    // Правила разбора CPPWORKER_VRAM_OVERHEAD_MB обязаны совпадать с Go
+    // (internal/cppbackend/kv_cache_type.go: vramOverheadMBConfig): иначе «одно
+    // число» снова начнёт означать разное на двух сторонах моста.
+    check_ll(kv_budget_reserve_mb(0), 2048, "резерв: переменная не задана → дефолт 2048 MB");
+    check_ll(kv_budget_reserve_mb(""), 2048, "резерв: пустая строка → дефолт 2048 MB");
+    check_ll(kv_budget_reserve_mb("   "), 2048, "резерв: пробелы → дефолт 2048 MB");
+    check_ll(kv_budget_reserve_mb("512"), 512, "резерв: 512 → 512 MB");
+    check_ll(kv_budget_reserve_mb("0"), 0, "резерв: 0 → 0 MB (оператор осознанно отключил)");
+    check_ll(kv_budget_reserve_mb(" 1024 "), 1024, "резерв: пробелы вокруг числа не мешают");
+    check_ll(kv_budget_reserve_mb("-512"), 2048, "резерв: отрицательное → дефолт (мусор)");
+    check_ll(kv_budget_reserve_mb("abc"), 2048, "резерв: не число → дефолт");
+    check_ll(kv_budget_reserve_mb("512mb"), 2048, "резерв: хвост после числа → дефолт");
+
+    // Живой 27B/A10: kv_per_token=14480 B, свободно 251254*14480 B, резерв 2048 MiB.
+    // Потолок с резервом обязан быть меньше безрезервного ровно на резерв/KV.
+    long long free_bytes_27b = 251254LL * 14480LL;
+    long long reserved_27b = kv_budget_max_n_ctx_reserved(free_bytes_27b, 2048LL * 1024 * 1024, 14480);
+    check_ll(reserved_27b, (free_bytes_27b - 2048LL * 1024 * 1024) / 14480,
+             "27B q8_0: потолок с резервом 2048 MB меньше безрезервного на резерв/KV");
+    check_ll(kv_budget_max_n_ctx_reserved(free_bytes_27b, 2048LL * 1024 * 1024, 14480) <
+                 kv_budget_max_n_ctx(free_bytes_27b, 14480) ? 1 : 0, 1,
+             "27B q8_0: «с резервом» строго меньше «без резерва» (живой факт 2026-11-19)");
+    check_ll(kv_budget_max_n_ctx_reserved(free_bytes_27b, 0, 14480),
+             kv_budget_max_n_ctx(free_bytes_27b, 14480),
+             "резерв 0 → оба потолка совпадают (второй формулы нет)");
+    check_ll(kv_budget_max_n_ctx_reserved(1024LL * 1024 * 1024, 4096LL * 1024 * 1024, 14480), 0,
+             "резерв больше свободной VRAM → 0, а не отрицательное число");
+    check_ll(kv_budget_max_n_ctx_reserved(-100, 1024, 14480), 0,
+             "отрицательная свободная VRAM → 0");
+
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

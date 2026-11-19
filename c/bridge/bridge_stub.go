@@ -276,7 +276,11 @@ type BridgeErrorInfo struct {
 	NPredict     int
 	NCtxOverride int
 	MaxVRAMNCtx  int
-	Message      string
+	// R593: справочный потолок с резервом VRAM и размер резерва (заглушка моста;
+	// в stub-сборке VRAM не измеряется, поэтому поля остаются нулевыми).
+	MaxVRAMNCtxReserved  int
+	MaxVRAMNCtxReserveMB int
+	Message              string
 }
 
 // GetLastErrorInfo — stub-реализация. Всегда возвращает OK (stub не падает).

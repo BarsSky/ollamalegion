@@ -305,6 +305,12 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 	var data struct {
 		Count       int `json:"count"`
 		MaxVRAMNCtx int `json:"max_vram_n_ctx"`
+		// R593 (2026-11-19): «тень» резерва VRAM из /api/models — потолок окна с
+		// резервом под compute-buffer и размер резерва. Решения по окну НЕ меняют
+		// (решение владельца: сначала показать), нужны карточке бэкенда в WebUI,
+		// чтобы оператор видел, почему декод упёрся в память.
+		MaxVRAMNCtxUnreserved int `json:"max_vram_n_ctx_unreserved"`
+		VRAMReserveMB         int `json:"vram_reserve_mb"`
 		// R83 §9.2 (2026-09-26): cppworker сообщает, известна ли ему VRAM.
 		// Вместе с max_vram_n_ctx==0 это означает «веса не влезают», а не
 		// «метрик нет» — см. DecidePreflight.
@@ -602,6 +608,9 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 	}
 	lm.LoadedModels = loadedModels
 	lm.MaxVRAMNCtx = data.MaxVRAMNCtx
+	// R593: «тень» резерва VRAM — справочные числа для карточки бэкенда.
+	lm.MaxVRAMNCtxUnreserved = data.MaxVRAMNCtxUnreserved
+	lm.VRAMReserveMB = data.VRAMReserveMB
 	lm.VramKnown = data.VramKnown
 	lm.ModelMaxContext = data.ModelMaxContext
 	// Round 37 (2026-08-18): per-model feasible/GGUF для 3-tier resolution.

@@ -84,6 +84,13 @@ type LlamaCppMetrics struct {
 	// 0 = неизвестно (poller ещё не опросил бэкенд) ИЛИ веса не влезают —
 	// различает VramKnown (R83 §9.2).
 	MaxVRAMNCtx int `json:"maxVramNCtx"`
+	// R593 (2026-11-19): «тень» резерва VRAM — потолок окна БЕЗ резерва под
+	// compute-buffer (так его считает C-мост) и размер резерва, вычтенного из
+	// MaxVRAMNCtx. Решения принимаются по MaxVRAMNCtx; эти числа нужны оператору:
+	// на 27B/A10 (2026-11-19) окно 201216 при безрезервном потолке 251254 оставило
+	// 414 MB свободной VRAM из 22 502, и декод упал с `code 1`.
+	MaxVRAMNCtxUnreserved int `json:"maxVramNCtxUnreserved"`
+	VRAMReserveMB         int `json:"vramReserveMB"`
 	// VramKnown — cppworker сообщил, что VRAM ему известна (top-level
 	// `vram_known` в /api/models, R83). Вместе с MaxVRAMNCtx==0 означает «веса
 	// модели не помещаются в VRAM ни при каком gpu_layers»: reload бессмыслен, и

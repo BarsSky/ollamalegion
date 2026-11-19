@@ -57,7 +57,12 @@ func TestR493_BridgeInfoMarksUnknownInsteadOfZeros(t *testing.T) {
 	}
 	// Совместимость: ключи с числами остаются (их читает разбор на стороне
 	// балансера), но сопровождаются признаком достоверности.
-	for _, key := range []string{"current_n_ctx", "required_n_ctx", "max_vram_n_ctx"} {
+	// R593 (2026-11-19): рядом с max_vram_n_ctx добавлена справочная «тень» —
+	// потолок с резервом VRAM и размер резерва. Поля обязаны быть в ответе ВСЕГДА
+	// (нулями, если не измерены), иначе оператор снова увидит одно число и не
+	// поймёт, почему декод упёрся в память.
+	for _, key := range []string{"current_n_ctx", "required_n_ctx", "max_vram_n_ctx",
+		"max_vram_n_ctx_reserved", "vram_reserve_mb"} {
 		if _, ok := bi[key]; !ok {
 			t.Fatalf("поле %q пропало — сломается разбор на стороне балансера", key)
 		}

@@ -341,7 +341,11 @@ type BridgeErrorInfo struct {
 	NPredict     int    // запрошенное число генерируемых токенов
 	NCtxOverride int    // значение n_ctx_override из params (0 если не задан)
 	MaxVRAMNCtx  int    // оценочный максимум n_ctx для текущей VRAM (0 если неизвестно)
-	Message      string // человекочитаемое описание ошибки
+	// R593 (2026-11-19): справочная «тень» — потолок с резервом под compute-buffer
+	// и размер этого резерва. Решение принимается по MaxVRAMNCtx (выше).
+	MaxVRAMNCtxReserved  int
+	MaxVRAMNCtxReserveMB int
+	Message              string // человекочитаемое описание ошибки
 }
 
 // formatBridgeNumbers — числовой хвост ошибки моста: ТОЛЬКО измеренные значения.
@@ -379,6 +383,16 @@ func formatBridgeNumbers(info *BridgeErrorInfo) string {
 	if info.MaxVRAMNCtx > 0 {
 		parts = append(parts, fmt.Sprintf("max_vram_n_ctx=%d", info.MaxVRAMNCtx))
 	}
+	// R593: справочный потолок печатается рядом с применяемым и ТОЛЬКО если измерен.
+	// Оператор должен видеть оба числа в самом тексте отказа, а не искать их в
+	// отдельном запросе: на 27B/A10 окно 201216 при безрезервном потолке 251254
+	// съело всю карту (414 MB свободно) и декод упал с `code 1`.
+	if info.MaxVRAMNCtxReserved > 0 {
+		parts = append(parts, fmt.Sprintf("max_vram_n_ctx_reserved=%d", info.MaxVRAMNCtxReserved))
+		if info.MaxVRAMNCtxReserveMB > 0 {
+			parts = append(parts, fmt.Sprintf("vram_reserve_mb=%d", info.MaxVRAMNCtxReserveMB))
+		}
+	}
 	if len(parts) == 0 {
 		return " (числа не измерены: ошибка не про окно; см. лог cppworker и /api/models)"
 	}
@@ -404,7 +418,10 @@ func GetLastErrorInfo() *BridgeErrorInfo {
 		NPredict:     int(cInfo.n_predict),
 		NCtxOverride: int(cInfo.n_ctx_override),
 		MaxVRAMNCtx:  int(cInfo.max_vram_n_ctx),
-		Message:      C.GoString(&cInfo.message[0]),
+		// R593: справочная «тень» резерва VRAM (решение принимается по полю выше).
+		MaxVRAMNCtxReserved:  int(cInfo.max_vram_n_ctx_reserved),
+		MaxVRAMNCtxReserveMB: int(cInfo.max_vram_n_ctx_reserve_mb),
+		Message:              C.GoString(&cInfo.message[0]),
 	}
 }
 

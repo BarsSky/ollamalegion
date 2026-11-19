@@ -1770,29 +1770,15 @@
                                 <span data-i18n="settings.section.agent">Настройки агентов</span>
                             </div>
                             <div class="settings-section-body open">
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label data-i18n="settings.agent.collect_interval">Collect Interval (сек)</label>
-                                        <input type="number" id="agentCollectInterval" class="form-control" value="15" min="1" max="300">
-                                    </div>
-                                    <div class="form-group">
-                                        <label data-i18n="settings.agent.heartbeat_interval">Heartbeat Interval (сек)</label>
-                                        <input type="number" id="agentHeartbeatInterval" class="form-control" value="30" min="5" max="600">
-                                    </div>
-                                </div>
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label data-i18n="settings.agent.max_concurrent">Max Concurrent Requests</label>
-                                        <input type="number" id="agentMaxConcurrent" class="form-control" value="10" min="1" max="100">
-                                    </div>
-                                    <div class="form-group">
-                                        <label data-i18n="settings.agent.max_models">Max Models</label>
-                                        <input type="number" id="agentMaxModels" class="form-control" value="5" min="1" max="50">
-                                    </div>
-                                </div>
-                                <!-- R106c (2026-10-12): поле «Agent Timeout» убрано —
-                                     состояние агента видно по heartbeat/метрикам, а не
-                                     по таймеру. -->
+                                <!-- R544 (F10/W6, §1.9 плана 2026-11-19-webui-and-balancer-fixes
+                                     и §4.8 аудита §S-2): четыре поля (collect/heartbeat/
+                                     maxConcurrent/maxModels) были ИНЕРТНЫМИ — saveSettings их не
+                                     читает, блок `agent` убран из payload, сервер не отдаёт agent
+                                     в GET, поэтому любое значение исчезало при первом обновлении
+                                     страницы. Параметры задаются в конфиге агента НА УЗЛЕ
+                                     (COLLECT_INTERVAL / HEARTBEAT_INTERVAL), поэтому вместо полей —
+                                     честный факт, а не редактируемая пустота. -->
+                                <p class="form-hint" data-i18n="settings.agent.managed_note">Параметры агентов задаются в их конфиге на узле (COLLECT_INTERVAL / HEARTBEAT_INTERVAL / MAX_CONCURRENT) — балансер их не хранит и не меняет.</p>
                             </div>
                         </div>
 
@@ -2281,10 +2267,14 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                 <span data-i18n="settings.section.security">Безопасность</span>
                             </div>
                             <div class="settings-section-body open">
-                                <div class="form-group">
-                                    <label data-i18n="settings.api_token">API Токен</label>
-                                    <input type="password" id="apiToken" class="form-control" placeholder="••••••••">
-                                </div>
+                                <!-- R544 (F10/W6): поле «API Токен» было ИНЕРТНЫМ и всегда
+                                     ПУСТЫМ. saveSettings его не читает и не отправляет
+                                     (app.js:1684 — сервер не принимает поле в PUT), сервер не
+                                     отдаёт apiToken в обычном GET (только в файле экспорта),
+                                     поэтому оператор видел пустое поле и считал, что токен можно
+                                     поменять здесь. Токен задаётся на сервере (API_TOKEN →
+                                     WEBUI_CONFIG), поэтому вместо поля — источник факта. -->
+                                <p class="form-hint" data-i18n="settings.security.token_source_note">Токен доступа задаётся на сервере (переменная API_TOKEN) и подставляется в WebUI при его отдаче — из браузера он не меняется: смена на лету отключила бы текущего оператора.</p>
                             </div>
                         </div>
 

@@ -64,14 +64,11 @@
             cpuMaxUsage: parseIntField('cpuMaxUsage', 80),
             ramMaxUsage: parseIntField('ramMaxUsage', 85),
             minFreeDisk: parseIntField('minFreeDisk', 10240),
-            apiToken: getFieldValue('apiToken', ''),
-            agent: {
-                collectInterval: parseIntField('agentCollectInterval', 15),
-                heartbeatInterval: parseIntField('agentHeartbeatInterval', 30),
-                maxConcurrentRequests: parseIntField('agentMaxConcurrent', 10),
-                maxModels: parseIntField('agentMaxModels', 5),
-                timeout: parseIntField('agentTimeout', 10)
-            },
+            // R544 (F10/W6): `apiToken` и блок `agent` из экспорта УБРАНЫ.
+            // В UI этих полей больше нет (инертными были и они, и поля формы):
+            // токен задаётся сервером через API_TOKEN, параметры агента — в его
+            // конфиге на узле. Экспорт файла их не содержал по-настоящему:
+            // getFieldValue возвращал пустую строку, а parseIntField — дефолт.
             backendLimits: collectBackendLimitsFromTable()
         };
     }
@@ -344,16 +341,10 @@
             setFieldValue('cpuMaxUsage', s.cpuMaxUsage);
             setFieldValue('ramMaxUsage', s.ramMaxUsage);
             setFieldValue('minFreeDisk', s.minFreeDisk);
-            setFieldValue('apiToken', s.apiToken);
-
-            // Agent settings
-            if (s.agent) {
-                setFieldValue('agentCollectInterval', s.agent.collectInterval);
-                setFieldValue('agentHeartbeatInterval', s.agent.heartbeatInterval);
-                setFieldValue('agentMaxConcurrent', s.agent.maxConcurrentRequests);
-                setFieldValue('agentMaxModels', s.agent.maxModels);
-                setFieldValue('agentTimeout', s.agent.timeout);
-            }
+            // R544 (F10/W6): apiToken и agent больше не применяются на форму —
+            // таких полей в разметке нет (см. index.html section-security /
+            // section-agent). Старые файлы экспорта с этими секциями читаются
+            // без ошибки: лишние поля просто игнорируются.
 
             // Apply backend limits
             if (s.backendLimits) {

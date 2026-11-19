@@ -322,7 +322,8 @@ window.I18N_RU = {
   "settings.session_timeout": "Таймаут сессии (сек)",
   "settings.health_interval": "Интервал проверки здоровья (сек)",
   "settings.queue_max_size": "Максимальный размер очереди",
-  "settings.api_token": "API Токен",
+  // R544 (F10/W6): «settings.api_token» удалён — поля в UI нет, токен задаётся
+  // сервером (API_TOKEN → WEBUI_CONFIG). Ключ жил только для пустого input.
   "settings.enable_auth": "Включить аутентификацию",
   "settings.enable_rate_limit": "Включить ограничение запросов",
   "settings.rate_limit_rps": "Лимит запросов/сек",
@@ -564,6 +565,9 @@ window.I18N_RU = {
     "settings.selection_hint": "Переключателя нет: алгоритм один. Поле algorithm и переменная LB_ALGORITHM удалены; план будущей реализации порядка выбора — docs/plans/2026-11-17-selection-order-plan.md",    "settings.section.general": "Основные настройки",
   "settings.section.limits": "Лимиты ресурсов",
   "settings.section.security": "Безопасность",
+  // R544 (F10/W6): вместо пустого поля «API Токен» — источник факта (R65d: сервер
+  // не принимает токен в PUT, а в GET его не отдаёт).
+  "settings.security.token_source_note": "Токен доступа задаётся на сервере (переменная API_TOKEN) и подставляется в WebUI при его отдаче — из браузера он не меняется: смена на лету отключила бы текущего оператора.",
     "settings.section.log_language": "Язык логов и ошибок",
   "settings.log_language.desc": "Язык логов и сообщений об ошибках у балансера, cppworker и агента. Английский интерфейс не влияет на логи: это отдельная настройка стенда. Переключение действует без перезапуска контейнеров — воркеры подтягивают язык с балансера.",
   "settings.log_language.label": "Язык",
@@ -686,10 +690,10 @@ window.I18N_RU = {
   "settings.save_backend_limits": "Сохранить лимиты бэкендов",
 
   // Agent Settings
-  "settings.agent.collect_interval": "Интервал сбора (сек)",
-  "settings.agent.heartbeat_interval": "Интервал heartbeat (сек)",
-  "settings.agent.max_concurrent": "Макс. параллельных запросов",
-  "settings.agent.max_models": "Макс. моделей",
+  // R544 (F10/W6): четыре поля агента были инертными (значения не сохранялись,
+  // сервер их не отдавал). Вместо полей — одна строка факта: параметры задаются
+  // в конфиге агента на узле.
+  "settings.agent.managed_note": "Параметры агентов задаются в их конфиге на узле (COLLECT_INTERVAL / HEARTBEAT_INTERVAL / MAX_CONCURRENT) — балансер их не хранит и не меняет.",
   "settings.agent.timeout": "Таймаут агента (сек)",
 
   // Monitor

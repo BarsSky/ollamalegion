@@ -387,8 +387,10 @@
             '<div class="form-group"><label>' + t_label('wizard.ram_max_label', 'RAM Max %', 'wizard.tooltip.ram_max', 'Max RAM% (cppworker uses RAM for mmap).') + '</label>' +
             '<input type="number" id="wiz-ramMaxUsage" class="form-control" value="' + sc.ramMaxUsage + '" min="50" max="100"></div>' +
             '</div>' +
-            '<div class="form-group"><label>' + t_label('wizard.api_token_label', 'API Token', 'wizard.tooltip.api_token', 'Auth token (must match API_TOKEN env).') + '</label>' +
-            '<input type="password" id="wiz-apiToken" class="form-control" placeholder="API Token"></div>' +
+            // R544 (F10/W6): поле «API Token» мастера УБРАНО. Оно было инертным:
+            // buildWizardPayload его не читал, сервер поле не принимает, а токен
+            // подставляется в WEBUI_CONFIG при отдаче страницы. Пустое поле
+            // «пароль» создавало впечатление, что токен можно задать здесь.
             '</div>';
     }
 

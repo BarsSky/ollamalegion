@@ -335,7 +335,8 @@ window.I18N_EN = {
   "settings.session_timeout": "Session Timeout (sec)",
   "settings.health_interval": "Health Check Interval (sec)",
   "settings.queue_max_size": "Max Queue Size",
-  "settings.api_token": "API Token",
+  // R544 (F10/W6): "settings.api_token" removed — the field is gone; the token is
+  // provided by the server (API_TOKEN → WEBUI_CONFIG).
   "settings.enable_auth": "Enable Authentication",
   "settings.enable_rate_limit": "Enable Rate Limiting",
   "settings.rate_limit_rps": "Rate Limit (req/sec)",
@@ -1306,6 +1307,8 @@ window.I18N_EN = {
   "settings.section.limits": "Resource Limits",
   "settings.section.agent": "Agent Settings",
   "settings.section.security": "Security",
+  // R544 (F10/W6): the empty "API Token" field is replaced by the source of fact.
+  "settings.security.token_source_note": "The access token is set on the server (API_TOKEN environment variable) and injected into the WebUI when it is served — the browser cannot change it: switching it live would lock out the current operator.",
     "settings.section.log_language": "Log and error language",
   "settings.log_language.desc": "Language of logs and error messages in the balancer, cppworker and agent. The interface language does not affect logs: this is a separate cluster setting. Switching applies without restarting containers - workers pick the language up from the balancer.",
   "settings.log_language.label": "Language",
@@ -1423,10 +1426,9 @@ window.I18N_EN = {
   "settings.save_backend_limits": "Save Backend Limits",
 
   // Agent Settings
-  "settings.agent.collect_interval": "Collect Interval (sec)",
-  "settings.agent.heartbeat_interval": "Heartbeat Interval (sec)",
-  "settings.agent.max_concurrent": "Max Concurrent Requests",
-  "settings.agent.max_models": "Max Models",
+  // R544 (F10/W6): the four agent inputs were inert (values never saved, never
+  // returned by the server). A single fact line replaces them.
+  "settings.agent.managed_note": "Agent parameters are set in the agent's own config on the node (COLLECT_INTERVAL / HEARTBEAT_INTERVAL / MAX_CONCURRENT) — the balancer neither stores nor changes them.",
   "settings.agent.timeout": "Agent Timeout (sec)",
 
   // ===== Renderers (additions for P3) =====

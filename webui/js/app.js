@@ -830,7 +830,7 @@ const ui = (function () {
         });
 
         // Auto-save on settings form changes
-        var settingsFields = ['useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'virtualModelsCoordMode', 'distInferenceGrpcPort', 'agentCollectInterval', 'agentHeartbeatInterval', 'agentMaxConcurrent', 'agentMaxModels', 'gpuLayers', 'ctxSize', 'batchSize', 'flashAttnType', 'nThreads', 'gpuStrategy', 'tensorSplit', 'splitMode', 'mainGpu', 'rpcBackend', 'noMemoryMap', 'kvCacheType', 'noKvOffload', 'ropeFreqBase', 'ropeFreqScale', 'ropeScalingType', 'ropeScalingFactor', 'yarnExtFactor', 'yarnAttnFactor', 'yarnBetaFast', 'yarnBetaSlow', 'rmsNormEps', 'idleUnloadMinutes', 'enableMetrics', 'metricsRetention', 'autoGpuDistribution', 'flashAttn', 'numa', 'useMmap', 'useMlock', 'enableReasoning', 'reasoningBudget'];
+        var settingsFields = ['useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'virtualModelsCoordMode', 'distInferenceGrpcPort', 'gpuLayers', 'ctxSize', 'batchSize', 'flashAttnType', 'nThreads', 'gpuStrategy', 'tensorSplit', 'splitMode', 'mainGpu', 'rpcBackend', 'noMemoryMap', 'kvCacheType', 'noKvOffload', 'ropeFreqBase', 'ropeFreqScale', 'ropeScalingType', 'ropeScalingFactor', 'yarnExtFactor', 'yarnAttnFactor', 'yarnBetaFast', 'yarnBetaSlow', 'rmsNormEps', 'idleUnloadMinutes', 'enableMetrics', 'metricsRetention', 'autoGpuDistribution', 'flashAttn', 'numa', 'useMmap', 'useMlock', 'enableReasoning', 'reasoningBudget'];
         settingsFields.forEach(function (id) {
             var el = document.getElementById(id);
             if (el) {
@@ -1406,8 +1406,10 @@ const ui = (function () {
         if (ramEl && serverConfig.ramMaxUsage) ramEl.value = serverConfig.ramMaxUsage;
         var diskEl = document.getElementById('minFreeDisk');
         if (diskEl && serverConfig.minFreeDisk) diskEl.value = serverConfig.minFreeDisk;
-        var tokenEl = document.getElementById('apiToken');
-        if (tokenEl && serverConfig.apiToken) tokenEl.value = serverConfig.apiToken;
+        // R544 (F10/W6): поля #apiToken в разметке больше нет — оно было инертным
+        // (сервер не отдаёт apiToken в обычном GET и не принимает в PUT). Токен
+        // подставляется сервером в WEBUI_CONFIG.API_TOKEN, см. index.html
+        // «section-security».
 
         // Backend Engine — серверный конфиг как fallback.
         // Приоритет: localStorage (выбор пользователя) > серверный config.
@@ -1641,8 +1643,10 @@ const ui = (function () {
         if (ramEl && config.ramMaxUsage) ramEl.value = config.ramMaxUsage;
         var diskEl = document.getElementById('minFreeDisk');
         if (diskEl && config.minFreeDisk) diskEl.value = config.minFreeDisk;
-        var tokenEl = document.getElementById('apiToken');
-        if (tokenEl && config.apiToken) tokenEl.value = config.apiToken;
+        // R544 (F10/W6): #apiToken и четырёх полей агента в разметке больше нет
+        // (см. index.html section-security / section-agent). Заполнять их было
+        // нечем и незачем: saveSettings эти значения не читал, а сервер их не
+        // отдавал — поля выглядели настройкой, которой не существует.
 
         // Operating Mode
         if (config.operatingMode) {
@@ -1656,19 +1660,10 @@ const ui = (function () {
             }
         }
 
-        if (config.agent) {
-            var ag = config.agent;
-            var agentCollEl = document.getElementById('agentCollectInterval');
-            if (agentCollEl && ag.collectInterval) agentCollEl.value = ag.collectInterval;
-            var agentHbEl = document.getElementById('agentHeartbeatInterval');
-            if (agentHbEl && ag.heartbeatInterval) agentHbEl.value = ag.heartbeatInterval;
-            var agentMcEl = document.getElementById('agentMaxConcurrent');
-            if (agentMcEl && ag.maxConcurrentRequests) agentMcEl.value = ag.maxConcurrentRequests;
-            var agentMmEl = document.getElementById('agentMaxModels');
-            if (agentMmEl && ag.maxModels) agentMmEl.value = ag.maxModels;
-            // R106c (2026-10-12): поле agentTimeout убрано из формы —
-            // состояние агента видно по heartbeat/метрикам, а не по таймеру.
-        }
+        // R544 (F10/W6): блок `if (config.agent)` с заполнением четырёх полей
+        // агента удалён вместе с самими полями (§4.8 аудита §S-2: значения не
+        // сохранялись, сервер их не отдавал — поля были декорацией). R106c ранее
+        // так же сняло «Agent Timeout».
     }
 
     function saveSettings(silent) {

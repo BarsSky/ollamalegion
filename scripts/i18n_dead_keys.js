@@ -93,12 +93,39 @@ function collectFromSource(src, rel) {
     }
 }
 
+
+// --- ДОПОЛНИТЕЛЬНОЕ ПРАВИЛО (R574): любая строка, РАВНАЯ ключу словаря ----------
+//
+// ЗАЧЕМ. Первая версия искала конкретные шаблоны вызова и потому зависела от формы:
+// обёртка, объявленная в другом файле, объект-обёртка (`{t: I18N.t}`), локальная
+// копия словаря — всё это давало ложные «мёртвые». Для РЕШЕНИЯ ОБ УДАЛЕНИИ ошибка в
+// эту сторону опасна (удалим живой перевод), поэтому правило переворачивается:
+// ключ считается использованным, если его ТОЧНАЯ строка встречается в любом боевом
+// JS/HTML. Переоценка здесь допустима: она оставляет ключ живым, а не убивает живой.
+function markLiteralUses(allText) {
+    for (const k of ruKeys) {
+        if (used.has(k)) continue;
+        if (allText.indexOf("'" + k + "'") !== -1 || allText.indexOf('"' + k + '"') !== -1) {
+            used.add(k);
+        }
+    }
+}
 const htmlFiles = walk(WEBUI, [], (n) => n.endsWith('.html'));
 const jsFiles = walk(path.join(WEBUI, 'js'), [], (n) => n.endsWith('.js') && !n.endsWith('.test.js'));
 
 for (const f of htmlFiles.concat(jsFiles)) {
     collectFromSource(fs.readFileSync(f, 'utf8'), path.relative(ROOT, f).replace(/\\/g, '/'));
 }
+
+// R574: любая строка, равная ключу, считается использованием (см. markLiteralUses).
+let allText = '';
+// ВАЖНО (найдено на живом прогоне): словари ИСКЛЮЧЕНЫ. Иначе каждый ключ
+// "находится" в самом файле словаря и правило считает живым всё.
+for (const f of htmlFiles.concat(jsFiles)) {
+    if (path.relative(WEBUI, f).split(path.sep).indexOf("i18n") !== -1) continue;
+    allText += fs.readFileSync(f, 'utf8') + '\\n';
+}
+markLiteralUses(allText);
 
 // Ключ, начинающийся с зафиксированного динамического префикса, считаем используемым.
 const prefixes = [...new Set(dynamicHints.map((h) => h.prefix))];

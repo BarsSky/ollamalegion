@@ -67,6 +67,12 @@ Example configuration file [`config.example.json`](../../config/config.example.j
     "queueTimeout": 300,
     "queueMaxSize": 100
   },
+  // R551 (T-12 аудита): requestTimeout / firstByteTimeout / streamingIdleTimeout
+  // НЕ задают таймауты — доктрина R83 делает таймаут осознанным opt-in.
+  // Работают: LB_STREAMING_NEVER_TIMEOUT, LB_STREAMING_TIMEOUT_SEC,
+  // LB_STREAMING_IDLE_TIMEOUT_SEC, LB_FIRST_BYTE_TIMEOUT_SEC, LB_REQUEST_TIMEOUT_SEC
+  // и per-model профиль (при LB_ALLOW_PROFILE_TIMEOUTS=1). Граница первого байта
+  // по умолчанию — ОЦЕНКА по размеру модели (R498/R523), а не число из конфига.
   "resources": {
     "gpu": {
       "maxUsagePercent": 90,

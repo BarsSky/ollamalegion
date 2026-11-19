@@ -93,6 +93,7 @@
     "requestTimeout": 120,
     "firstByteTimeout": 30,
     "_note_firstByteTimeout": "R66c (2026-09-22): это БАЗА, а не потолок. Приоритет: per-model profile firstByteTimeoutSec → измеренная статистика модели → эвристика по размеру GGUF (EstimateFirstByteTimeoutFromModelSize: >=300s, 900s при неизвестном размере, до 2400s для >24GB) → и только затем это значение. То есть уменьшить таймаут ниже эвристики глобальной настройкой НЕЛЬЗЯ — для этого задайте firstByteTimeoutSec в llamaCppModelProfiles для конкретной модели. R42 сознательно поднимает таймаут для больших моделей, чтобы медленный prefill не рвал stream.",
+"_note_r551_ignored_timeouts": "R551 (T-12 аудита): requestTimeout / firstByteTimeout / streamingIdleTimeout здесь НЕ задают таймауты (доктрина R83: только осознанный opt-in). Работают LB_*_TIMEOUT_SEC / LB_STREAMING_NEVER_TIMEOUT и per-model профиль при LB_ALLOW_PROFILE_TIMEOUTS=1; граница первого байта по умолчанию — оценка по размеру модели (R498/R523).",
     "streamingIdleTimeout": 600,
     "_note_autoTune": "Round 54.2 (2026-08-24): AutoTune master switch. default true. balancer детектит sub-optimal state (q4_0 KV cache, over-allocated n_ctx) и рекомендует/применяет fix. Per-model override: в llamaCppModelProfiles добавить \"autoTune\": false. ENV override: LB_AUTO_TUNE.",
     "autoTune": true,

@@ -224,7 +224,14 @@ Score = (
 - CPU usage < `cpuMaxUsage` (default 80%)
 - RAM usage < `ramMaxUsage` (default 85%)
 - Диск free > `minFreeDisk` (default 10240 MB)
-- **VRAM usage не превышает headroom-резерв (default 85%)**
+- **VRAM выше `vramMaxUsage` (default 85 %) — предупреждение в лог, а НЕ блокировка**
+  (R118: мгновенная утилизация не исключает здоровый бэкенд из кандидатов; влезает ли
+  НОВАЯ модель, решает путь загрузки — preflight/memfit, а не допуск запроса).
+  **R551 (T-12 аудита):** до этой правки здесь стояло обратное — «VRAM usage не
+  превышает headroom-резерв (default 85 %)» как критерий healthy, хотя в коде это
+  только предупреждение. Пороги CPU/RAM/GPU — из конфига (`resources.*`, env
+  `LB_CPU_MAX_USAGE` / `LB_MEMORY_MAX_USAGE` / `LB_GPU_MAX_USAGE`), и фолбэк в коде
+  теперь совпадает с этими дефолтами (было 95/98 против 80/85 в конфиге).
 
 
 ## 3. Пошаговые сценарии балансировки

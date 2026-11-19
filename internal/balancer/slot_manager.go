@@ -250,10 +250,17 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 		}
 	}
 
-	// R499 / аудит S-2: порог CPU — из конфига (по умолчанию те же 95).
+	// R499 / аудит S-2: порог CPU — из конфига.
+	//
+	// R551 (T-12 аудита): фолбэк `<= 0` приведён к ДЕФОЛТУ ИЗ КОНФИГА (80), а не к
+	// прежним 95. Причина: `config.Load` заполняет `Resources.CPU.MaxUsagePercent`
+	// значением 80 (env `LB_CPU_MAX_USAGE`), а здесь при нуле действовали 95 — то
+	// есть ОДНА величина имела ДВА разных значения в зависимости от того, прочитан
+	// ли конфиг. В документации (`docs/architecture/balancing-guide.ru.md:224`)
+	// обещано 80 % — теперь код и документ говорят одно и то же.
 	cpuMaxUsage := limits.CPU.MaxUsagePercent
 	if cpuMaxUsage <= 0 {
-		cpuMaxUsage = 95
+		cpuMaxUsage = 80
 	}
 	if metrics.System.CPUUsagePercent > cpuMaxUsage {
 		if hard {
@@ -270,9 +277,15 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 	// R499 / аудит S-2: порог RAM — из конфига. Раньше значение использовалось
 	// только как выключатель (`> 0`), а порог был зашит 98 — то есть настройка
 	// «память выше 85 %» ничего не ограничивала.
+	//
+	// R551 (T-12 аудита): фолбэк `<= 0` приведён к дефолту из конфига (85), а не к
+	// прежним 98. `config.Load` заполняет `Resources.Memory.MaxUsagePercent`
+	// значением 85 (env `LB_MEMORY_MAX_USAGE`), и документ обещает те же 85 %
+	// (`docs/architecture/balancing-guide.ru.md:225`). Раньше при нуле в конфиге
+	// действовало 98 — «настройка 85 %» на таком стенде не ограничивала ничего.
 	ramMaxUsage := limits.Memory.MaxUsagePercent
 	if ramMaxUsage <= 0 {
-		ramMaxUsage = 98
+		ramMaxUsage = 85
 	}
 	if metrics.System.MemoryTotal > 0 {
 		memPercent := float64(metrics.System.MemoryUsed) * 100 / float64(metrics.System.MemoryTotal)

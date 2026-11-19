@@ -266,22 +266,21 @@ func (p *Proxy) getModelStreamTimeout(modelName string) time.Duration {
 }
 
 // getModelStreamingIdleTimeout возвращает per-model idle-таймаут стриминга.
-// Приоритет:
-//  1. ENV override LB_STREAMING_IDLE_TIMEOUT_SEC (break-glass, R60.18 F1)
-//  2. Per-model profile (config.LlamaCppModelProfiles[modelName].StreamingIdleTimeoutSec)
-//  3. ModelLatencyTracker (автоматический расчёт на основе истории)
-//  4. Эвристика по размеру GGUF файла (для моделей без истории)
-//  5. Глобальный config.Balancing.StreamingIdleTimeout
-//  6. Дефолт 120 секунд
 //
-// modelSizeBytes используется для tier-4 (эвристика по размеру). Для больших
-// моделей на GPU с partial offload (не все слои в VRAM) idle между чанками
-// может быть >120s → без эвристики стрим обрывался бы без диагностики.
+// R551 (T-12 аудита): список приоритетов переписан по факту — здесь были
+// заявлены «ModelLatencyTracker» и «глобальный config.Balancing.StreamingIdleTimeout»
+// как рабочие тиры, хотя ни тот, ни другой таймаутом не являются (R83-доктрина:
+// таймаут — только осознанный opt-in).
 //
-// R58.1: LB_STREAMING_NEVER_TIMEOUT=1 → 0 (= "no idle deadline").
-// R60.18 F1: LB_STREAMING_IDLE_TIMEOUT_SEC → break-glass override
-// (по симметрии с LB_LLAMACPP_STREAM_TIMEOUT_SEC — env побеждает per-model
-// profile для incident response, но НЕ для production defaults).
+// Фактический приоритет:
+//  1. LB_STREAMING_NEVER_TIMEOUT=1 → 0 (нет idle-дэдлайна; сильнее всего);
+//  2. LB_STREAMING_IDLE_TIMEOUT_SEC — break-glass override (R60.18 F1);
+//  3. профиль модели (StreamingIdleTimeoutSec) при LB_ALLOW_PROFILE_TIMEOUTS=1;
+//  4. иначе 0 — idle-дэдлайна нет.
+//
+// modelSizeBytes остаётся параметром для диагностики у вызывающих, но эвристику
+// по размеру мы больше не применяем: живой случай 2026-10-01 — стрим оборван на
+// 300-й секунде, клиент не получил ни одного токена.
 func (p *Proxy) getModelStreamingIdleTimeout(modelName string) time.Duration {
 	if isStreamingNeverTimeout() {
 		return 0
@@ -322,35 +321,12 @@ func (p *Proxy) getModelRequestTimeout(modelName string) time.Duration {
 	return 0
 }
 
-// getModelFirstByteTimeout возвращает per-model таймаут ожидания первого байта.
-// Приоритет:
-//  1. Per-model profile (config.LlamaCppModelProfiles[modelName].FirstByteTimeoutSec)
-//  2. ModelLatencyTracker (автоматический расчёт на основе истории first-byte latency)
-//  3. Эвристика по размеру GGUF файла (для моделей без истории)
-//  4. Глобальный config.Balancing.FirstByteTimeout
-//  5. Дефолт 120 секунд
+// getModelFirstByteTimeout — сколько ждать ПЕРВЫЙ байт (HTTP-заголовки) от бэкенда.
 //
-// R58.1: LB_STREAMING_NEVER_TIMEOUT=1 → 0 (= "no first-byte timeout").
-// getModelFirstByteTimeout — сколько ждать ПЕРВЫЙ байт от бэкенда.
-//
-// R66c (2026-09-22): здесь важно понимать приоритет, иначе настройка кажется
-// «не работающей». Порядок такой:
-//
-//  1. per-model profile (`llamaCppModelProfiles[m].firstByteTimeoutSec`) —
-//     единственный способ задать ТОЧНОЕ значение, в т.ч. короткое;
-//  2. измеренная статистика модели (ModelLatencyTracker);
-//  3. эвристика по размеру GGUF-файла (EstimateFirstByteTimeoutFromModelSize:
-//     >=300s, 900s при неизвестном размере, до 2400s для >24GB);
-//  4. и только если эвристика не смогла ничего вернуть — глобальный
-//     `balancing.firstByteTimeout` (R42 в config.json прямо ожидает, что
-//     Tier-3 эвристика ПОДНИМАЕТ таймаут для 12-24GB до 1800s и >24GB до
-//     2400s, поэтому глобальное значение — база, а не потолок).
-//
-// Практический вывод: уменьшить first-byte timeout для конкретной модели можно
-// только профилем; глобальное значение ниже эвристики эффекта не даёт.
-// Подробности — docs/archive/rounds/r60.18-env-flags-audit.ru.md и _note_streaming_round42 в
-// config/config.json.
-// getModelFirstByteTimeout — сколько ждать ПЕРВЫЙ БАЙТ (HTTP-заголовки) от бэкенда.
+// R551 (T-12 аудита): два верхних комментария (про «тин 1 профиль → тир 2 трекер →
+// тир 3 эвристика → тир 4 глобальный config») удалены: они описывали приоритет,
+// которого в коде нет — ни `ModelLatencyTracker`, ни `Balancing.FirstByteTimeout`
+// таймаутом не являются (R83-доктрина). Фактический приоритет — ниже (R523).
 //
 // R523 (§7 плана, S1/T-1): ЕДИНАЯ политика на всех путях. Приоритет:
 //  1. LB_STREAMING_NEVER_TIMEOUT=1 → 0 (осознанно ждать бесконечно);

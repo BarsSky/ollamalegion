@@ -215,6 +215,30 @@ inline `display:none` из `index.html:1483,1489,1495,1501` → скрытые �
 
 ---
 
+### 7.1 План исполнения W1 (замеры на 2026-11-19, после R544/R557/R558)
+
+Замеры, чтобы следующий шаг не искал заново (все числа — из репозитория):
+
+| Что | Где | Размер |
+|---|---|---|
+| разметка секции режимов | `index.html:1436-…` (`id="section-mode"`), 5 радио `name="operatingMode"` на строках 1480, 1500, 1506, 1512, 1518 | ~180 строк |
+| мастер режима | `webui/js/modules/mode-wizard.js` | **27 357 байт**, грузится из `index.html:2846` |
+| mode-часть настроек | `webui/js/modules/settings-ui.js`: `updateModeCards:147`, `showModeFields:167`, `updateVariantSections:186`, `navMap:262` | до строки ~405 |
+| потребители | `app.js`, `config-io.js`, `backend-type-filter.js`, `mode-wizard.js` — **38 вхождений** `operatingMode`/`updateModeCards`/`showModeFields` | — |
+
+Порядок (каждый пункт — один коммит, с прогоном WebUI-набора):
+
+1. **Разметка + мастер.** Удалить блок `#section-mode` (`index.html:1436` до следующей секции), тег
+   `<script src="js/modules/mode-wizard.js…">` (`:2846`) и сам файл. Одним коммитом — иначе кнопки мастера
+   останутся без обработчика (хуже текущего состояния).
+2. **settings-ui.js.** Убрать `updateModeCards`/`showModeFields`/`updateVariantSections`/`navMap` вместе с
+   вызовами; §4.1 (сайдбар терял «Диагностику» и «Справку») уходит вместе с `updateVariantSections`.
+3. **Чтения в app.js / config-io.js / backend-type-filter.js.** Убрать чтение `operatingMode` (сервер поле
+   сохраняет для миграции — `internal/config/mode_migration.go`), `toggleModeCards`.
+4. **Тесты.** Переписать `unverified-modes-hidden-r118` («разметки режимов нет»), убрать `mode-wizard.js` из
+   списка читаемых файлов в `selection-ui-r493`, поправить границу секций в `settings-overlap-r317`.
+5. **CSS оставить.** Классы `.mode-wizard-overlay`/`.mode-wizard-modal` используются другими модулями
+   (`cppworker-params.js:753`, `image-profiles.js:1005`, `image-backends-page.js:863`) — это НЕ часть режимов.
 ## 8. Чего не делать
 
 - **Не «починить экспорт `updateModeCards`» в отрыве** (§4.4): починка включит `showModeFields` на следующей строке

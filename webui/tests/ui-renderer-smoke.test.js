@@ -158,6 +158,12 @@ function makeSandbox(overrides) {
 function loadRenderer(sandbox, opts) {
   const src = fs.readFileSync(TARGET, 'utf8');
   vm.createContext(sandbox);
+  // R641: панели (изображения, авто-пулл, виртуальные модели) вынесены в
+  // js/monitor/ui-renderer-panels.js и обязаны грузиться ПЕРЕД renderer-ом — как в
+  // monitor.html. Хук UI_RENDERER_TARGET подменяет только renderer, поэтому
+  // панели всегда берём из репозитория.
+  const panelsPath = path.join(REPO_ROOT, 'webui', 'js', 'monitor', 'ui-renderer-panels.js');
+  vm.runInContext(fs.readFileSync(panelsPath, 'utf8'), sandbox, { filename: panelsPath });
   // R-Image Phase 5: monitor.html теперь грузит modules/utils.js (общие хелперы
   // бейджа типа и разбора backend.image). В sandbox он подключается по флагу,
   // чтобы проверить реальный бейдж 🎨 image.cpp, а не локальный fallback.

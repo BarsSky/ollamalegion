@@ -719,6 +719,9 @@
        (использует window.MonitorApiXhr) и до ui-renderer.js (тот зовёт
        MonitorLayout.rowLayoutCell/bindRowSelectors при отрисовке таблицы). -->
   <script defer src="js/monitor/layout-panel.js?v=R425"></script>
+  <!-- R641: панели (изображения, авто-пулл, виртуальные модели) обязаны грузиться
+       ПЕРЕД ui-renderer.js: тот берёт window.MonitorUiPanels и раздаёт имена. -->
+  <script defer src="js/monitor/ui-renderer-panels.js?v=R641"></script>
   <script defer src="js/monitor/ui-renderer.js?v=R425"></script>
   <script defer src="js/monitor/sparkline.js?v=R425"></script>
   <script defer src="js/monitor/canvas-topology.js?v=R425"></script>

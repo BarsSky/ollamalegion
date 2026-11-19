@@ -30,4 +30,3 @@ webui/js/i18n/ru.js
 webui/js/modules/gguf-renderer-detail-render.js
 webui/js/modules/reference-page.js
 webui/js/modules/renderers.js
-webui/js/monitor/ui-renderer.js

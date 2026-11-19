@@ -62,7 +62,7 @@ type llamaCppMetricsPoller struct {
 
 	// R230: кэш параметров архитектуры (n_kv_heads/head_dim_k), добранных из
 	// /api/show — /api/models их не отдаёт, а без них AutoTune не может
-	// посчитать KV cache (см. arch_enrich_r230.go).
+	// посчитать KV cache (см. arch_enrich.go).
 	archMu    sync.Mutex
 	archCache map[string]archParams
 	// R493-12i: TTL-состояние «свежести» идентичности воркера (см.

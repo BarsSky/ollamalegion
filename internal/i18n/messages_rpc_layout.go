@@ -348,7 +348,7 @@ var messagesBalancer3 = map[string]map[Lang]string{
 		EN: "the actual value after an auto load is never -2: the plan would repeat forever",
 	},
 
-	// === cuda_arch_refusal_r185.go: карта не поддерживается образом =====
+	// === cuda_arch_refusal.go: карта не поддерживается образом =====
 	"balancer.cuda_arch_refusal.arch_mismatch_detail": {
 		RU: "CUDA-архитектуры образа и карты не совпадают",
 		EN: "the CUDA architectures of the image and the GPU do not match",

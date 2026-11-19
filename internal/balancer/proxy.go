@@ -206,7 +206,7 @@ type Proxy struct {
 	// Error»). Ключ — backendID|model. Под p.mu.
 	modelMissing map[string]modelMissing
 	// R185 (2026-10-20): запомненные ТЕРМИНАЛЬНЫЕ отказы «эта карта не
-	// поддерживается образом» (cuda_arch_refusal_r185.go). Живой разбор: образ
+	// поддерживается образом» (cuda_arch_refusal.go). Живой разбор: образ
 	// собран под CUDA_ARCH=86;120, карта sm_75 — первое GPU-ядро убивало воркер
 	// SIGABRT, а клиент получал 503 «повтори» и крутил перезагрузки вечно.
 	// Теперь отказ запоминается и клиент получает 400 с причиной и советом.
@@ -1483,7 +1483,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// и для залипшей сессии (ветка выше выставила targetBackend из sessionMgr и
 	// selectBackendPreferWindow уже не вызывался). Цена: живой опрос только когда
 	// кэш о модели на этом узле молчит И модель там действительно отсутствует;
-	// результат опроса кэшируется на несколько секунд (live_copy_probe_r303.go).
+	// результат опроса кэшируется на несколько секунд (live_copy_probe.go).
 	if targetBackend != "" && model != "" && !isReadOnlyOrMgmtEndpoint(path) &&
 		p.modelAbsentOnBackendR303(targetBackend, model) {
 		if alt, altPerSeq, ok := p.findLiveLoadedCopyR303(model, parsed.NumCtx,

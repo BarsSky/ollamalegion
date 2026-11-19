@@ -1,4 +1,4 @@
-// image_resources.go — R-Image Phase 6 (2026-10-02): VRAM-гейт и политика
+﻿// image_resources.go — R-Image Phase 6 (2026-10-02): VRAM-гейт и политика
 // сосуществования image-генерации с текстовым инференсом на одной GPU.
 //
 // ПРОБЛЕМА. Диффузионная модель (FLUX Q4 — пики 3.7–6.4 GB, Q8 — до 12 GB) и
@@ -46,7 +46,7 @@
 //   - Текстовую сторону НЕ блокируем в глубине: минимальный хук в
 //     backend_selector.go просто не выбирает текстового кандидата на хосте с
 //     активным image-локом, а ждёт освобождения существующая admission-очередь
-//     (unified_queue_r73.go) со своим лимитом LB_ADMISSION_WAIT_SEC и 503 +
+//     (unified_queue.go) со своим лимитом LB_ADMISSION_WAIT_SEC и 503 +
 //     Retry-After по его истечении.
 package balancer
 

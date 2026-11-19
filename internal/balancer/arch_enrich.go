@@ -1,4 +1,4 @@
-﻿// arch_enrich_r230.go — Round 230 (2026-10-24): параметры архитектуры модели
+﻿// arch_enrich.go — Round 230 (2026-10-24): параметры архитектуры модели
 // для расчёта KV cache.
 //
 // ЗАЧЕМ. cppworker в `/api/models` отдаёт n_layers/n_embd, но НЕ отдаёт

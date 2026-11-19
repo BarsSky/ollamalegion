@@ -328,7 +328,7 @@ var messagesBalancer2 = map[string]map[Lang]string{
 			"the semantics of the final chunk",
 	},
 
-	// === unified_queue_r73.go: единая admission-очередь ================
+	// === unified_queue.go: единая admission-очередь ================
 	"balancer.unified_queue_r73.image_lock_no_candidates_wait_capped_warn": {
 		RU: "unified queue: кандидатов нет из-за активного image-лока — лимит ожидания сужен до balancing.image.queueWaitTimeoutSec",
 		EN: "unified queue: there are no candidates because of an active image lock — the wait limit is narrowed to balancing.image.queueWaitTimeoutSec",

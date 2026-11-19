@@ -286,7 +286,7 @@ var r304SelectionSites = []struct{ file, fn string }{
 	{"backend_selector.go", "selectByResources"},
 	{"candidate.go", "expandCandidates"},
 	{"model_copy_window.go", "collectModelCopyCandidates"},
-	{"live_copy_probe_r303.go", "liveCopyCandidateIDsR303"},
+	{"live_copy_probe.go", "liveCopyCandidateIDsR303"},
 	{"placement_over_reload.go", "collectPlacementCandidatesR293"},
 	{"placement_fit.go", "placementFitForModel"},
 	{"slot_manager.go", "findModelOnAnyBackendNoVRAMCheck"},

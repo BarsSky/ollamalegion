@@ -1,10 +1,10 @@
-package balancer
+﻿package balancer
 
 // Package balancer — вспомогательные проверки выбора бэкенда.
 //
 // R78: из этого файла удалён legacy-путь `dispatchRequest`/`waitForModelReady`,
 // который обслуживал канал QueueManager (канал и пул worker'ов удалены, ожидание
-// слотов теперь в admission-очереди — см. admission_queue.go, unified_queue_r73.go).
+// слотов теперь в admission-очереди — см. admission_queue.go, unified_queue.go).
 // Остались проверки, которые использует обычный выбор бэкенда
 // (backend_selector.go): `canAcceptRequest` и `getModelLoadTimeout`.
 

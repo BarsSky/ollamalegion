@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // r478_reasoning_scope_test.go — R478 (2026-11-09): R470 не должен гасить
 // размышления на ОБЫЧНОМ /api/chat (без tools).
@@ -26,7 +26,7 @@ func funcBodyR478(t *testing.T, src, header string) string {
 	t.Helper()
 	idx := strings.Index(src, header)
 	if idx < 0 {
-		t.Fatalf("в handlers_chat.go нет функции %q", header)
+		t.Fatalf("ни в handlers_chat.go, ни в handlers_chat_stream_tools.go нет функции %q", header)
 	}
 	rest := src[idx:]
 	lines := strings.Split(rest, "\n")
@@ -44,7 +44,15 @@ func funcBodyR478(t *testing.T, src, header string) string {
 // TestR478_NonToolsChatDoesNotUseToolsEchoGate — в writeChatStreamResponse не
 // должно быть гейта toolsThinkingEchoR470.
 func TestR478_NonToolsChatDoesNotUseToolsEchoGate(t *testing.T) {
-	data, err := os.ReadFile("handlers_chat.go")
+	// R626: функция могла переехать в файл стрим-инструментов — читаем оба.
+	data1, err := os.ReadFile("handlers_chat.go")
+	if err == nil {
+		data2, err2 := os.ReadFile("handlers_chat_stream_tools.go")
+		if err2 == nil {
+			data1 = append(data1, data2...)
+		}
+	}
+	data := data1
 	if err != nil {
 		t.Fatalf("чтение handlers_chat.go: %v", err)
 	}
@@ -62,7 +70,15 @@ func TestR478_NonToolsChatDoesNotUseToolsEchoGate(t *testing.T) {
 // TestR478_ToolsChatKeepsToolsEchoGate — на tools-пути гейт обязан остаться:
 // там клиент-агент складывает thinking в текст ответа (это отдельный дефект).
 func TestR478_ToolsChatKeepsToolsEchoGate(t *testing.T) {
-	data, err := os.ReadFile("handlers_chat.go")
+	// R626: функция могла переехать в файл стрим-инструментов — читаем оба.
+	data1, err := os.ReadFile("handlers_chat.go")
+	if err == nil {
+		data2, err2 := os.ReadFile("handlers_chat_stream_tools.go")
+		if err2 == nil {
+			data1 = append(data1, data2...)
+		}
+	}
+	data := data1
 	if err != nil {
 		t.Fatalf("чтение handlers_chat.go: %v", err)
 	}

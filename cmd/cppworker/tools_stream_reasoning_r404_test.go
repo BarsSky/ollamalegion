@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // tools_stream_reasoning_r404_test.go — R404 (2026-11-03).
 //
@@ -220,7 +220,9 @@ func TestR406_RetryWithoutThinkingDecision(t *testing.T) {
 // дублирует thinking. Поведенчески это не проверить без живого bridge, поэтому
 // проверяем исходник (как сторожа R394/R402).
 func TestR404_Wiring(t *testing.T) {
-	src := readMainSourceR402(t, "handlers_chat.go")
+	// R626 (2026-11-19): `writeChatStreamResponseWithTools` переехала в
+	// handlers_chat_stream_tools.go — проводка проверяется в ОБОИХ файлах.
+	src := readMainSourceR402(t, "handlers_chat.go") + readMainSourceR402(t, "handlers_chat_stream_tools.go")
 	for _, want := range []string{
 		"toolsFeedThinkingR404(thinkingParser, token)",
 		"retry skipped — stream already started (R404)",

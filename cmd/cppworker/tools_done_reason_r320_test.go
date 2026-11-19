@@ -1,4 +1,4 @@
-// tools_done_reason_r320_test.go — R320 (2026-10-30).
+﻿// tools_done_reason_r320_test.go — R320 (2026-10-30).
 //
 // ЖИВАЯ ЖАЛОБА (Cline через балансер, /api/chat + tools): «приходит завершение
 // прямо посреди рассуждений модели, обрубая всё, что приходит после», а следующий
@@ -138,7 +138,13 @@ func TestR320_EmptyAnswerNoticeStillApplies(t *testing.T) {
 // нет составного литерала с ключом done_reason и значением "stop".
 func TestR320_ToolsPathHasNoHardcodedStop(t *testing.T) {
 	fset := token.NewFileSet()
+	// R626 (2026-11-19): writeChatStreamResponseWithTools переехала в отдельный файл;
+	// разбираем ОБА, иначе сторож «не находит» функцию и падает ложной тревогой.
 	file, err := parser.ParseFile(fset, "handlers_chat.go", nil, 0)
+	fileTools, errTools := parser.ParseFile(fset, "handlers_chat_stream_tools.go", nil, 0)
+	if errTools == nil {
+		file.Decls = append(file.Decls, fileTools.Decls...)
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			t.Skip("handlers_chat.go не найден в рабочем каталоге")

@@ -1,4 +1,4 @@
-// tools_terminal_reason_r394_test.go — R394 (2026-11-04).
+﻿// tools_terminal_reason_r394_test.go — R394 (2026-11-04).
 //
 // ЖИВАЯ ЖАЛОБА (A10, Cline через балансер, /api/chat + tools): «флаг
 // завершения проскакивает раньше, чем приходит настоящий ответ». Лог воркера
@@ -171,7 +171,11 @@ func TestR394_ReasoningCharsRaw(t *testing.T) {
 // toolsTerminalReasonR394/toolsTerminalContentR394 есть.
 func TestR394_ToolsPathUsesBudgetAwareReason(t *testing.T) {
 	fset := token.NewFileSet()
+	// R626 (2026-11-19): функция переехала в handlers_chat_stream_tools.go — разбираем оба.
 	file, err := parser.ParseFile(fset, "handlers_chat.go", nil, 0)
+	if fileTools, errTools := parser.ParseFile(fset, "handlers_chat_stream_tools.go", nil, 0); errTools == nil && file != nil {
+		file.Decls = append(file.Decls, fileTools.Decls...)
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			t.Skip("handlers_chat.go не найден в рабочем каталоге")

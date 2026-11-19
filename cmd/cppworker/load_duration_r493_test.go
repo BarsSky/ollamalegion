@@ -1,4 +1,4 @@
-// load_duration_r493_test.go — R493-12a (2026-11-12): воркер сообщает, сколько
+﻿// load_duration_r493_test.go — R493-12a (2026-11-12): воркер сообщает, сколько
 // отдал на загрузку модели.
 //
 // ЖИВОЙ ЗАМЕР на стенде: клиент ждал первый кадр 40.12 с, а в done-кадре было
@@ -61,9 +61,11 @@ func TestR493_DoneChunksReadLoadDuration(t *testing.T) {
 		}
 		return string(data)
 	}
-	chat := read("handlers_chat.go")
+	// R626 (2026-11-19): tool-путь переехал в отдельный файл, поэтому читаем ОБА —
+	// сторож проверяет, что кадр load_duration собирается в обоих путях.
+	chat := read("handlers_chat.go") + read("handlers_chat_stream_tools.go")
 	if n := strings.Count(chat, `"load_duration":        loadDurationNsR493(r.Context()),`); n != 2 {
-		t.Fatalf("в handlers_chat.go кадров с load_duration: %d, ожидалось 2 (обычный и tool-путь)", n)
+		t.Fatalf("кадров с load_duration в путях чата: %d, ожидалось 2 (обычный и tool-путь)", n)
 	}
 	if n := strings.Count(chat, "withLoadScopeR493(r.Context())"); n < 1 {
 		t.Fatal("handleChat не ставит ячейку загрузки: измерение уйдёт в никуда")

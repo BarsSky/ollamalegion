@@ -156,11 +156,9 @@ func TestR119_ImageTool_GateDeniedIsStructuredForBothLoops(t *testing.T) {
 // TestR119_ImageTool_GenerationForToolUsesGate — защита от отката: путь инструмента
 // обязан звать beforeGeneration.
 func TestR119_ImageTool_GenerationForToolUsesGate(t *testing.T) {
-	raw, rerr := os.ReadFile("image_tool.go")
-	if rerr != nil {
-		t.Fatalf("read image_tool.go: %v", rerr)
-	}
-	src := string(raw)
+	// R637: слой инструмента разложен на двенадцать файлов — читаем весь слой
+	// (см. image_tool_sources_r637_test.go), иначе сторож краснел бы на переносе.
+	src := readImageToolSourcesR637(t)
 	if !strings.Contains(src, "beforeGeneration(ctx, resolved.BackendID)") {
 		t.Error("generateImageForTool больше не проходит гейт ресурсов: инструмент обходит " +
 			"проверку VRAM и эксклюзивный лок GPU")

@@ -215,6 +215,16 @@ rpc-ссылки) + `handlers_backends_list.go` 616 + `handlers_backends_mutate.
 «SSE→NDJSON», usage/done, сводки, кадры ошибок), каркас структур описан выше.
 **Статус очереди на 2026-11-18:** пункты 1–7 сделаны (R532/R533/R534/R536/R535/
 R537/R538), решающий шаг — сделан в R539 (ниже), остаток координатора — в R540.
+**Итог R541 (R2, второй транспорт, факт).** `proxyRequestLlamaCppNonStream`
+(`llamacpp_transport_nonstream.go`) **907 → 510** строк (318 → 192 оператора):
+вынесены `nonStreamPreflight` (preflight окна и отказы 413/404/503),
+`prepareNonStreamBody`, `newNonStreamUpstreamRequest`, `sendNonStreamRequest`
+(ретраи 1s/2s/4s), `autoTuneOnReturnNonStream` (тело `defer`), и
+`assembleSSEToOllamaBody` (сборка Ollama-тела из SSE, лимит строки R264);
+максимум — 170 строк / 38 операторов. **Доказательство:** сверка наборов
+строковых литералов файла — **0 различий** (323 литерала); `go test
+./internal/balancer/` зелёный. **Остаток:** 503-загрузка, не-2xx
+(R60.10/R160/R335.1) и пустое тело — после их выноса функция уложится в `funlen`.
 **Итог R540 (R2, стадии подготовки/preflight/отправки, факт).** Остаток
 координатора разложен по стадиям плана: `prepareUpstreamCall` (96 строк),
 `awaitAdmissionAndLoad` (32), `prepareUpstreamRequest` (22), `sendRequest` (109),

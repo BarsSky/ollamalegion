@@ -48,110 +48,13 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	// endpoints (load/unload/delete/copy) не принимают поле "stream" в cppworker.
 	bodyNoStream := stripStreamFlagForPath(bodyBuf, originalPath)
 
-	// PREFLIGHT n_ctx auto-reload: если клиент задал options.num_ctx,
-	// а loaded n_ctx на бэкенде меньше — перезагружаем модель на нужный n_ctx
-	// ДО проксирования (аналогично proxyRequestLlamaCpp).
-	//
-	// Стратегия по умолчанию (PreflightSyncEnabled=true, default): СИНХРОННО ждём
-	// завершения reload (до PreflightSyncTimeoutMs, default 60s), затем проксируем.
-	// Round-trip один — клиент не получает EOF. При таймауте fallback на async
-	// 503 + Retry-After: 15.
-	//
-	// Для streaming-клиентов остаётся старая async логика (Reload-Disabled-For-Tools,
-	// чтобы не блокировать стрим на reload).
-	var preflightOK bool
-	var preflightMsg string
-	var preflightStatus int
-	var retryAfter int = 30 // Round 23 (2026-08-04): 5 → 30 (реальное время reload)
-	var preflightBody []byte
-	// R447: слот под числа вердикта R301/R385 (см. growth_numbers_ctx_r447.go).
-	preflightCtx, _ := growthNumbersSlotR447(r.Context())
-	if p.config != nil && p.config.Balancing.PreflightSyncEnabled {
-		preflightBody, preflightOK, preflightMsg, preflightStatus, retryAfter =
-			p.preflightNCtxReloadIfNeededSync(preflightCtx, backendID, modelFromCtx, bodyNoStream, originalPath)
-		if preflightOK {
-			bodyNoStream = preflightBody
-			logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx sync-reload applied",
-				"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyNoStream))
-		}
+	// R541 (R2 читаемости): preflight окна n_ctx (синхронный или асинхронный по
+	// конфигу) и все его отказы — 413/404/ожидание загрузки/503 — вынесены в
+	// nonStreamPreflight. handled=true означает, что ответ уже отправлен.
+	if body, preflightHandled := p.nonStreamPreflight(w, r, backendID, modelFromCtx, originalPath, bodyNoStream, bodyBuf); preflightHandled {
+		return nil
 	} else {
-		preflightBody, preflightOK, preflightMsg, preflightStatus =
-			p.preflightNCtxReloadIfNeeded(preflightCtx, backendID, modelFromCtx, bodyNoStream, originalPath)
-		if preflightOK {
-			bodyNoStream = preflightBody
-			logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx reload applied",
-				"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyNoStream))
-		}
-	}
-	if !preflightOK && (preflightMsg != "" || preflightStatus != http.StatusOK) {
-		// R118.7 (2026-10-14): окно ФИЗИЧЕСКИ недостижимо (cppworker уже отвечал
-		// 422 n_ctx_infeasible, потолок запомнен). Ждать нечего и проксировать
-		// нельзя: запрос ушёл бы на бэкенд с меньшим окном слота, и клиент получил
-		// бы 200 с окном меньше запрошенного — ровно то, на что жаловались.
-		// Отдаём понятный отказ с числами и причиной от cppworker'а.
-		if preflightStatus == http.StatusRequestEntityTooLarge {
-			logger.Get().Infow(i18n.T("balancer.llamacpp_transport_nonstream.window_unreachable_413_info"),
-				"backend", backendID, "model", modelFromCtx, "msg", preflightMsg)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-NCtx-Reload-Decision", "infeasible")
-			body := []byte(fmt.Sprintf(`{"error":%q,"decision":"n_ctx_infeasible"}`, preflightMsg))
-			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
-			_, _ = w.Write(body)
-			return nil
-		}
-
-		// R119 (2026-10-15): модели НЕТ на бэкенде — терминальный 404 с причиной и
-		// списком доступных моделей (см. model_missing_r119.go). Живой дефект:
-		// запрос к llama-3-8b через балансер не отвечал более 4 минут, клиент
-		// падал по своему таймауту с «Internal Server Error».
-		//
-		// awaitModelMissing закрывает гонку: фоновая загрузка отсутствующей модели
-		// падает за миллисекунды, а запись в реестр появляется чуть позже решения
-		// preflight'а. Ждём её коротко, чтобы САМЫЙ ПЕРВЫЙ запрос получил 404, а не
-		// 503 «повтори через 30 с».
-		if p.awaitModelMissing(backendID, modelFromCtx, 500*time.Millisecond) {
-			reason, available, _ := p.modelMissingFor(backendID, modelFromCtx)
-			logger.Get().Warnw(i18n.T("balancer.llamacpp_transport_nonstream.model_missing_404_warn"),
-				"backend", backendID, "model", modelFromCtx,
-				"msg", preflightMsg, "available_models", len(available))
-			writeModelMissingResponseFor(w, originalPath, modelFromCtx, reason, available)
-			return nil
-		}
-
-		// R115 (2026-10-14): СНАЧАЛА ЖДЁМ ЗАГРУЗКУ, И ТОЛЬКО ПОТОМ 503.
-		//
-		// Живой случай (Ollama-поверхность :18080, клиент OpenWebUI, модель не
-		// загружена): лог балансера показывал
-		//   "detected n_ctx mismatch ... loaded_n_ctx=0 requested_n_ctx=32768
-		//    loaded_n_ctx_is_zero=true" → "returning 503 ... retry in 30s".
-		// То есть при ПУСТОМ бэкенде балансер решал «надо перезагрузить» и сразу
-		// отдавал 503, хотя модель в этот момент только начинала грузиться
-		// (27B на раскладке — 256-485 с, а советовали подождать 30). OpenWebUI,
-		// в отличие от Cline, 503 не повторяет — пользователь видел ошибку.
-		//
-		// Потоковым клиентам повезло: у них есть stream dialog с keepalive и
-		// ожиданием без капа. Нестриминговый путь ожидания не имел вовсе —
-		// теперь имеет: ждём появления модели на бэкенде (want=1 означает «модель
-		// загружена», конкретный n_ctx выставит тот самый reload, который уже
-		// запущен в фоне), и только по исчерпании бюджета отдаём прежний 503.
-		wait := AutoLoadWaitTimeout()
-		if p.waitForBackendNCtx(r.Context(), backendID, modelFromCtx, 1, wait) {
-			logger.Get().Infow(i18n.T("balancer.llamacpp_transport_nonstream.model_ready_after_reload_info"),
-				"backend", backendID, "model", modelFromCtx,
-				"waited_sec", int(wait.Seconds()), "preflight_msg", preflightMsg)
-		} else {
-			// Reload запущен в фоне (async) ИЛИ sync timeout — отдаём 503.
-			logger.Get().Infow("proxyRequestLlamaCppNonStream: preflight n_ctx reload, returning 503",
-				"backend", backendID, "model", modelFromCtx,
-				"msg", preflightMsg, "status", preflightStatus, "retry_after", retryAfter)
-			// R299 (2026-10-29): единое тело отказа (см. growth_guard_r299.go) вместо
-			// самописного `{"decision":"async_reload",...}`. Причина та же: клиент
-			// должен разбирать один формат, а не угадывать по строке.
-			w.Header().Set("X-NCtx-Reload-Decision", "async-reload")
-			writePreflightDeferredR299Ctx(w, p, preflightCtx, backendID, modelFromCtx, bodyBuf, originalPath, preflightMsg, retryAfter)
-			return nil
-		}
+		bodyNoStream = body
 	}
 
 	// R54.4 (2026-08-24): AutoTune autonomous reload hook (non-stream path).
@@ -160,164 +63,33 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	// модель простаивает — план применяется по-настоящему.
 	// Тот же hook что и в proxyRequestLlamaCpp — AutoTune ловит ДРУГИЕ
 	// sub-optimal state'ы которые n_ctx preflight пропускает (kv_cache, layers).
-	defer func() {
-		if modelFromCtx == "" {
-			return
-		}
-		var freeVRAM, freeRAM, totalVRAM uint64
-		if p.metricsMgr != nil {
-			// R230: метрики в МБ → байты (triggerAutoTuneReload ждёт байты).
-			clusterState := p.GetClusterState()
-			for _, b := range clusterState.Backends {
-				if b.ID == backendID {
-					totalVRAM = mbToBytes(b.GPU.MemoryTotal)
-					if b.GPU.MemoryFree > 0 {
-						freeVRAM = mbToBytes(b.GPU.MemoryFree)
-					}
-					freeRAM = mbToBytes(b.System.MemoryFree)
-					break
-				}
-			}
-		}
-		autoTuneRes := p.triggerAutoTuneReload(backendID, modelFromCtx, freeVRAM, freeRAM, totalVRAM)
-		if autoTuneRes != nil && autoTuneRes.Triggered {
-			logger.Get().Infow("proxyRequestLlamaCppNonStream: AutoTune async reload triggered",
-				"backend", backendID, "model", modelFromCtx,
-				"reason", autoTuneRes.Plan.Reason)
-		} else if autoTuneRes != nil && autoTuneRes.SkippedReason != "" {
-			logger.Get().Debugw("proxyRequestLlamaCppNonStream: AutoTune check",
-				"backend", backendID, "model", modelFromCtx,
-				"skipped_reason", autoTuneRes.SkippedReason)
-		}
-	}()
+	// R541 (R2 читаемости): тело отложенной проверки вынесено в
+	// autoTuneOnReturnNonStream.
+	defer p.autoTuneOnReturnNonStream(backendID, modelFromCtx)()
 
-	translatedBody := bodyNoStream
-	if !nativePath {
-		if tb, err := translateOllamaBodyToOpenAI(originalPath, bodyNoStream); err == nil {
-			translatedBody = tb
-		}
-	}
-
-	// R60.9 (2026-09-07): для /api/models/unload cppworker требует ?name= в
-	// QUERY STRING, не в body. Ollama-стиль клиенты (OpenWebUI, webui) шлют
-	// `{"name":"foo"}` в body → cppworker возвращает 400 "name query parameter
-	// is required". Извлекаем name из body и добавляем в query string.
-	fullURL := targetURL + llamacppPath
-	if originalPath == "/api/models/unload" {
-		name, modBody := extractNameFromBody(translatedBody)
-		if name != "" {
-			translatedBody = modBody
-			fullURL = fullURL + "?name=" + url.QueryEscape(name)
-			logger.Get().Debugw("proxyRequestLlamaCppNonStream: moved name to query (R60.9 unload fix)",
-				"backend", backendID, "model", name)
-		}
-	}
+	// R541 (R2 читаемости): тело для воркера (перевод, name в query для unload)
+	// и URL — одной функцией.
+	fullURL, translatedBody := p.prepareNonStreamBody(targetURL, llamacppPath, originalPath, nativePath, bodyNoStream, backendID)
 	logger.Get().Debugw("proxyRequestLlamaCppNonStream",
 		"backend", backendID, "url", fullURL,
 		"translated_body", string(translatedBody)[:min(300, len(translatedBody))])
 
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, fullURL, bytes.NewReader(translatedBody))
+	// R541 (R2 читаемости): сам запрос к воркеру и его заголовки.
+	req, err := p.newNonStreamUpstreamRequest(r, fullURL, translatedBody, llamacppPath, backendID)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %v", err)
+		return err
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	for key, values := range r.Header {
-		lowerKey := strings.ToLower(key)
-		if lowerKey == "content-type" || lowerKey == "accept" || lowerKey == "content-length" || lowerKey == "host" {
-			continue
-		}
-		for _, value := range values {
-			req.Header.Add(key, value)
-		}
-	}
-	// R307: административные ручки воркера закрыты токеном. Клиентский токен
-	// (для балансера) воркеру не годится — подставляем токен ЭТОГО воркера.
-	applyWorkerAdminTokenR307(req.Header, llamacppPath, p.workerAdminToken(backendID))
 
 	// F.0.4 (2026-06-28): session F — error context + EOF retry для non-streaming.
 	//
 	// Тот же фикс что и в proxyRequestLlamaCpp: добавляем backend_id, attempt,
 	// duration_ms в error message и публикуем EOF event в EventPublisher.
+	// R541 (R2 читаемости): отправка и ретраи вынесены в sendNonStreamRequest.
 	client := p.client
 	nonStreamStart := time.Now()
-	nonStreamAttempt := 1
-	resp, err := client.Do(req)
-	// 2026-07-10: connection-level error retry with exponential backoff.
-	//
-	// cppworker может быть в recreate-фазе (docker restart, build deploy):
-	//   - Порт 18092 ещё не listening → dial tcp: connection refused
-	//   - Контейнер запускается, но init не закончен → connection reset
-	//   - DNS не резолвится (редко) → no such host
-	//
-	// Раньше balancer делал мгновенный retry (attempt=1, attempt=2 без задержки),
-	// что приводило к OpenWebUI ошибкам "connection_refused" в transition window.
-	// Теперь: 3 retry с backoff 1s, 2s, 4s (cap 7s total) перед тем как сдаться.
-	// Только для connection-level ошибок — HTTP ошибки (5xx, 4xx) идут через
-	// существующий 503/loading_retry путь без backoff.
-	if err != nil && isConnectionLevelError(err) {
-		maxConnectionRetries := 3
-		connectionBackoffs := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
-		for retryIdx := 0; retryIdx < maxConnectionRetries; retryIdx++ {
-			backoff := connectionBackoffs[retryIdx]
-			logger.Get().Warnw("proxyRequestLlamaCppNonStream: connection-level error, backing off before retry",
-				"backend", backendID,
-				"model", modelFromCtx,
-				"attempt", nonStreamAttempt,
-				"retry_idx", retryIdx+1,
-				"max_retries", maxConnectionRetries,
-				"backoff_ms", backoff.Milliseconds(),
-				"error", err)
-			// Respect request context cancellation during backoff
-			select {
-			case <-time.After(backoff):
-			case <-r.Context().Done():
-				durationMs := time.Since(nonStreamStart).Milliseconds()
-				return fmt.Errorf("llama.cpp request failed [backend=%s, attempt=%d, duration_ms=%d, error_type=%s, cancelled_during_backoff]: %v",
-					backendID, nonStreamAttempt, durationMs, determineErrorType(err, r.Context()), err)
-			}
-			nonStreamAttempt++
-			// Recreate req body reader (it's been consumed)
-			req2, reqErr := http.NewRequestWithContext(r.Context(), r.Method, fullURL, bytes.NewReader(translatedBody))
-			if reqErr != nil {
-				return fmt.Errorf("failed to create retry request: %v", reqErr)
-			}
-			req2.Header.Set("Content-Type", "application/json")
-			req2.Header.Set("Accept", "application/json")
-			// R307: административная ручка воркера закрыта токеном — ретрай тоже.
-			applyWorkerAdminTokenR307(req2.Header, llamacppPath, p.workerAdminToken(backendID))
-			resp, err = client.Do(req2)
-			if err == nil {
-				break // success
-			}
-			if !isConnectionLevelError(err) {
-				// Если ошибка изменилась на non-connection-level, выходим из retry loop
-				break
-			}
-		}
-	}
+	resp, nonStreamAttempt, err := p.sendNonStreamRequest(client, req, r, backendID, modelFromCtx, originalPath, fullURL, translatedBody, llamacppPath, nonStreamStart)
 	if err != nil {
-		durationMs := time.Since(nonStreamStart).Milliseconds()
-		errType := determineErrorType(err, r.Context())
-		logger.Get().Errorw("proxyRequestLlamaCppNonStream: upstream Do() failed",
-			"backend", backendID,
-			"model", modelFromCtx,
-			"url", fullURL,
-			"attempt", nonStreamAttempt,
-			"duration_ms", durationMs,
-			"error_type", errType,
-			"error", err)
-		if errType == "unexpected_eof" {
-			p.publishTransportEOF(backendID, modelFromCtx, originalPath, err, time.Duration(durationMs)*time.Millisecond)
-		}
-		// Если после всех retry connection_refused — помечаем backend unhealthy.
-		// Это предотвращает routing новых запросов к мёртвому backend до следующего healthcheck.
-		if errType == "connection_refused" {
-			p.markBackendConnectionFailed(backendID)
-		}
-		return fmt.Errorf("llama.cpp request failed [backend=%s, attempt=%d, duration_ms=%d, error_type=%s]: %v",
-			backendID, nonStreamAttempt, durationMs, errType, err)
+		return err
 	}
 	defer resp.Body.Close()
 	// R476/R478: бэкенд в ответ — только после успешного ответа апстрима
@@ -702,175 +474,9 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	}
 
 	if strings.Contains(contentType, "text/event-stream") || bytes.HasPrefix(respBody, []byte("data:")) {
-		var fullContent string
-		var fullReasoning string // 2026-07-01: для reasoning-моделей собираем reasoning_content
-		var modelName = modelFromCtx
-		var finishReason = "stop"
-		toolAccum := make(map[int]*accumulatedToolCall)
-		scanner := bufio.NewScanner(bytes.NewReader(respBody))
-		// R264: тот же лимит строки, что и на стриминговых путях (R259).
-		//
-		// Здесь оставался хардкод 1 МиБ — то есть не-стрим путь сохранил ровно тот
-		// дефект, который R259 убрал в стриме: один большой SSE-чанк (крупный
-		// аргумент tool-call, длинная строка) ронял сканер, и ответ молча
-		// обрывался на середине — без ошибки клиенту и без следа в логе.
-		scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data:") {
-				continue
-			}
-			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if data == "[DONE]" {
-				break
-			}
-			var chunk map[string]interface{}
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				continue
-			}
-			if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
-				if choice, ok := choices[0].(map[string]interface{}); ok {
-					if delta, ok := choice["delta"].(map[string]interface{}); ok {
-						// Извлекаем tool_calls из delta (инкрементально)
-						accumulateToolCallsFromDelta(delta, toolAccum)
-						if c, ok := delta["content"].(string); ok {
-							fullContent += c
-						}
-						// 2026-07-01: reasoning-парсер (qwen3.5/qwen3.6/deepseek-r1/gemma-4).
-						// cppworker эмитит отдельный SSE-чанк с delta.reasoning_content, аккумулируем.
-						if r, ok := delta["reasoning_content"].(string); ok && r != "" {
-							fullReasoning += r
-						}
-					} else if msg, ok := choice["message"].(map[string]interface{}); ok {
-						if c, ok := msg["content"].(string); ok {
-							// Детектируем JSON tool calls в content для non-stream
-							if detectedTC, remainingTC, found := detectAndExtractToolCallsFromContent(c); found && len(detectedTC) > 0 {
-								logger.Get().Infow("proxyRequestLlamaCppNonStream: detected tool_calls in content",
-									"tool_calls_count", len(detectedTC))
-								// Clean remaining: remove service tokens, duplicate tool calls, role markers
-								cleanedTC := stripServiceTokens(remainingTC)
-								cleanedTC = cleanContentAfterToolCallExtraction(cleanedTC)
-								fullContent += cleanedTC
-								// Конвертируем детектированные tool_calls в accumulatedToolCall формат
-								for i, rawTC := range detectedTC {
-									if tcMap, ok := rawTC.(map[string]interface{}); ok {
-										acc := &accumulatedToolCall{
-											index:    len(toolAccum) + i,
-											function: make(map[string]interface{}),
-										}
-										if id, ok := tcMap["id"].(string); ok && id != "" {
-											acc.id = id
-										}
-										if fn, ok := tcMap["function"].(map[string]interface{}); ok {
-											for k, v := range fn {
-												acc.function[k] = v
-											}
-										}
-										toolAccum[len(toolAccum)] = acc
-									}
-								}
-							} else {
-								fullContent += c
-							}
-						}
-						// Проверяем tool_calls в message (если чанк — это уже готовый message)
-						if tc, ok := msg["tool_calls"].([]interface{}); ok && len(tc) > 0 {
-							for _, rawTC := range tc {
-								if tcMap, ok := rawTC.(map[string]interface{}); ok {
-									idx := len(toolAccum)
-									acc := &accumulatedToolCall{
-										index:    idx,
-										function: make(map[string]interface{}),
-									}
-									if id, ok := tcMap["id"].(string); ok && id != "" {
-										acc.id = id
-									}
-									if fn, ok := tcMap["function"].(map[string]interface{}); ok {
-										for k, v := range fn {
-											acc.function[k] = v
-										}
-									}
-									toolAccum[idx] = acc
-								}
-							}
-						}
-					}
-					if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
-						finishReason = fr
-					}
-				}
-			}
-			if m, ok := chunk["model"].(string); ok && m != "" {
-				modelName = m
-			}
-		}
-		// R264: превышение НАШЕГО лимита строки — не вина воркера и не повод
-		// молча отдать обрезанный ответ. Логируем причину с числами и отдаём то,
-		// что успели собрать (клиент получит корректный JSON, а не «пустоту»).
-		if serr := scanner.Err(); serr != nil && errors.Is(serr, bufio.ErrTooLong) {
-			logger.Get().Warnw(i18n.T("balancer.nonstream_stream_limit.line_too_long"),
-				"model", modelName,
-				"limit_bytes", streamMaxLineBytes(),
-				"reason", "our_limit",
-				"content_len", len(fullContent))
-		}
-		var ollamaBody []byte
-		if originalPath == "/api/generate" {
-			// Round 51.3 (2026-08-20): done:true для ЛЮБОГО непустого finish_reason.
-			// Раньше done:true только для "stop" и "tool_calls" → Cline (ollama npm)
-			// валился с "Did not receive done or success response" для finish_reason="length".
-			resp := map[string]interface{}{
-				"model":       modelName,
-				"created_at":  time.Now().UTC().Format(time.RFC3339),
-				"response":    fullContent,
-				"done":        finishReason != "",
-				"done_reason": finishReason,
-			}
-			// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4) добавляем
-			// поле `thinking` (Ollama API) с накопленным reasoning_content.
-			if fullReasoning != "" {
-				resp["thinking"] = fullReasoning
-			}
-			ollamaBody, _ = json.Marshal(resp)
-		} else {
-			msgMap := map[string]interface{}{
-				"role":    "assistant",
-				"content": fullContent,
-			}
-			// 2026-07-01: для reasoning-моделей добавляем поле `reasoning` (Ollama API).
-			if fullReasoning != "" {
-				msgMap["reasoning"] = fullReasoning
-			}
-			// Добавляем накопленные tool_calls в финальный ответ
-			if len(toolAccum) > 0 {
-				toolCallsArr := make([]map[string]interface{}, 0, len(toolAccum))
-				for i := 0; i < len(toolAccum); i++ {
-					acc, ok := toolAccum[i]
-					if !ok {
-						continue
-					}
-					tcMap := map[string]interface{}{
-						"type":     "function",
-						"function": acc.function,
-					}
-					if acc.id != "" {
-						tcMap["id"] = acc.id
-					}
-					toolCallsArr = append(toolCallsArr, tcMap)
-				}
-				msgMap["tool_calls"] = toolCallsArr
-			}
-			// Round 51.3 (2026-08-20): done:true для ЛЮБОГО непустого finish_reason.
-			// См. комментарий выше для /api/generate — та же логика для /api/chat.
-			resp := map[string]interface{}{
-				"model":       modelName,
-				"created_at":  time.Now().UTC().Format(time.RFC3339),
-				"done":        finishReason != "",
-				"done_reason": finishReason,
-				"message":     msgMap,
-			}
-			ollamaBody, _ = json.Marshal(resp)
-		}
+		// R541 (R2 читаемости): разбор SSE-потока и сборка тела Ollama —
+		// отдельной функцией (assembleSSEToOllamaBody).
+		ollamaBody := assembleSSEToOllamaBody(respBody, originalPath, modelFromCtx)
 		// R65d (2026-09-20): метрики токенов для нативного non-stream пути.
 		// Нативный /api/chat отдаёт Ollama-поля prompt_eval_count / eval_count
 		// (а не OpenAI usage), поэтому общий блок ниже их не видел.
@@ -927,3 +533,473 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	return nil
 }
 
+// ============================================================================
+// R541 (R2 читаемости): стадии не-потокового транспорта.
+//
+// proxyRequestLlamaCppNonStream был 907 строк / 318 операторов (третья по
+// размеру функция репозитория). Ниже — preflight окна, подготовка тела и URL,
+// создание запроса и отправка с ретраями. Поведение перенесено дословно:
+// порядок проверок, тексты отказов, заголовки и ретраи прежние.
+// ============================================================================
+
+// nonStreamPreflight — стадия preflight не-потокового пути.
+//
+// Стратегия по умолчанию (PreflightSyncEnabled=true): СИНХРОННО ждём завершения
+// reload (до PreflightSyncTimeoutMs, default 60s), затем проксируем. Round-trip
+// один — клиент не получает EOF. При таймауте fallback на async 503 +
+// Retry-After: 15. Для streaming-клиентов остаётся старая async логика.
+//
+// Возвращает тело для отправки воркеру и признак «ответ клиенту уже отправлен».
+func (p *Proxy) nonStreamPreflight(w http.ResponseWriter, r *http.Request, backendID, modelFromCtx, originalPath string, bodyNoStream, bodyBuf []byte) ([]byte, bool) {
+	var preflightOK bool
+	var preflightMsg string
+	var preflightStatus int
+	var retryAfter int = 30 // Round 23 (2026-08-04): 5 → 30 (реальное время reload)
+	var preflightBody []byte
+	// R447: слот под числа вердикта R301/R385 (см. growth_numbers_ctx_r447.go).
+	preflightCtx, _ := growthNumbersSlotR447(r.Context())
+	if p.config != nil && p.config.Balancing.PreflightSyncEnabled {
+		preflightBody, preflightOK, preflightMsg, preflightStatus, retryAfter =
+			p.preflightNCtxReloadIfNeededSync(preflightCtx, backendID, modelFromCtx, bodyNoStream, originalPath)
+		if preflightOK {
+			bodyNoStream = preflightBody
+			logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx sync-reload applied",
+				"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyNoStream))
+		}
+	} else {
+		preflightBody, preflightOK, preflightMsg, preflightStatus =
+			p.preflightNCtxReloadIfNeeded(preflightCtx, backendID, modelFromCtx, bodyNoStream, originalPath)
+		if preflightOK {
+			bodyNoStream = preflightBody
+			logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx reload applied",
+				"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyNoStream))
+		}
+	}
+	if preflightOK || (preflightMsg == "" && preflightStatus == http.StatusOK) {
+		return bodyNoStream, false
+	}
+
+	// R118.7 (2026-10-14): окно ФИЗИЧЕСКИ недостижимо (cppworker уже отвечал
+	// 422 n_ctx_infeasible, потолок запомнен). Ждать нечего и проксировать
+	// нельзя: запрос ушёл бы на бэкенд с меньшим окном слота, и клиент получил
+	// бы 200 с окном меньше запрошенного — ровно то, на что жаловались.
+	// Отдаём понятный отказ с числами и причиной от cppworker'а.
+	if preflightStatus == http.StatusRequestEntityTooLarge {
+		logger.Get().Infow(i18n.T("balancer.llamacpp_transport_nonstream.window_unreachable_413_info"),
+			"backend", backendID, "model", modelFromCtx, "msg", preflightMsg)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-NCtx-Reload-Decision", "infeasible")
+		body := []byte(fmt.Sprintf(`{"error":%q,"decision":"n_ctx_infeasible"}`, preflightMsg))
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write(body)
+		return nil, true
+	}
+
+	// R119 (2026-10-15): модели НЕТ на бэкенде — терминальный 404 с причиной и
+	// списком доступных моделей (см. model_missing_r119.go). Живой дефект:
+	// запрос к llama-3-8b через балансер не отвечал более 4 минут, клиент
+	// падал по своему таймауту с «Internal Server Error».
+	//
+	// awaitModelMissing закрывает гонку: фоновая загрузка отсутствующей модели
+	// падает за миллисекунды, а запись в реестр появляется чуть позже решения
+	// preflight'а. Ждём её коротко, чтобы САМЫЙ ПЕРВЫЙ запрос получил 404, а не
+	// 503 «повтори через 30 с».
+	if p.awaitModelMissing(backendID, modelFromCtx, 500*time.Millisecond) {
+		reason, available, _ := p.modelMissingFor(backendID, modelFromCtx)
+		logger.Get().Warnw(i18n.T("balancer.llamacpp_transport_nonstream.model_missing_404_warn"),
+			"backend", backendID, "model", modelFromCtx,
+			"msg", preflightMsg, "available_models", len(available))
+		writeModelMissingResponseFor(w, originalPath, modelFromCtx, reason, available)
+		return nil, true
+	}
+
+	// R115 (2026-10-14): СНАЧАЛА ЖДЁМ ЗАГРУЗКУ, И ТОЛЬКО ПОТОМ 503.
+	//
+	// Живой случай (Ollama-поверхность :18080, клиент OpenWebUI, модель не
+	// загружена): лог балансера показывал
+	//   "detected n_ctx mismatch ... loaded_n_ctx=0 requested_n_ctx=32768
+	//    loaded_n_ctx_is_zero=true" → "returning 503 ... retry in 30s".
+	// То есть при ПУСТОМ бэкенде балансер решал «надо перезагрузить» и сразу
+	// отдавал 503, хотя модель в этот момент только начинала грузиться
+	// (27B на раскладке — 256-485 с, а советовали подождать 30). OpenWebUI,
+	// в отличие от Cline, 503 не повторяет — пользователь видел ошибку.
+	//
+	// Потоковым клиентам повезло: у них есть stream dialog с keepalive и
+	// ожиданием без капа. Нестриминговый путь ожидания не имел вовсе —
+	// теперь имеет: ждём появления модели на бэкенде (want=1 означает «модель
+	// загружена», конкретный n_ctx выставит тот самый reload, который уже
+	// запущен в фоне), и только по исчерпании бюджета отдаём прежний 503.
+	wait := AutoLoadWaitTimeout()
+	if p.waitForBackendNCtx(r.Context(), backendID, modelFromCtx, 1, wait) {
+		logger.Get().Infow(i18n.T("balancer.llamacpp_transport_nonstream.model_ready_after_reload_info"),
+			"backend", backendID, "model", modelFromCtx,
+			"waited_sec", int(wait.Seconds()), "preflight_msg", preflightMsg)
+		return bodyNoStream, false
+	}
+	// Reload запущен в фоне (async) ИЛИ sync timeout — отдаём 503.
+	logger.Get().Infow("proxyRequestLlamaCppNonStream: preflight n_ctx reload, returning 503",
+		"backend", backendID, "model", modelFromCtx,
+		"msg", preflightMsg, "status", preflightStatus, "retry_after", retryAfter)
+	// R299 (2026-10-29): единое тело отказа (см. growth_guard_r299.go) вместо
+	// самописного `{"decision":"async_reload",...}`. Причина та же: клиент
+	// должен разбирать один формат, а не угадывать по строке.
+	w.Header().Set("X-NCtx-Reload-Decision", "async-reload")
+	writePreflightDeferredR299Ctx(w, p, preflightCtx, backendID, modelFromCtx, bodyBuf, originalPath, preflightMsg, retryAfter)
+	return nil, true
+}
+
+// prepareNonStreamBody — тело для воркера (перевод в OpenAI-формат для ненативных
+// путей, перенос `name` в query для unload) и полный URL.
+func (p *Proxy) prepareNonStreamBody(targetURL, llamacppPath, originalPath string, nativePath bool, bodyNoStream []byte, backendID string) (fullURL string, translatedBody []byte) {
+	translatedBody = bodyNoStream
+	if !nativePath {
+		if tb, err := translateOllamaBodyToOpenAI(originalPath, bodyNoStream); err == nil {
+			translatedBody = tb
+		}
+	}
+
+	// R60.9 (2026-09-07): для /api/models/unload cppworker требует ?name= в
+	// QUERY STRING, не в body. Ollama-стиль клиенты (OpenWebUI, webui) шлют
+	// `{"name":"foo"}` в body → cppworker возвращает 400 "name query parameter
+	// is required". Извлекаем name из body и добавляем в query string.
+	fullURL = targetURL + llamacppPath
+	if originalPath == "/api/models/unload" {
+		name, modBody := extractNameFromBody(translatedBody)
+		if name != "" {
+			translatedBody = modBody
+			fullURL = fullURL + "?name=" + url.QueryEscape(name)
+			logger.Get().Debugw("proxyRequestLlamaCppNonStream: moved name to query (R60.9 unload fix)",
+				"backend", backendID, "model", name)
+		}
+	}
+	return fullURL, translatedBody
+}
+
+// newNonStreamUpstreamRequest — запрос к воркеру: заголовки клиента (кроме
+// Content-Type/Accept/Content-Length/Host) и токен административных ручек R307.
+func (p *Proxy) newNonStreamUpstreamRequest(r *http.Request, fullURL string, translatedBody []byte, llamacppPath, backendID string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, fullURL, bytes.NewReader(translatedBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	for key, values := range r.Header {
+		lowerKey := strings.ToLower(key)
+		if lowerKey == "content-type" || lowerKey == "accept" || lowerKey == "content-length" || lowerKey == "host" {
+			continue
+		}
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	// R307: административные ручки воркера закрыты токеном. Клиентский токен
+	// (для балансера) воркеру не годится — подставляем токен ЭТОГО воркера.
+	applyWorkerAdminTokenR307(req.Header, llamacppPath, p.workerAdminToken(backendID))
+	return req, nil
+}
+
+// sendNonStreamRequest — отправка и ретраи не-потокового запроса.
+//
+// 2026-07-10: connection-level error retry with exponential backoff.
+//
+// cppworker может быть в recreate-фазе (docker restart, build deploy):
+//   - Порт 18092 ещё не listening → dial tcp: connection refused
+//   - Контейнер запускается, но init не закончен → connection reset
+//   - DNS не резолвится (редко) → no such host
+//
+// Раньше balancer делал мгновенный retry (attempt=1, attempt=2 без задержки),
+// что приводило к OpenWebUI ошибкам "connection_refused" в transition window.
+// Теперь: 3 retry с backoff 1s, 2s, 4s (cap 7s total) перед тем как сдаться.
+// Только для connection-level ошибок — HTTP ошибки (5xx, 4xx) идут через
+// существующий 503/loading_retry путь без backoff.
+//
+// Возвращает ответ, число попыток (используется в логах 503-пути) и ошибку.
+func (p *Proxy) sendNonStreamRequest(client *http.Client, req *http.Request, r *http.Request, backendID, modelFromCtx, originalPath, fullURL string, translatedBody []byte, llamacppPath string, nonStreamStart time.Time) (*http.Response, int, error) {
+	nonStreamAttempt := 1
+	resp, err := client.Do(req)
+	if err != nil && isConnectionLevelError(err) {
+		maxConnectionRetries := 3
+		connectionBackoffs := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+		for retryIdx := 0; retryIdx < maxConnectionRetries; retryIdx++ {
+			backoff := connectionBackoffs[retryIdx]
+			logger.Get().Warnw("proxyRequestLlamaCppNonStream: connection-level error, backing off before retry",
+				"backend", backendID,
+				"model", modelFromCtx,
+				"attempt", nonStreamAttempt,
+				"retry_idx", retryIdx+1,
+				"max_retries", maxConnectionRetries,
+				"backoff_ms", backoff.Milliseconds(),
+				"error", err)
+			// Respect request context cancellation during backoff
+			select {
+			case <-time.After(backoff):
+			case <-r.Context().Done():
+				durationMs := time.Since(nonStreamStart).Milliseconds()
+				return nil, nonStreamAttempt, fmt.Errorf("llama.cpp request failed [backend=%s, attempt=%d, duration_ms=%d, error_type=%s, cancelled_during_backoff]: %v",
+					backendID, nonStreamAttempt, durationMs, determineErrorType(err, r.Context()), err)
+			}
+			nonStreamAttempt++
+			// Recreate req body reader (it's been consumed)
+			req2, reqErr := http.NewRequestWithContext(r.Context(), r.Method, fullURL, bytes.NewReader(translatedBody))
+			if reqErr != nil {
+				return nil, nonStreamAttempt, fmt.Errorf("failed to create retry request: %v", reqErr)
+			}
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("Accept", "application/json")
+			// R307: административная ручка воркера закрыта токеном — ретрай тоже.
+			applyWorkerAdminTokenR307(req2.Header, llamacppPath, p.workerAdminToken(backendID))
+			resp, err = client.Do(req2)
+			if err == nil {
+				break // success
+			}
+			if !isConnectionLevelError(err) {
+				// Если ошибка изменилась на non-connection-level, выходим из retry loop
+				break
+			}
+		}
+	}
+	if err == nil {
+		return resp, nonStreamAttempt, nil
+	}
+	durationMs := time.Since(nonStreamStart).Milliseconds()
+	errType := determineErrorType(err, r.Context())
+	logger.Get().Errorw("proxyRequestLlamaCppNonStream: upstream Do() failed",
+		"backend", backendID,
+		"model", modelFromCtx,
+		"url", fullURL,
+		"attempt", nonStreamAttempt,
+		"duration_ms", durationMs,
+		"error_type", errType,
+		"error", err)
+	if errType == "unexpected_eof" {
+		p.publishTransportEOF(backendID, modelFromCtx, originalPath, err, time.Duration(durationMs)*time.Millisecond)
+	}
+	// Если после всех retry connection_refused — помечаем backend unhealthy.
+	// Это предотвращает routing новых запросов к мёртвому backend до следующего healthcheck.
+	if errType == "connection_refused" {
+		p.markBackendConnectionFailed(backendID)
+	}
+	return nil, nonStreamAttempt, fmt.Errorf("llama.cpp request failed [backend=%s, attempt=%d, duration_ms=%d, error_type=%s]: %v",
+		backendID, nonStreamAttempt, durationMs, errType, err)
+}
+
+// autoTuneOnReturnNonStream — отложенная проверка AutoTune не-потокового пути
+// (R54.4/R230): метрики кластера → triggerAutoTuneReload, результат только в лог.
+// Возвращает функцию для `defer`, чтобы имя модели читалось в момент выполнения.
+func (p *Proxy) autoTuneOnReturnNonStream(backendID, modelFromCtx string) func() {
+	return func() {
+		if modelFromCtx == "" {
+			return
+		}
+		var freeVRAM, freeRAM, totalVRAM uint64
+		if p.metricsMgr != nil {
+			// R230: метрики в МБ → байты (triggerAutoTuneReload ждёт байты).
+			clusterState := p.GetClusterState()
+			for _, b := range clusterState.Backends {
+				if b.ID == backendID {
+					totalVRAM = mbToBytes(b.GPU.MemoryTotal)
+					if b.GPU.MemoryFree > 0 {
+						freeVRAM = mbToBytes(b.GPU.MemoryFree)
+					}
+					freeRAM = mbToBytes(b.System.MemoryFree)
+					break
+				}
+			}
+		}
+		autoTuneRes := p.triggerAutoTuneReload(backendID, modelFromCtx, freeVRAM, freeRAM, totalVRAM)
+		if autoTuneRes != nil && autoTuneRes.Triggered {
+			logger.Get().Infow("proxyRequestLlamaCppNonStream: AutoTune async reload triggered",
+				"backend", backendID, "model", modelFromCtx,
+				"reason", autoTuneRes.Plan.Reason)
+		} else if autoTuneRes != nil && autoTuneRes.SkippedReason != "" {
+			logger.Get().Debugw("proxyRequestLlamaCppNonStream: AutoTune check",
+				"backend", backendID, "model", modelFromCtx,
+				"skipped_reason", autoTuneRes.SkippedReason)
+		}
+	}
+}
+
+// assembleSSEToOllamaBody — R541 (R2 читаемости): собрать тело Ollama-ответа из
+// SSE-потока воркера (не-потоковый путь, а воркер ответил событиями): content,
+// reasoning_content, tool_calls и finish_reason собираются в один JSON.
+//
+// R264: тот же лимит строки, что и на стриминговых путях (см. R259). Здесь
+// оставался хардкод 1 МиБ — один большой SSE-чанк (крупный аргумент tool-call,
+// длинная строка) ронял сканер, и ответ молча обрывался на середине, без ошибки
+// клиенту и без следа в логе. Превышение НАШЕГО лимита не выдаётся за обрыв
+// воркера: логируем причину с числами и отдаём то, что успели собрать.
+func assembleSSEToOllamaBody(respBody []byte, originalPath, modelFromCtx string) []byte {
+	var fullContent string
+	var fullReasoning string // 2026-07-01: для reasoning-моделей собираем reasoning_content
+	var modelName = modelFromCtx
+	var finishReason = "stop"
+	toolAccum := make(map[int]*accumulatedToolCall)
+	scanner := bufio.NewScanner(bytes.NewReader(respBody))
+	// R264: тот же лимит строки, что и на стриминговых путях (R259).
+	//
+	// Здесь оставался хардкод 1 МиБ — то есть не-стрим путь сохранил ровно тот
+	// дефект, который R259 убрал в стриме: один большой SSE-чанк (крупный
+	// аргумент tool-call, длинная строка) ронял сканер, и ответ молча
+	// обрывался на середине — без ошибки клиенту и без следа в логе.
+	scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+		var chunk map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]interface{}); ok {
+				if delta, ok := choice["delta"].(map[string]interface{}); ok {
+					// Извлекаем tool_calls из delta (инкрементально)
+					accumulateToolCallsFromDelta(delta, toolAccum)
+					if c, ok := delta["content"].(string); ok {
+						fullContent += c
+					}
+					// 2026-07-01: reasoning-парсер (qwen3.5/qwen3.6/deepseek-r1/gemma-4).
+					// cppworker эмитит отдельный SSE-чанк с delta.reasoning_content, аккумулируем.
+					if r, ok := delta["reasoning_content"].(string); ok && r != "" {
+						fullReasoning += r
+					}
+				} else if msg, ok := choice["message"].(map[string]interface{}); ok {
+					if c, ok := msg["content"].(string); ok {
+						// Детектируем JSON tool calls в content для non-stream
+						if detectedTC, remainingTC, found := detectAndExtractToolCallsFromContent(c); found && len(detectedTC) > 0 {
+							logger.Get().Infow("proxyRequestLlamaCppNonStream: detected tool_calls in content",
+								"tool_calls_count", len(detectedTC))
+							// Clean remaining: remove service tokens, duplicate tool calls, role markers
+							cleanedTC := stripServiceTokens(remainingTC)
+							cleanedTC = cleanContentAfterToolCallExtraction(cleanedTC)
+							fullContent += cleanedTC
+							// Конвертируем детектированные tool_calls в accumulatedToolCall формат
+							for i, rawTC := range detectedTC {
+								if tcMap, ok := rawTC.(map[string]interface{}); ok {
+									acc := &accumulatedToolCall{
+										index:    len(toolAccum) + i,
+										function: make(map[string]interface{}),
+									}
+									if id, ok := tcMap["id"].(string); ok && id != "" {
+										acc.id = id
+									}
+									if fn, ok := tcMap["function"].(map[string]interface{}); ok {
+										for k, v := range fn {
+											acc.function[k] = v
+										}
+									}
+									toolAccum[len(toolAccum)] = acc
+								}
+							}
+						} else {
+							fullContent += c
+						}
+					}
+					// Проверяем tool_calls в message (если чанк — это уже готовый message)
+					if tc, ok := msg["tool_calls"].([]interface{}); ok && len(tc) > 0 {
+						for _, rawTC := range tc {
+							if tcMap, ok := rawTC.(map[string]interface{}); ok {
+								idx := len(toolAccum)
+								acc := &accumulatedToolCall{
+									index:    idx,
+									function: make(map[string]interface{}),
+								}
+								if id, ok := tcMap["id"].(string); ok && id != "" {
+									acc.id = id
+								}
+								if fn, ok := tcMap["function"].(map[string]interface{}); ok {
+									for k, v := range fn {
+										acc.function[k] = v
+									}
+								}
+								toolAccum[idx] = acc
+							}
+						}
+					}
+				}
+				if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
+					finishReason = fr
+				}
+			}
+		}
+		if m, ok := chunk["model"].(string); ok && m != "" {
+			modelName = m
+		}
+	}
+	// R264: превышение НАШЕГО лимита строки — не вина воркера и не повод
+	// молча отдать обрезанный ответ. Логируем причину с числами и отдаём то,
+	// что успели собрать (клиент получит корректный JSON, а не «пустоту»).
+	if serr := scanner.Err(); serr != nil && errors.Is(serr, bufio.ErrTooLong) {
+		logger.Get().Warnw(i18n.T("balancer.nonstream_stream_limit.line_too_long"),
+			"model", modelName,
+			"limit_bytes", streamMaxLineBytes(),
+			"reason", "our_limit",
+			"content_len", len(fullContent))
+	}
+	var ollamaBody []byte
+	if originalPath == "/api/generate" {
+		// Round 51.3 (2026-08-20): done:true для ЛЮБОГО непустого finish_reason.
+		// Раньше done:true только для "stop" и "tool_calls" → Cline (ollama npm)
+		// валился с "Did not receive done or success response" для finish_reason="length".
+		resp := map[string]interface{}{
+			"model":       modelName,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+			"response":    fullContent,
+			"done":        finishReason != "",
+			"done_reason": finishReason,
+		}
+		// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4) добавляем
+		// поле `thinking` (Ollama API) с накопленным reasoning_content.
+		if fullReasoning != "" {
+			resp["thinking"] = fullReasoning
+		}
+		ollamaBody, _ = json.Marshal(resp)
+	} else {
+		msgMap := map[string]interface{}{
+			"role":    "assistant",
+			"content": fullContent,
+		}
+		// 2026-07-01: для reasoning-моделей добавляем поле `reasoning` (Ollama API).
+		if fullReasoning != "" {
+			msgMap["reasoning"] = fullReasoning
+		}
+		// Добавляем накопленные tool_calls в финальный ответ
+		if len(toolAccum) > 0 {
+			toolCallsArr := make([]map[string]interface{}, 0, len(toolAccum))
+			for i := 0; i < len(toolAccum); i++ {
+				acc, ok := toolAccum[i]
+				if !ok {
+					continue
+				}
+				tcMap := map[string]interface{}{
+					"type":     "function",
+					"function": acc.function,
+				}
+				if acc.id != "" {
+					tcMap["id"] = acc.id
+				}
+				toolCallsArr = append(toolCallsArr, tcMap)
+			}
+			msgMap["tool_calls"] = toolCallsArr
+		}
+		// Round 51.3 (2026-08-20): done:true для ЛЮБОГО непустого finish_reason.
+		// См. комментарий выше для /api/generate — та же логика для /api/chat.
+		resp := map[string]interface{}{
+			"model":       modelName,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+			"done":        finishReason != "",
+			"done_reason": finishReason,
+			"message":     msgMap,
+		}
+		ollamaBody, _ = json.Marshal(resp)
+	}
+	return ollamaBody
+}

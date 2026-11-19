@@ -1,6 +1,6 @@
-package i18n
+﻿package i18n
 
-// messages_api_r234.go — R234, батч «api»: логи и ошибки пакета internal/api.
+// messages_model_share.go — R234, батч «api»: логи и ошибки пакета internal/api.
 //
 // ЗАЧЕМ ОТДЕЛЬНЫМ ФАЙЛОМ. Каталог пополняется батчами по областям кода, чтобы
 // параллельные правки не конфликтовали в одном messages.go (см. register.go).

@@ -1,10 +1,10 @@
-package i18n
+﻿package i18n
 
 func init() { Register(messagesDonorR304) }
 
 // messagesDonorR304 — R304 (2026-10-30): «донор держит только память».
 //
-// Отдельный файл, а не дописывание в messages_cppbackend_r234.go: в проекте
+// Отдельный файл, а не дописывание в messages_cppbackend_backend.go: в проекте
 // каждая ревизия живёт своим батчем, иначе параллельные правки одного файла
 // конфликтуют (см. register.go).
 //

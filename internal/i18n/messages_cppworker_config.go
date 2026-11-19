@@ -1,6 +1,6 @@
-package i18n
+﻿package i18n
 
-// messages_misc_r234.go — R234, батч «misc»: логи и сообщения об ошибках,
+// messages_cppworker_config.go — R234, батч «misc»: логи и сообщения об ошибках,
 // оставшиеся вне батчей api/balancer/core/cmd.
 //
 // ЗАЧЕМ ОТДЕЛЬНЫМ ФАЙЛОМ. Каталог пополняется батчами по областям кода (см.

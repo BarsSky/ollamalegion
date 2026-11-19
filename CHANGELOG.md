@@ -1,4 +1,38 @@
-﻿## [0.7.403 - R599: R5 — переименование `_rNNN` начато, 10 боевых файлов в малых пакетах, 2026-11-19]
+﻿## [0.7.404 - R600: R5 — пакет `internal/i18n` переименован по содержимому (14 файлов), 2026-11-19]
+
+Второй шаг R5. Тема коммита — **весь пакет `internal/i18n`**: там лежат только таблицы
+сообщений, и номер раунда в имени файла не сообщал ничего, кроме «когда завели».
+Имена даны по СОДЕРЖИМОМУ (первые ключи каждого файла), а не механическим снятием
+суффикса: у трёх файлов были батч-имена `api2`/`balancer2`/`balancer3`, которые после
+снятия цифры остались бы бессмысленными.
+
+| Было | Стало | По каким ключам |
+|---|---|---|
+| `messages_api_r234.go` | `messages_model_share.go` | `api.model_share.*` |
+| `messages_api2_r234.go` | `messages_api_profiles.go` | `api.cppworker_profiles.*` |
+| `messages_balancer_r234.go` | `messages_balancer_image_tool.go` | `balancer.image_tool.*` |
+| `messages_balancer2_r234.go` | `messages_preflight_nctx.go` | `balancer.preflight_nctx.*` |
+| `messages_balancer3_r234.go` | `messages_rpc_layout.go` | `balancer.rpc_layout_failure.*` |
+| `messages_cmd_r234.go` | `messages_rpc_env.go` | `cppworker.rpc_env.*` |
+| `messages_core_r234.go` | `messages_hf_probe.go` | `cppbackend.hf_probe.*` |
+| `messages_cppbackend_r234.go` | `messages_cppbackend_backend.go` | `cppbackend.backend.*` |
+| `messages_cppworker_r234.go` | `messages_cppworker_chat.go` | `cppworker.handlers_chat.*` |
+| `messages_misc_r234.go` | `messages_cppworker_config.go` | `cppworker.handlers_config.*` |
+| `messages_final_r234.go` | `messages_sdworker.go` | `sdworker.handlers_sdapi.*` |
+| `messages_backend_disable_r250.go` | `messages_backend_disable.go` | `balancer.backend_disable.*` |
+| `messages_donor_r304.go` | `messages_donor.go` | `cppbackend.donor.*` |
+| `messages_stream_r264.go` | `messages_stream_limits.go` | `balancer.nonstream_stream_limit.*` |
+
+**Числа (измеренные):** собственный счётчик боевых `*.go` без `_test.go`:
+**279 → 265**; `scripts/structure_report.ps1`: **269 → 255**. Две шапки файлов
+ссылались на переименованных соседей по старым именам — приведены к факту.
+
+**Проверено:** `go build -tags llama_stub ./...` = 0; `./internal/i18n` — зелёные;
+`./internal/api -run I18nKeys` (ключи, используемые кодом, есть в переводах) — зелёные.
+
+**Остаток R5:** 265 боевых файлов; следующий коммит — `internal/cppbackend` (15) как
+одна тема, затем `internal/api` (22).
+## [0.7.403 - R599: R5 — переименование `_rNNN` начато, 10 боевых файлов в малых пакетах, 2026-11-19]
 
 Первый шаг R5 («переименование по темам, по одной теме за коммит») из плана
 читаемости. Тема этого коммита — **хвосты вне двух больших пакетов**: десять боевых

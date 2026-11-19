@@ -489,3 +489,5 @@ R493e-сторож ищет файл с публикацией инстанса 
 - **Не смешивать** этот рефакторинг с правками поведения из аудита согласованности: разные коммиты, разные проверки.
 
 **R5 — в работе (R599, 0.7.403).** Переименовано 10 боевых файлов в малых пакетах (gent, modelreplication, untimeoverrides, settings, pkg/logger, pkg/types, pkg/version): счётчик 289 → 279, scripts/structure_report.ps1 показывает 269. Тема коммита — «хвосты вне двух больших пакетов»; ссылки на старые имена в комментариях поправлены вместе с именами. Остаток: internal/balancer (155), cmd/cppworker (73), internal/api (22), internal/cppbackend (15), internal/i18n (14).
+
+**R5 — продолжение (R600, 0.7.404).** Переименован весь пакет internal/i18n (14 файлов) по содержимому: у трёх файлов были батч-имена pi2/alancer2/alancer3 — после снятия номера они остались бы бессмысленными, поэтому имена даны по ключам (messages_model_share.go, messages_preflight_nctx.go, messages_rpc_layout.go и т.д.). Счётчик: собственный 279 → 265, structure_report.ps1 269 → 255. Следующий шаг — internal/cppbackend (15), затем internal/api (22).

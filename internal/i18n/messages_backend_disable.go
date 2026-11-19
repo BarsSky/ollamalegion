@@ -1,10 +1,10 @@
-package i18n
+﻿package i18n
 
 func init() { Register(messagesBackendDisableR250) }
 
 // messagesBackendDisableR250 — R250 (2026-10-28): флаг «не использовать бэкенд».
 //
-// Отдельный файл, а не дописывание в messages_api_r234.go/balancer_r234.go: в
+// Отдельный файл, а не дописывание в messages_model_share.go/balancer_r234.go: в
 // проекте каждая область/ревизия живёт своим батчем, иначе параллельные правки
 // одного файла конфликтуют (см. register.go).
 var messagesBackendDisableR250 = map[string]map[Lang]string{

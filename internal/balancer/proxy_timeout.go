@@ -179,12 +179,22 @@ func (p *Proxy) getStreamingIdleTimeout() time.Duration {
 // --- Per-model adaptive timeout helpers (3-tier resolver) ---
 
 // getModelStreamTimeout возвращает per-model общий таймаут стриминга.
-// Приоритет:
-//  1. Per-model profile (config.LlamaCppModelProfiles[modelName].StreamingTimeoutSec)
-//  2. ModelLatencyTracker (автоматический расчёт на основе истории генерации)
-//  3. Эвристика по размеру GGUF файла (для моделей без истории)
-//  4. Глобальный config.Balancing.StreamTimeout
-//  5. Дефолт 600 секунд
+//
+// R550 (T-10 аудита): список приоритетов переписан по факту. Здесь были заявлены
+// «2. ModelLatencyTracker (автоматический расчёт на основе истории генерации)» и
+// «3. эвристика по размеру GGUF» как рабочие тиры, но:
+//   - замеров в трекере не было ВООБЩЕ (RecordSample вызывался только из тестов),
+//     то есть тир 2 не срабатывал никогда; R550 завёл реальный замер, но
+//     РЕКОМЕНДАЦИИ трекера таймаутами по-прежнему НЕ являются — доктрина R83
+//     («таймаут только opt-in») этого не разрешает;
+//   - эвристика по размеру модели стала осознанным дефолтом для границы ПЕРВОГО
+//     байта (R498/R523), а не для суммарного таймаута стрима.
+//
+// Фактический приоритет:
+//  1. LB_STREAMING_NEVER_TIMEOUT=1 → 0 (нет таймаута; сильнее всего);
+//  2. LB_STREAMING_TIMEOUT_SEC — явный opt-in оператора;
+//  3. профиль модели (StreamingTimeoutSec) — осознанное решение по модели;
+//  4. иначе 0 — без таймаута: соединение живёт до cancel клиента или ошибки.
 //
 // R58.1 (2026-09-03): LB_STREAMING_NEVER_TIMEOUT=1 → 0 (= "no total stream timeout").
 // Highest priority, overrides per-model profile and config.

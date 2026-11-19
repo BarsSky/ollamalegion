@@ -1545,6 +1545,15 @@ func (st *llamaCppStreamState) accumulateNativeChunk(nativeChunk map[string]inte
 			if promptTokens > 0 || evalTokens > 0 {
 				st.tokenUsageRecorded = true
 				st.p.recordTokenUsage(*st.modelFromCtx, promptTokens, evalTokens)
+				// R550 (T-10 аудита): замер скорости генерации — РЕАЛЬНЫЙ.
+				//
+				// До R550 `ModelLatencyTracker.RecordSample` вызывался только из
+				// тестов, поэтому «измеренная» скорость декода на карточке группы
+				// (groupModelInfoR104) не могла появиться никогда — она всегда
+				// показывала «н/д», а комментарии в proxy_timeout.go ссылались на
+				// адаптивные тиры как на рабочие. Здесь есть всё, что нужно для
+				// замера: число сгенерированных токенов и время старта стрима.
+				st.p.recordGenerationSample(*st.modelFromCtx, evalTokens, st.llamaStartTime, st.firstDeltaTime)
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // reasoning_egress.go — R256 (2026-10-28): ОДНА точка выхода /v1-кадра
 // клиенту, и размышления НИКОГДА не остаются в delta.content.

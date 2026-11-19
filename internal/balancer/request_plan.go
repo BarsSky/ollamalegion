@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // request_plan.go — этап 1 рефакторинга: одно решение о запросе.
 //

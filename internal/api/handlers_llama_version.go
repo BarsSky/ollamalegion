@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 // handlers_llama_version.go — R269 (2026-10-29): GET /api/v1/llama-version.
 //

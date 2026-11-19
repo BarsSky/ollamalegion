@@ -1,4 +1,4 @@
-﻿// Package api — handlers для per-model profiles (Шаг 5 cppworker-preflight-nctx-session).
+// Package api — handlers для per-model profiles (Шаг 5 cppworker-preflight-nctx-session).
 //
 // CRUD endpoints для per-model profile, который определяет n_ctx (и другие
 // параметры cppworker) по умолчанию для конкретной модели. Применяется в

@@ -20,7 +20,8 @@
 //   3. у каждого помеченного поля есть бейдж badge-warning и якорь на КАЖДУЮ
 //      строку реестра, которая им управляет;
 //   4. имена в якорях — РЕАЛЬНЫЕ ключи реестра балансера: сверяемся с
-//      internal/settings/builtin_r278.go, а не с памятью автора правки;
+//      internal/settings/builtin.go (до R5 файл назывался builtin_r278.go, и после
+//      переименования этот набор падал на чтении файла — R628), а не с памятью автора правки;
 //   5. строка реестра действительно имеет такой id (её рисует
 //      settings-registry.js — якорь обязан куда-то вести);
 //   6. поля НЕ удалены и НЕ переименованы: удаление — отдельная работа (риск
@@ -50,7 +51,7 @@ const INDEX_HTML = fs.readFileSync(path.join(__dirname, '..', '..', 'index.html'
 const RU_SRC = fs.readFileSync(path.join(__dirname, '..', 'i18n', 'ru.js'), 'utf8');
 const EN_SRC = fs.readFileSync(path.join(__dirname, '..', 'i18n', 'en.js'), 'utf8');
 const GO_BUILTINS = fs.readFileSync(
-    path.join(__dirname, '..', '..', '..', 'internal', 'settings', 'builtin_r278.go'), 'utf8');
+    path.join(__dirname, '..', '..', '..', 'internal', 'settings', 'builtin.go'), 'utf8');
 
 // Таблица соответствия «поле config.json → строки горячего реестра».
 //

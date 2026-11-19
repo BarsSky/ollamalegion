@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // toolcall_prose.go — R292 (2026-10-29): текст, который лишь ПОХОЖ на
 // начало tool-вызова, не должен «замирать» в буфере.

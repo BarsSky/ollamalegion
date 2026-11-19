@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 // selection_transparency.go — долг 12n: «алгоритм» больше не настройка.
 //

@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // force_rebalance_log_r493_test.go — сторож долга 12m: шумный warn не должен
 // вернуться.

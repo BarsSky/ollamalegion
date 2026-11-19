@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // model_loaded.go — R257 (2026-10-28): «загружено» — ОДИН источник истины.
 //

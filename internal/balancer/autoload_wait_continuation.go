@@ -1,4 +1,4 @@
-﻿// autoload_wait_continuation.go — R325.1 (2026-10-30): таймаут загрузки модели —
+// autoload_wait_continuation.go — R325.1 (2026-10-30): таймаут загрузки модели —
 // не отказ.
 //
 // НАЙДЕНО ЖИВОЙ МАТРИЦЕЙ API (tests/api_contract). `/api/chat` на только что

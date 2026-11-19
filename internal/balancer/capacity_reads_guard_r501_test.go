@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 // capacity_reads_guard_r501_test.go — R501 (2026-11-19), аудит S3, пункт C-2.
 //

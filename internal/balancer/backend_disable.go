@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // backend_disable.go — R250 (2026-10-28): «не использовать бэкенд».
 //

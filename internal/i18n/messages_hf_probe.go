@@ -1,4 +1,4 @@
-﻿package i18n
+package i18n
 
 // messagesCore — R234 (2026-10-24): сообщения ядра репозитория, батч r234.
 //

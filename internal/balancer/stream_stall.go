@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // stream_stall.go — R297/R298 (2026-10-29): сторож зависшего стрима.
 //

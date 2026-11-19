@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 // handlers_settings.go — R278 (2026-10-29): API реестра «горячих» настроек.
 //

@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // live_copy_probe.go — R303: «где модель УЖЕ загружена» — спрашиваем живой
 // кластер, а не только кэш метрик.

@@ -1,4 +1,4 @@
-﻿// template_tools.go — R434 (2026-11-05): инструменты запроса уходят в САМ
+// template_tools.go — R434 (2026-11-05): инструменты запроса уходят в САМ
 // CHAT TEMPLATE модели, а не только в текстовую преамбулу.
 //
 // ПОЧЕМУ. В c/bridge/csrc/chat_thinking.cpp вызов common_chat_templates_apply

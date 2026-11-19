@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // empty_answer.go — R261 (2026-10-28): пустой видимый ответ обязан быть
 // ОБЪЯСНЁН, а не отдан молча.

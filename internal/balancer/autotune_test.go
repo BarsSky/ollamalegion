@@ -1,4 +1,4 @@
-﻿// autotune_test.go — Round 54.1 (2026-08-24): unit tests for AutoTune analysis.
+// autotune_test.go — Round 54.1 (2026-08-24): unit tests for AutoTune analysis.
 
 package balancer
 

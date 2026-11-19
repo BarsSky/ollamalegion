@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 // reload_targets.go — R263 (2026-10-28): загрузка модели не должна уходить
 // на мёртвый узел.

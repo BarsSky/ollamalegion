@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // request_plan_steward_r493_test.go — этап 1: страж «решения о запросе живут в
 // плане, а не по месту».

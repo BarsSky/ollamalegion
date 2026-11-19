@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 // reasoning_split_policy_r108_test.go — R108 (2026-10-13): защита правила
 // «разбор ответа — по формату, а не по имени модели».

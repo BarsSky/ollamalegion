@@ -1,4 +1,4 @@
-﻿// Package types — Placement Policy (R72, этап P0).
+// Package types — Placement Policy (R72, этап P0).
 //
 // Placement policy — слой, который для КАЖДОЙ модели решает, как её
 // обслуживать при нескольких бэкендах (`single` / `pool` / `replicated` /

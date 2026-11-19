@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // stream_session.go — R252 (2026-10-28): ОДИН вход в стрим и гарантия [DONE].
 //

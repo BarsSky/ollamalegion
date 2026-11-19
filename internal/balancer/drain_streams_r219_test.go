@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 // drain_streams_r219_test.go — R219 (2026-10-21).
 //

@@ -1,4 +1,4 @@
-﻿// llama_build_guard.go — R167 (2026-10-17): сверка «коммит llama.cpp из env»
+// llama_build_guard.go — R167 (2026-10-17): сверка «коммит llama.cpp из env»
 // с коммитом, ВШИТЫМ в бинарник.
 //
 // ЖИВОЙ СЛУЧАЙ. env-переменная CPPWORKER_LLAMA_BUILD — это НАМЕРЕНИЕ оператора

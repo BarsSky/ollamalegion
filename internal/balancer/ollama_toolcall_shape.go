@@ -1,4 +1,4 @@
-﻿// ollama_toolcall_shape.go — R295 (2026-10-29): форма tool_calls на выходе
+// ollama_toolcall_shape.go — R295 (2026-10-29): форма tool_calls на выходе
 // Ollama API и терминатор стрима.
 //
 // ЖИВАЯ ЖАЛОБА (Cline через Ollama API, порт 18080, бэкенд llama.cpp):

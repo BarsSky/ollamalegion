@@ -1,4 +1,4 @@
-﻿package i18n
+package i18n
 
 // messages_balancer3 — R234 (2026-10-24): сообщения балансера, батч r234 #3.
 //

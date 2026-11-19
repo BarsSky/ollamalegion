@@ -1,4 +1,4 @@
-﻿// Package cppbackend — конфигурация для CppBackend
+// Package cppbackend — конфигурация для CppBackend
 package cppbackend
 
 import (

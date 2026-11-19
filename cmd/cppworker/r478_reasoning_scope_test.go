@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 // r478_reasoning_scope_test.go — R478 (2026-11-09): R470 не должен гасить
 // размышления на ОБЫЧНОМ /api/chat (без tools).

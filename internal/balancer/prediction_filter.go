@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // prediction_filter.go — R318 (2026-10-30): фильтр по прогнозу — настройка,
 // а не константа.

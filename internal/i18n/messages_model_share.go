@@ -1,4 +1,4 @@
-﻿package i18n
+package i18n
 
 // messages_model_share.go — R234, батч «api»: логи и ошибки пакета internal/api.
 //

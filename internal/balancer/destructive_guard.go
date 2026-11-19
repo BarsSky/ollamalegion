@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // destructive_guard.go — R292 (2026-10-29): «второй агент не имеет права
 // вырвать модель у первого».

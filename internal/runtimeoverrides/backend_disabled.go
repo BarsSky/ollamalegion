@@ -1,4 +1,4 @@
-﻿package runtimeoverrides
+package runtimeoverrides
 
 // backend_disabled.go — R250 (2026-10-28): персист флага «не использовать
 // бэкенд» (решение оператора).

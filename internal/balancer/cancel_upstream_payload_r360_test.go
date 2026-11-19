@@ -1,4 +1,4 @@
-﻿// cancel_upstream_payload_r360_test.go — R360 (2026-10-31), аудит abort A5.
+// cancel_upstream_payload_r360_test.go — R360 (2026-10-31), аудит abort A5.
 //
 // ЖИВОЙ ДЕФЕКТ. Балансер при обрыве клиента / таймауте / тишине upstream слал воркеру
 // {"model": ...}. Воркер на такой приказ вызывает CancelByModel("", model) — то есть

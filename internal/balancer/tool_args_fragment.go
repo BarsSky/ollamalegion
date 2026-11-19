@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // tool_args_fragment.go — R254 (2026-10-28): НЕ ремонтировать незакрытый
 // фрагмент аргументов инструмента.

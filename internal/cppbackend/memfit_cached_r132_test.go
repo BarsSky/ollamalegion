@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 // memfit_cached_r132_test.go — R132 (2026-10-16): справочные ручки не ходят к узлам
 // раскладки НИ ОДНИМ вызовом.
@@ -82,18 +82,19 @@ func funcBody(t *testing.T, path, name string) string {
 // а дозвон оставался в общем помощнике feasibilityFromMemfit — живая проверка
 // поймала это на стенде (`GET /api/models/effective` не отвечал 30 с).
 func TestR132_ReadOnlyHandlersDoNotDialNodes(t *testing.T) {
-	handlers := []struct{ path, fn string }{
-		{"../../cmd/cppworker/handlers_model.go", "handleListModels"},
-		{"../../cmd/cppworker/handlers_model.go", "handleGetModel"},
-		{"../../cmd/cppworker/handlers_effective.go", "handleModelEffective"},
+	modelSrc := cppworkerModelSourceR628(t)
+	handlers := []struct{ src, name, fn string }{
+		{modelSrc, "handlers_model*.go", "handleListModels"},
+		{modelSrc, "handlers_model*.go", "handleGetModel"},
+		{readSource(t, "../../cmd/cppworker/handlers_effective.go"), "handlers_effective.go", "handleModelEffective"},
 	}
 	for _, h := range handlers {
-		body := funcBody(t, h.path, h.fn)
+		body := funcBodyInSourceR628(t, h.src, h.fn)
 		for _, call := range dialingCalls {
 			if strings.Contains(body, call) {
 				t.Errorf("%s (%s) содержит %s — справочная ручка дозванивается до узла "+
 					"раскладки и на молчащем узле вешает/роняет мастер",
-					h.fn, h.path, call)
+					h.fn, h.name, call)
 			}
 		}
 	}
@@ -116,8 +117,11 @@ func TestR132_DecisionPathsStillDial(t *testing.T) {
 
 // TestR132_ListHandlerDoesNotDialNodes — ГЛАВНОЕ: в справочной ручке списка
 // моделей не должно остаться НИ ОДНОГО вызова, который ходит к узлам.
+//
+// R628: ручка живёт в handlers_model_list.go после разложения R622–R624, поэтому
+// читается объединённый текст всех handlers_model*.go (см. cppworker_sources_r628_test.go).
 func TestR132_ListHandlerDoesNotDialNodes(t *testing.T) {
-	src := readSource(t, "../../cmd/cppworker/handlers_model.go")
+	src := cppworkerModelSourceR628(t)
 	for _, bad := range []string{
 		"backend.LayoutBreakdown()",
 		"backend.MemfitBudget()",

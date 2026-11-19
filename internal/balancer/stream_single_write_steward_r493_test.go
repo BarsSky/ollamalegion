@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // stream_single_write_steward_r493_test.go — R493-12r (этап 6): «в цикле стрима
 // ОДНА точка записи клиенту».

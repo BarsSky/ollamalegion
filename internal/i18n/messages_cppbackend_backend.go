@@ -1,4 +1,4 @@
-﻿package i18n
+package i18n
 
 // messagesCppbackend — R234 (2026-10-24): сообщения бэкендов воркера, батч r234.
 //

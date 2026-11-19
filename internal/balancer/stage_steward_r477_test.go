@@ -1,4 +1,4 @@
-﻿// stage_steward_r477_test.go — T5 из плана «два мозга» (refactoring-plan.ru.md):
+// stage_steward_r477_test.go — T5 из плана «два мозга» (refactoring-plan.ru.md):
 // предохранитель ДО рефакторинга, чтобы правки путей не теряли диагностику.
 //
 // ЗАЧЕМ. R477 добавил стадии (select_backend/admission/preflight/upstream/stream/

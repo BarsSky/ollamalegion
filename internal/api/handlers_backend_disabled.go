@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 // handlers_backend_disabled.go — R250 (2026-10-28): переключатель
 // «не использовать бэкенд» (POST/GET /api/v1/backends/{id}/enabled).

@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 // kv_formula_single_source_r498_test.go — R498 (2026-11-19), аудит N-3/N-4.
 //

@@ -1,4 +1,4 @@
-﻿// openai_types.go — Shared types for OpenAI-compatible tool calling (function calling).
+// openai_types.go — Shared types for OpenAI-compatible tool calling (function calling).
 package main
 
 import (

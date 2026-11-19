@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // stream_stall_steward_r298_test.go — R298 (2026-10-29): СТЮАРД «ни один
 // стриминговый путь не обходится без сторожа тишины».

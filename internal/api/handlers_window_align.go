@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 // handlers_window_align.go — R494 (2026-11-12): предложение выровнять окна
 // копий одной модели.

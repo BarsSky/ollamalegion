@@ -1,4 +1,4 @@
-﻿// tool_history.go — R246 (2026-10-26): tool-история доезжает до шаблона
+// tool_history.go — R246 (2026-10-26): tool-история доезжает до шаблона
 // модели СТРУКТУРНО, а не JSON-текстом в content.
 //
 // ЖИВОЙ ДЕФЕКТ (DeepSeek Harness → балансер → cppworker → gemma-4,

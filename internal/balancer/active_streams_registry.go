@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // active_streams_registry.go — R281 (2026-10-29): операторский reload из WebUI/API
 // подчиняется тому же правилу «не рвать чужой стрим», что и авто-перезагрузка

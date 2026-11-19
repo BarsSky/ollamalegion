@@ -1,4 +1,4 @@
-﻿// update_config_keys.go — R374 (2026-11-01): «известные ключи» PUT
+// update_config_keys.go — R374 (2026-11-01): «известные ключи» PUT
 // /api/v1/cppworker/config/update не должны отставать от того, что обработчик
 // реально применяет.
 //

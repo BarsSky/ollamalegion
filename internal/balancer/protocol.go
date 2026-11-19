@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // protocol.go — R229 (2026-10-22): каким API-стилем клиент говорил.
 //

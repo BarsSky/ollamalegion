@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // empty_answer_r261_1_test.go — R261.1 (2026-10-28): счётчик размышлений
 // обязан видеть канал reasoning_content.

@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // generation_sample.go — R550 (T-10 аудита
 // docs/plans/2026-11-19-consistency-audit.md §1.4): замер скорости генерации из

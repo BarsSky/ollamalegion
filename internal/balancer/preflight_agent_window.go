@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // preflight_agent_window.go — R253 (2026-10-28): окно n_ctx растёт под
 // АГЕНТСКИЙ ход, даже если клиент не прислал num_ctx.

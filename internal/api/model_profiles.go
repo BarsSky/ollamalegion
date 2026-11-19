@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 // R423 (2026-11-06): доступ API к карте per-model профилей.
 //

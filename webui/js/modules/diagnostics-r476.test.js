@@ -134,13 +134,13 @@ check('R476: разделы диаграммы данных присутству
 check('R476: флаги разделены на «заданы» и «не заданы»', function () {
     assert.ok(diagJs.indexOf("diag.flags_unset") > 0,
         'страница не показывает незаданные флаги — снова придётся гадать, откуда значение');
-    const go = read('internal/api/diag_summary_r476.go');
+    const go = read('internal/api/diag_summary.go');
     assert.ok(go.indexOf('"unset"') > 0,
         'сводка балансера не различает set и unset');
 });
 
 check('R476: секреты не попадают в список флагов', function () {
-    const go = read('internal/api/diag_summary_r476.go');
+    const go = read('internal/api/diag_summary.go');
     ['LB_API_TOKEN', 'LB_ADMIN_PASSWORD', 'LB_AUTH_TOKENS'].forEach(function (secret) {
         assert.ok(go.indexOf('"' + secret + '"') < 0,
             'секрет ' + secret + ' попал в белый список диагностики');

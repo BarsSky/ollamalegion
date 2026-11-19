@@ -1,4 +1,4 @@
-﻿// memfit_adapter.go — адаптеры между cppbackend и internal/memfit.
+// memfit_adapter.go — адаптеры между cppbackend и internal/memfit.
 //
 // R83, шаги 2–3 миграции. Сначала это был мост для shadow-сравнения (считаем и
 // старым кодом, и memfit, решение принимает старый). После переключения решений

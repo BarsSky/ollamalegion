@@ -1,4 +1,4 @@
-﻿package i18n
+package i18n
 
 // messages_cppworker_config.go — R234, батч «misc»: логи и сообщения об ошибках,
 // оставшиеся вне батчей api/balancer/core/cmd.

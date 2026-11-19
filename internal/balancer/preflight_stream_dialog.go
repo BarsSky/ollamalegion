@@ -1,4 +1,4 @@
-﻿// preflight_stream_dialog.go — Round 34 (2026-08-12) Phase 1: stream dialog
+// preflight_stream_dialog.go — Round 34 (2026-08-12) Phase 1: stream dialog
 // with heartbeats during reload.
 //
 // Проблема: при async preflight reload (LB_NCTX_PREFLIGHT_ASYNC_RELOAD=true)

@@ -1,4 +1,4 @@
-﻿package settings
+package settings
 
 // hot_settings_steward_test.go — R493-12r-fix (2026-11-13): страж «горячих»
 // настроек.

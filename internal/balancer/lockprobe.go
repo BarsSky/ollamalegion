@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // lockprobe.go — R284 (2026-10-29): честный ответ «жив ли балансер».
 //

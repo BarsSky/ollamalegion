@@ -1,4 +1,4 @@
-﻿// inference.go ? Inference core, token counting, RAM fallback, and reload helpers.
+// inference.go ? Inference core, token counting, RAM fallback, and reload helpers.
 package main
 
 import (

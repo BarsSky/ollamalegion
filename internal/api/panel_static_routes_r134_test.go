@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 // panel_static_routes_r134_test.go — R134 (2026-10-16): панель балансера отдаёт
 // шрифты и страницы дашборда, а не 404.

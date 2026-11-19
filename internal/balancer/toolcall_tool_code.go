@@ -1,4 +1,4 @@
-﻿// toolcall_tool_code.go — R246 (2026-10-26): диалект gemma `[tool_code]` на
+// toolcall_tool_code.go — R246 (2026-10-26): диалект gemma `[tool_code]` на
 // границе балансера.
 //
 // ЖИВОЙ ДЕФЕКТ (DeepSeek Harness → балансер → gemma-4, 25 инструментов):

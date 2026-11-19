@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 // rpc_split_mode_wiring_r108_test.go — S1 (2026-10-13): статическая защита того,
 // что режим раскладки слоёв доезжает от запроса до моста.

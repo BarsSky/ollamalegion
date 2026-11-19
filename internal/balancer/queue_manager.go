@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // Package balancer — хранилище статистики очереди (R78).
 //

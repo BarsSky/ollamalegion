@@ -1,4 +1,4 @@
-﻿// CppBackend Worker — HTTP сервер для llama.cpp GGUF моделей
+// CppBackend Worker — HTTP сервер для llama.cpp GGUF моделей
 //
 // Предоставляет REST API для загрузки/выгрузки GGUF моделей,
 // инференса (синхронного и стриминг), управления multi-GPU,

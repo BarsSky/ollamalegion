@@ -1,25 +1,30 @@
 //go:build llama_stub
 
 // structure_guard_r506_test.go — R506 (2026-11-19), план
-// docs/plans/2026-11-19-readability-refactor.md, шаг R1.
+// docs/plans/2026-11-19-readability-refactor.md, шаги R1/R5.
 //
 // ЗАЧЕМ СТРАЖ, А НЕ ПРОСТО ПРАВИЛО В ДОКЕ. Долг «файлы с номером раунда в имени»
 // вырос до 277 боевых файлов — потому что запрета не было, а имя `*_rNNN.go`
 // отвечает на вопрос «когда» вместо «что здесь лежит». Останавливать рост надо
 // механизмом, иначе следующая правка снова назовёт файл по раунду.
 //
-// ПРАВИЛО:
-//   - новый боевой файл с `_rNNN` в имени → красный тест (список разрешённых —
-//     docs/architecture/structure-baseline-r506.txt, он только уменьшается);
-//   - файл из списка исчез (переименован или удалён, как требует шаг R5) → красный,
-//     пока список не обновлён: иначе счётчик «сколько осталось» врал бы.
+// ИСТОРИЯ (R628, 2026-11-19). Сначала у стража был список-исключение на 277 путей
+// (docs/architecture/structure-baseline-r506.txt) и правило «новых сверх списка
+// нельзя; исчезнувшая запись — красный». Шаг R5 переименовал все 277 файлов, а
+// список остался прежним — и страж стал красным на 277 сообщений «в списке-базе есть
+// X, но такого файла нет». Это заметили только сейчас, потому что прогоняли
+// `./internal/...`, а пакет `./tests/` в тот круг не попал. Вывод: список-исключение
+// — долг с отложенной оплатой; после достижения нуля его надо не «обновлять», а
+// удалять.
+//
+// СЕЙЧАС ПРАВИЛО ПРОСТОЕ И БЕЗ СПИСКА: боевых файлов с `_rNNN` в имени — ноль,
+// точка. Файл-список удалён в R628, исключений нет.
 //
 // Тесты (`*_test.go`, `*.test.js`) исключены осознанно: по их именам ищут
 // регрессию конкретного раунда (см. §3 и R5 плана).
 package tests
 
 import (
-	"bufio"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,11 +33,8 @@ import (
 	"testing"
 )
 
-const (
-	structureBaselineR506 = "../docs/architecture/structure-baseline-r506.txt"
-	// rnnnReR506 — имя ФАЙЛА с номером раунда (r + три цифры и больше).
-	rnnnReR506 = `_r\d{3,}`
-)
+// rnnnReR506 — имя ФАЙЛА с номером раунда (r + три цифры и больше).
+const rnnnReR506 = `_r\d{3,}`
 
 // structureSkipDirsR506 — что не наш код (submodule, зависимости, артефакты).
 var structureSkipDirsR506 = map[string]bool{
@@ -48,49 +50,29 @@ var structureProdExtR506 = map[string]bool{".go": true, ".c": true, ".h": true, 
 
 // normalizeStructurePathR506 — прямой слэш НЕЗАВИСИМО от ОС.
 //
-// R506-fix: список-база записан через `/`, но первые версии файла содержали
-// обратные слэши. На Windows `filepath.ToSlash` их меняет, на Linux — нет (это
-// no-op), поэтому все записи выглядели «устаревшими», и CI-job
+// R506-fix: пути сравнивались со списком, записанным через `/`, но первые версии
+// кода передавали пути с обратными слэшами. На Windows `filepath.ToSlash` их меняет,
+// на Linux — нет (это no-op), поэтому все записи выглядели «устаревшими», и CI-job
 // «Test tests/... (integration, -short)» краснел на Linux при зелёном локальном
 // прогоне. Нормализация должна быть одна и без участия ОС.
+//
+// R628: здесь же снимается BOM — путь может прийти из файла, пересохранённого
+// редактором Windows (PS 5.1 `Set-Content -Encoding utf8` пишет BOM), и тогда
+// сравнение путей врёт молча.
 func normalizeStructurePathR506(p string) string {
-	return strings.ReplaceAll(strings.TrimSpace(p), `\`, "/")
-}
-
-// loadStructureBaselineR506 — пути из файла-списка (без комментариев).
-func loadStructureBaselineR506(t *testing.T) map[string]bool {
-	t.Helper()
-	f, err := os.Open(structureBaselineR506)
-	if err != nil {
-		t.Fatalf("чтение списка-базы: %v", err)
-	}
-	defer f.Close()
-	base := make(map[string]bool)
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		base[normalizeStructurePathR506(line)] = true
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("чтение списка-базы: %v", err)
-	}
-	if len(base) == 0 {
-		t.Fatal("список-база пуст: страж вырожден")
-	}
-	return base
+	return strings.ReplaceAll(strings.TrimSpace(strings.TrimPrefix(p, "\ufeff")), `\`, "/")
 }
 
 // TestR506_NormalizeStructurePathIsOSIndependent — нормализация не должна
 // зависеть от ОС: `filepath.ToSlash` на Linux не меняет обратные слэши, из-за
-// чего список-база «не находил» свои же файлы (CI краснел на Linux).
+// чего путь «не находил» сам себя (CI краснел на Linux).
 func TestR506_NormalizeStructurePathIsOSIndependent(t *testing.T) {
 	cases := map[string]string{
-		`internal\balancer\a_r100.go`: "internal/balancer/a_r100.go",
-		"internal/balancer/b_r100.go": "internal/balancer/b_r100.go",
-		`  pkg\logger\c_r489.go  `:    "pkg/logger/c_r489.go",
+		`internal\balancer\a_r100.go`:             "internal/balancer/a_r100.go",
+		"internal/balancer/b_r100.go":             "internal/balancer/b_r100.go",
+		`  pkg\logger\c_r489.go  `:                "pkg/logger/c_r489.go",
+		"\ufeffinternal\\balancer\\d_r100.go":     "internal/balancer/d_r100.go",
+		"\ufeff  webui\\js\\modules\\e_r489.js  ": "webui/js/modules/e_r489.js",
 	}
 	for in, want := range cases {
 		if got := normalizeStructurePathR506(in); got != want {
@@ -99,9 +81,11 @@ func TestR506_NormalizeStructurePathIsOSIndependent(t *testing.T) {
 	}
 }
 
-// TestR506_NoNewRoundNamedProdFiles — новых боевых файлов с `_rNNN` быть не должно.
-func TestR506_NoNewRoundNamedProdFiles(t *testing.T) {
-	base := loadStructureBaselineR506(t)
+// TestR506_NoRoundNamedProdFiles — боевых файлов с `_rNNN` в имени быть не должно.
+//
+// Исключений нет: шаг R5 плана завершён (R599–R621, 277 → 0). Красный тест означает,
+// что работу R5 начали откатывать — назовите файл по теме, а не по раунду.
+func TestR506_NoRoundNamedProdFiles(t *testing.T) {
 	re := regexp.MustCompile(rnnnReR506)
 	root := ".."
 
@@ -139,30 +123,9 @@ func TestR506_NoNewRoundNamedProdFiles(t *testing.T) {
 	sort.Strings(found)
 
 	for _, p := range found {
-		if !base[p] {
-			t.Errorf("новый боевой файл с номером раунда в имени: %s — назовите файл по теме "+
-				"(шаг R5 плана), а не по номеру раунда", p)
-		}
+		t.Errorf("боевой файл с номером раунда в имени: %s — назовите файл по теме "+
+			"(шаг R5 плана), а не по номеру раунда", p)
 	}
 
-	// Обратная проверка: список обязан уменьшаться вместе с переименованиями, а не
-	// копиться «на всякий случай». Иначе через год он снова соврёт.
-	present := make(map[string]bool, len(found))
-	for _, p := range found {
-		present[p] = true
-	}
-	var stale []string
-	for p := range base {
-		if !present[p] {
-			stale = append(stale, p)
-		}
-	}
-	sort.Strings(stale)
-	for _, p := range stale {
-		t.Errorf("в списке-базе есть %s, но такого файла нет: обновите "+
-			"docs/architecture/structure-baseline-r506.txt (переименование — хорошо, "+
-			"устаревшая запись — нет)", p)
-	}
-
-	t.Logf("боевых файлов с _rNNN сейчас: %d (в базе %d)", len(found), len(base))
+	t.Logf("боевых файлов с _rNNN: %d (цель и текущее состояние — 0)", len(found))
 }

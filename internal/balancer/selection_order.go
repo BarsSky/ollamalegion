@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // selection_order.go — R493 (2026-11-17): шов для порядка выбора бэкенда.
 //

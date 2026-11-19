@@ -1,4 +1,4 @@
-﻿// tools_stream_reasoning.go — R404 (2026-11-03): размышления на tools-пути
+// tools_stream_reasoning.go — R404 (2026-11-03): размышления на tools-пути
 // отдаются ДЕЛЬТАМИ, а не одним куском в конце.
 //
 // ЖИВОЙ ДЕФЕКТ (A10, Cline, Qwen3.8-27B, /api/chat + tools). Лог воркера:

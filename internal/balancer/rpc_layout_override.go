@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // rpc_layout_override.go — R229 (2026-10-22): тумблер раскладки, который
 // ПРИНАДЛЕЖИТ ОПЕРАТОРУ, а не гарду.

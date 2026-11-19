@@ -1,4 +1,4 @@
-﻿// json_bom_strip.go — R60.16 (2026-09-08) UTF-8 BOM stripper
+// json_bom_strip.go — R60.16 (2026-09-08) UTF-8 BOM stripper
 // for JSON request bodies.
 //
 // Background: cppworker's `json.NewDecoder` doesn't strip a leading

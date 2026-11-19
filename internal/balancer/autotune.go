@@ -1,4 +1,4 @@
-﻿// autotune.go — Round 54.1 (2026-08-24): autonomous balancer.
+// autotune.go — Round 54.1 (2026-08-24): autonomous balancer.
 //
 // Цель: привести балансер к автономному режиму, который:
 //   1. Детектит sub-optimal состояние бэкенда (loaded model с плохими params)

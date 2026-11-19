@@ -1,4 +1,4 @@
-﻿// marker_hold_ndjson_continued.go — R266.1 (2026-10-28): удержание хвоста
+// marker_hold_ndjson_continued.go — R266.1 (2026-10-28): удержание хвоста
 // служебных меток на пути SSE→NDJSON (`/api/chat`).
 //
 // ЖИВОЙ ДЕФЕКТ (Cline, /api/chat, qwen3.8). В видимом content утекали

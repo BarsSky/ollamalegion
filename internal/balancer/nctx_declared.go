@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // nctx_declared.go — R255 (2026-10-28): «заявлено 256000 → загружено 32768».
 //

@@ -1,4 +1,4 @@
-﻿// preflight_helper.go — высокоуровневая обёртка RunPreflight для роутеров.
+// preflight_helper.go — высокоуровневая обёртка RunPreflight для роутеров.
 //
 // Используется llamacpp_handlers_inference.go перед проксированием запросов
 // на cppworker. Что делает:

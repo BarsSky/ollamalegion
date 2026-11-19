@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // worker_admin_token.go — R307 (2026-10-30): балансер предъявляет токен
 // воркеру на его административных ручках.

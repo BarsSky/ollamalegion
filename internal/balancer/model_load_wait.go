@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // model_load_wait.go — R262 (2026-10-28): таймаут ожидания загрузки —
 // это «ещё грузится», а НЕ провал.

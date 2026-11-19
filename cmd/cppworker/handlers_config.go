@@ -1,4 +1,4 @@
-﻿// handlers_config.go ? CppWorker runtime configuration handlers (get, update, reload).
+// handlers_config.go ? CppWorker runtime configuration handlers (get, update, reload).
 package main
 
 import (

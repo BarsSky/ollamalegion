@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // proxy_request_openai_auto_stream_limits.go — R258 (2026-10-28): не-стрим
 // агентские запросы не «копят молча».

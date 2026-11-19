@@ -1,4 +1,4 @@
-﻿// lazyload.go — Lazy model loading, loading progress response, and auto-load on startup.
+// lazyload.go — Lazy model loading, loading progress response, and auto-load on startup.
 package main
 
 import (

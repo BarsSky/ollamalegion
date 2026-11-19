@@ -1,4 +1,4 @@
-﻿// thinking_lang.go — Round 32 #12 (2026-08-11): language detection
+// thinking_lang.go — Round 32 #12 (2026-08-11): language detection
 // + language-specific thinking instructions for soft prompt path.
 //
 // Проблема (Round 32 #11 follow-up): cppworker's soft prompt для

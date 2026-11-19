@@ -1,4 +1,4 @@
-﻿// llamacpp_transport_helpers.go — Вспомогательные функции для streaming-прокси
+// llamacpp_transport_helpers.go — Вспомогательные функции для streaming-прокси
 // llama.cpp/cppworker. Используются llamacpp_transport.go (proxyRequestLlamaCpp)
 // для корректного завершения streaming-ответов и инкрементального сбора tool_calls.
 package balancer

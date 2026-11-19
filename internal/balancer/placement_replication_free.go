@@ -1,4 +1,4 @@
-﻿// placement_replication_free.go — R379 (2026-11-01): «свободный бэкенд»
+// placement_replication_free.go — R379 (2026-11-01): «свободный бэкенд»
 // для репликации определяется ПАМЯТЬЮ, а не счётчиком запросов (P2-2).
 //
 // ЗАЧЕМ. До R379 SetFreeBackendFn (placement_replication.go) считал

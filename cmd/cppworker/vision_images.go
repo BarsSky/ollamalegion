@@ -1,4 +1,4 @@
-﻿// vision_images.go — R248/B3: приём картинок в cppworker.
+// vision_images.go — R248/B3: приём картинок в cppworker.
 //
 // ЗАЧЕМ. Балансер поднимает image-части в поле messages[].images (base64), а
 // мост умеет префилл с изображениями (bridge_infer_images через libmtmd).

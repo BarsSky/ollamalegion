@@ -1,4 +1,4 @@
-﻿package settings
+package settings
 
 // builtin.go — встроенные «горячие» настройки этапа 2 аудита.
 //

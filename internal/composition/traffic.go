@@ -1,4 +1,4 @@
-﻿package composition
+package composition
 
 import "strings"
 

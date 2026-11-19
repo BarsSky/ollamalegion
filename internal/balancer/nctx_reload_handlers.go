@@ -1,4 +1,4 @@
-﻿// Package balancer — обработчик n_ctx auto-reload (Stage 3.3).
+// Package balancer — обработчик n_ctx auto-reload (Stage 3.3).
 //
 // handleNCtxReload — главная логика, которая вызывается из llamacpp_router.go
 // когда proxyRequestLlamaCpp* / handleOpenAIChatCompletions вернул *NCtxError

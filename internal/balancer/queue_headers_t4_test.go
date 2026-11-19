@@ -1,4 +1,4 @@
-﻿// queue_headers_t4_test.go — T4 из плана «два мозга» (refactoring-plan.ru.md §3):
+// queue_headers_t4_test.go — T4 из плана «два мозга» (refactoring-plan.ru.md §3):
 // «одинаковые X-Queue-* и /queue на обоих путях».
 //
 // ЗАЧЕМ. Заголовки очереди (X-Queue-Wait-Ms, X-Queue-Position,

@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 // diag_nctx_effective_r493_test.go — дефект 1 из 12c: дамп обязан показывать
 // ДЕЙСТВУЮЩИЕ значения секции окна, а не только сырой config.json.

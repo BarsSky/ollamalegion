@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // donor_exclusive.go — R304 (2026-10-30): донор держит ТОЛЬКО память.
 //

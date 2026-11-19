@@ -1,4 +1,4 @@
-﻿// Package balancer — R92 (S2 плана 2026-10-07): логический бэкенд в балансере.
+// Package balancer — R92 (S2 плана 2026-10-07): логический бэкенд в балансере.
 //
 // План: docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md §5:
 //

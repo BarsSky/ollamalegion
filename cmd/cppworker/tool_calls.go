@@ -1,4 +1,4 @@
-﻿// tool_calls.go — Parsing tool_calls from model output and building
+// tool_calls.go — Parsing tool_calls from model output and building
 // properly structured OpenAI-compatible responses with finish_reason="tool_calls".
 package main
 

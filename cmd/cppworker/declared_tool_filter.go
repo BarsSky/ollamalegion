@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 // declared_tool_filter.go — R428 (2026-11-04): вызов инструмента, которого
 // КЛИЕНТ НЕ ОБЪЯВЛЯЛ, не уезжает как tool_calls.

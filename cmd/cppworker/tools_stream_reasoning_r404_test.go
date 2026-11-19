@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 // tools_stream_reasoning_r404_test.go — R404 (2026-11-03).
 //

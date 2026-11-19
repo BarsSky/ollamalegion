@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // active_streams.go — R271 (2026-10-29): чужой запрос не имеет права
 // рвать чужой стрим.

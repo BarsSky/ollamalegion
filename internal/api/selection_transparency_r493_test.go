@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 // selection_transparency_r493_test.go — сторож долга 12n после удаления поля.
 //

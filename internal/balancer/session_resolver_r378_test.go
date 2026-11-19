@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // session_resolver_r378_test.go — R378 (2026-11-01): один резолвер ключей
 // сессии/очереди (P2-3 из аудита регрессий).

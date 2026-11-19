@@ -1,4 +1,4 @@
-﻿// Package balancer — 3-tier resolver для n_ctx override (Шаг 2).
+// Package balancer — 3-tier resolver для n_ctx override (Шаг 2).
 //
 // Приоритет (от высшего к низшему):
 //  1. Per-request (body: options.num_ctx для Ollama, num_ctx для OpenAI)

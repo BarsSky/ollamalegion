@@ -1,4 +1,4 @@
-﻿// tools_stream_content.go — R83/v56 (2026-10-01): потоковая отдача content на
+// tools_stream_content.go — R83/v56 (2026-10-01): потоковая отдача content на
 // tools-пути /api/chat.
 //
 // ЗАЧЕМ. Раньше writeChatStreamResponseWithTools буферизовал ответ целиком и

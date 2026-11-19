@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 // unparsed_capture.go — R427 (2026-11-04): ДИАГНОСТИКА нераспознанных
 // вызовов инструментов.

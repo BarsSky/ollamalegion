@@ -1,4 +1,4 @@
-﻿// template_tokens.go — R418 (2026-11-03): токены шаблона Qwen/ChatML не
+// template_tokens.go — R418 (2026-11-03): токены шаблона Qwen/ChatML не
 // должны попадать в видимый ответ.
 //
 // ЖИВОЙ СЛУЧАЙ (Qwen3.8-9B, /api/chat, prompt ~12k токенов повторяющегося

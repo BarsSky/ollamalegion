@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // placement_over_reload.go — R293: «разместить на другом узле» вместо
 // «перезагрузить этот».

@@ -1,4 +1,4 @@
-﻿package cppbackend
+package cppbackend
 
 // rpc_reach.go — R229 (2026-10-22): ИСКЛЮЧЕНИЕ НЕДОСТУПНОГО ДОНОРА на время
 // работы с моделью.

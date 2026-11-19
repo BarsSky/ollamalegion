@@ -1,4 +1,4 @@
-﻿package i18n
+package i18n
 
 // R234: сообщения cppworker — вторая часть (батч по assigned-файлам).
 //

@@ -1,4 +1,4 @@
-﻿// preflight_nctx.go — Preflight n_ctx check: проверяем, помещается ли запрос
+// preflight_nctx.go — Preflight n_ctx check: проверяем, помещается ли запрос
 // в текущее n_ctx бэкенда ДО отправки. Если нет — auto-reload через
 // NCtxReloadCoordinator (если влезает в MaxVRAMNCtx / модель max). Если даже
 // reload не поможет — структурированный 413.

@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // log_rate.go — R299 (2026-10-29): не спамить одинаковыми предупреждениями.
 //

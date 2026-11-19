@@ -1,4 +1,4 @@
-﻿// handlers_rpc_server_log.go — R172 (2026-10-18, разбор падения узла).
+// handlers_rpc_server_log.go — R172 (2026-10-18, разбор падения узла).
 //
 //	GET /api/v1/cppworker/rpc-server/log?lines=N
 //	  → {"enabled":true,"running":false,"external":false,"pid":0,

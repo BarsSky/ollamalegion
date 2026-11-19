@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // queue_headers_legacy_r493_test.go — R493-12o (долг P2-13/T4): обе поверхности
 // очереди говорят на одном языке.

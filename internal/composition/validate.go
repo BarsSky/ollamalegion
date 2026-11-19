@@ -1,4 +1,4 @@
-﻿// Package composition — валидатор композиции кластера (R95, S4 плана
+// Package composition — валидатор композиции кластера (R95, S4 плана
 // docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md §7).
 //
 // ЗАЧЕМ ОТДЕЛЬНЫЙ ПАКЕТ. Проверки «соберётся ли раскладка» нужны ДВУМ

@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // stream_limit.go — R259 (2026-10-28): не обвинять upstream в наших лимитах
 // и отменах.

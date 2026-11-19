@@ -1,4 +1,4 @@
-﻿// token_usage.go — Round 31 #7 (2026-08-09): per-model token usage tracking.
+// token_usage.go — Round 31 #7 (2026-08-09): per-model token usage tracking.
 //
 // cppworker возвращает OpenAI usage: {prompt_tokens, completion_tokens, total_tokens}.
 // Ollama format: {prompt_eval_count, eval_count}.

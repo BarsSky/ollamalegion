@@ -1,4 +1,4 @@
-﻿//go:build llama_stub
+//go:build llama_stub
 
 // lazyload_profile_r83_test.go — R83/v52 (2026-10-01): ленивая загрузка cppworker
 // обязана применять профиль модели, иначе прямой запрос (WebUI, диагностика,

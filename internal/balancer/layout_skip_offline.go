@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // layout_skip_offline.go — R315 (2026-10-30): недоступному бэкенду приказ о
 // раскладке не отправляется.

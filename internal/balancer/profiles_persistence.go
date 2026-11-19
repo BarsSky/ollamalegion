@@ -1,4 +1,4 @@
-﻿// profiles_persistence.go — отдельная персистенция для model profiles (Round 31).
+// profiles_persistence.go — отдельная персистенция для model profiles (Round 31).
 //
 // Проблема (2026-08-09): s.configSaver() пишет в config.json. В bundled compose
 // `../config:/app/config:ro` — read-only mount. PUT /api/v1/cppworker/model-profiles/{name}

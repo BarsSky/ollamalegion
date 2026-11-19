@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // cancel_client.go — R229 (2026-10-22): отмена генерации, инициированная
 // КЛИЕНТОМ (кнопка Stop в OpenWebUI, Cline, скрипт), а не разрывом соединения.

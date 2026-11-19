@@ -1,4 +1,4 @@
-﻿// memfit_breakdown.go — R115: отказ по памяти обязан показывать раскладку.
+// memfit_breakdown.go — R115: отказ по памяти обязан показывать раскладку.
 //
 // ЧТО БЫЛО. Гейт n_ctx отказывал числом: «physically feasible maximum 0,
 // max_vram_n_ctx=0, max_ram_n_ctx=0». Оператор не мог понять, ЧЕГО не хватило:

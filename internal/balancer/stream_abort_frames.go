@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // stream_abort_frames.go — R296 (2026-10-29): КАДРЫ ЗАВЕРШЕНИЯ СТРИМА.
 //

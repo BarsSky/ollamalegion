@@ -1,4 +1,4 @@
-﻿// Round 52 (2026-08-24): tests for load-lock release semantics.
+// Round 52 (2026-08-24): tests for load-lock release semantics.
 //
 // Background:
 //   Pre-R52 had a lock leak in handleLoadWithParams SYNC path. The inline

@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // llama_upstream.go — R269 (2026-10-29): отслеживание АКТУАЛЬНОЙ
 // стабильной версии llama.cpp и «у вас устаревшая сборка».

@@ -1,4 +1,4 @@
-﻿// Package balancer — R92 (S3 плана 2026-10-07): исполнитель стратегии `sharded`.
+// Package balancer — R92 (S3 плана 2026-10-07): исполнитель стратегии `sharded`.
 //
 // План: docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md §6 (S3):
 //

@@ -1,4 +1,4 @@
-﻿// body_limit.go — R479 (2026-11-09): лимит тела на generic-пути.
+// body_limit.go — R479 (2026-11-09): лимит тела на generic-пути.
 //
 // Аудит типов и распределения показал: `LB_MAX_REQUEST_BODY_MB` действовал
 // только на handler-путях (`readRequestBodyLimited` в llamacpp_native_path.go),

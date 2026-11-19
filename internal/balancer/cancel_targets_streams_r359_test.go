@@ -1,4 +1,4 @@
-﻿// cancel_targets_streams_r359_test.go — R359 (2026-10-31), аудит abort A3.
+// cancel_targets_streams_r359_test.go — R359 (2026-10-31), аудит abort A3.
 //
 // ЖИВОЙ ДЕФЕКТ. `cancelTargets` выбирал адресатов отмены по кэшу поллера
 // (`llamaMetrics.LoadedModels`, до 30 с устаревания) и требовал `Status == healthy`.

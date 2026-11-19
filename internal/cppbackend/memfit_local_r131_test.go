@@ -19,7 +19,6 @@
 package cppbackend
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -79,11 +78,10 @@ func TestR131_LoadBudgetStillUsesRPC(t *testing.T) {
 // по-прежнему не дозванивается, но теперь учитывает уже собранный снимок узлов
 // (иначе мастер в ответе выглядел беднее, чем он есть).
 func TestR131_ListHandlerUsesNoDialVariants(t *testing.T) {
-	raw, err := os.ReadFile("../../cmd/cppworker/handlers_model.go")
-	if err != nil {
-		t.Fatalf("read handlers_model.go: %v", err)
-	}
-	src := string(raw)
+	// R628: ручка `handleListModels` переехала в handlers_model_list.go (разложение
+	// R622–R624), поэтому читаем объединённый текст всех handlers_model*.go,
+	// а не конкретный файл по имени (см. cppworker_sources_r628_test.go).
+	src := cppworkerModelSourceR628(t)
 	if !strings.Contains(src, "MemfitBudgetCached()") {
 		t.Error("handleListModels снова зовёт бюджет с дозвоном — чтение списка " +
 			"моделей опять может уронить мастер через RPC и abort() в llama.cpp")

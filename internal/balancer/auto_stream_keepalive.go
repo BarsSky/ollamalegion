@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // auto_stream_keepalive.go — R272 (2026-10-29): «клиент не получает данных
 // и отваливается по таймауту», хотя модель генерирует.

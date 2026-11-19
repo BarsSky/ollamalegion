@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 // diag_nctx_effective.go — дефект 1 из разбора 12c: диагностический дамп
 // показывал сырую секцию `nctx_reload` рядом с действующим потолком и не

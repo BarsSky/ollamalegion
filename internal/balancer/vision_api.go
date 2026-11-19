@@ -1,4 +1,4 @@
-﻿// vision_api.go — R247, этап D плана
+// vision_api.go — R247, этап D плана
 // (docs/plans/2026-10-26-clients-agents-contract-r247.md).
 //
 // ЗАЧЕМ. До R247 изображения из `content[]` (OpenAI `image_url`, Anthropic `image`,

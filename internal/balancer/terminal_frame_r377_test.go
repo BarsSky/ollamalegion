@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 // terminal_frame_r377_test.go — R377 (2026-11-01): терминальный кадр на
 // транслируемом пути собирает ОДИН владелец — writeTerminalFrameR377.

@@ -1,4 +1,4 @@
-﻿// generate_chat_template.go — R368 (2026-10-31): /api/generate применяет
+// generate_chat_template.go — R368 (2026-10-31): /api/generate применяет
 // чат-шаблон модели, как это делает настоящая Ollama.
 //
 // ДЕФЕКТ (замер стенда, docs/plans/2026-10-31-generate-raw-prompt-degeneracy.md).

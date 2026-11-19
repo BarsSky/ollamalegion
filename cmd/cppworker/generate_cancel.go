@@ -1,4 +1,4 @@
-﻿// generate_cancel.go — R248, часть A плана
+// generate_cancel.go — R248, часть A плана
 // (docs/plans/2026-10-27-mmproj-vision-and-tools-cancel-r248.md).
 //
 // ЖИВОЙ ДЕФЕКТ (найден на R247). Клиент отвалился во время буферизированной

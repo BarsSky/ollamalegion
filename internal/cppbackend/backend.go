@@ -1,4 +1,4 @@
-﻿package cppbackend
+package cppbackend
 
 import (
 	"fmt"

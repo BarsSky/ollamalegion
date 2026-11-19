@@ -1,4 +1,4 @@
-﻿package i18n
+package i18n
 
 func init() { Register(messagesBackendDisableR250) }
 

@@ -1,4 +1,4 @@
-﻿// profile_flash_attn.go — R366 (2026-10-31): flash attention из профиля
+// profile_flash_attn.go — R366 (2026-10-31): flash attention из профиля
 // модели, одно правило для всех путей загрузки.
 //
 // ДЕФЕКТ (разобран в docs/plans/2026-10-31-load-profile-legacy-path.md §5).

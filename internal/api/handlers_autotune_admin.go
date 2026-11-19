@@ -1,4 +1,4 @@
-﻿// handlers_autotune_admin.go — R54.6 (2026-08-24): AutoTune admin endpoints.
+// handlers_autotune_admin.go — R54.6 (2026-08-24): AutoTune admin endpoints.
 //
 // POST /api/v1/admin/autotune/{backendID}/apply — apply AutoTune recommendations manually.
 // GET  /api/v1/admin/autotune — get AutoTune state per backend (with circuit info).

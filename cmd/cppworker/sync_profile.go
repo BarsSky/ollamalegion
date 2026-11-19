@@ -1,4 +1,4 @@
-﻿// sync_profile.go — Pull-based per-model profile sync from balancer.
+// sync_profile.go — Pull-based per-model profile sync from balancer.
 //
 // Why this exists (2026-08-06):
 //

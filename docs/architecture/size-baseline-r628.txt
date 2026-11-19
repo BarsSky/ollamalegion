@@ -1,0 +1,45 @@
+# size-baseline-r628.txt — R628 (2026-11-19), план
+# docs/plans/2026-11-19-readability-refactor.md, шаг R3/R6.
+#
+# ЧТО ЭТО. Список боевых файлов нашего кода с >= 1500 строк на момент R628.
+# Страж tests/structure_ratchet_r628_test.go читает его и требует:
+#   1) ни одного НОВОГО файла >= 1500 строк (сверх списка) — иначе красный;
+#   2) ни одной УСТАРЕВШЕЙ записи (файл исчез или ушёл ниже 1500) — иначе красный:
+#      список обязан уменьшаться вместе с работой, а не копиться «на всякий случай».
+#
+# ЗАЧЕМ. Цель §5 плана — «файлов >= 1500 строк: <= 3». Пока это только число в доке,
+# его легко снова раздуть: за R623–R628 файлов стало меньше лишь потому, что перенос
+# делали руками и пересчитывали по script-у. Список + страж превращают «стало меньше»
+# в механическое правило: вырасти обратно можно только правкой этого файла.
+#
+# МЕТРИКА. Как в scripts/structure_report.ps1 — непустые строки
+# (Measure-Object -Line), расширения .go/.c/.h/.js, без *_test.go и *.test.js,
+# без вендорного llama.cpp и node_modules. Строки здесь НЕ пишем: важно членство
+# (>= 1500), а не точное число — иначе любая правка в файле требовала бы обновления
+# базы, и она бы протухла молча.
+#
+# КАК УМЕНЬШАТЬ. Вынесли кусок файла так, что он ушёл ниже 1500 — удалите строку
+# отсюда в том же коммите. Разделили на два файла, и оба ещё >= 1500 — обе строки
+# остаются (счётчик не изменился, это честно видно в CHANGELOG).
+
+c/bridge/bridge.c
+c/bridge/bridge.go
+cmd/cppworker/tool_calls.go
+internal/api/handlers_cluster_models.go
+internal/balancer/autotune.go
+internal/balancer/image_resources.go
+internal/balancer/image_tool.go
+internal/balancer/llamacpp_transport.go
+internal/balancer/model_management.go
+internal/balancer/nctx_reload.go
+internal/balancer/nctx_reload_handlers.go
+internal/balancer/preflight_nctx.go
+internal/balancer/proxy.go
+webui/js/app.js
+webui/js/i18n/en.js
+webui/js/i18n/ru.js
+webui/js/modules/gguf-renderer-detail-render.js
+webui/js/modules/image-profiles.js
+webui/js/modules/reference-page.js
+webui/js/modules/renderers.js
+webui/js/monitor/ui-renderer.js

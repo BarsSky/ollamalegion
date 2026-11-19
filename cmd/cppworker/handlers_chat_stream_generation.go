@@ -1,4 +1,4 @@
-﻿// handlers_chat_stream_generation.go — R627 (2026-11-19): генерация инструментов и её
+// handlers_chat_stream_generation.go — R627 (2026-11-19): генерация инструментов и её
 // журнал (старт, keepalive, сводка, ошибка).
 //
 // ЗАЧЕМ ВЫНЕСЕНО. После R625–R626 в `handlers_chat.go` оставалась вторая половина

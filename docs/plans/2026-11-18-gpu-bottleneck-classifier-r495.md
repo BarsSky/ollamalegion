@@ -238,7 +238,7 @@ LB_GPU_BOTTLENECK=off|shadow|on     # off — прежнее поведение;
 и мутацией «игнорировать флаг». Вместимость (R71/R83) не затронута (§5.2 соблюдён):
 меняется только выбор. 3 мутации красный→зелёный.
 
-**Остался S4:** advisory-подсказки (`power` → `n_ubatch` вниз, `memory` → `parallel`
+**S4 — сделано частично (R556, 0.7.359):** подсказки реализованы (`bottleneckAdviceR495`: `memory` → `increase_parallel`, `power` → `reduce_batch`, остальные без совета) и публикуются полем `advice` в блоке `gpu_bottleneck` ответа `/api/metrics`. **Осталось:** то же поле в cluster state (`/api/v1/backends`) и строка диагноза в карточке бэкенда WebUI.
 вверх) в cluster state и `/api/metrics`, строка в карточке бэкенда WebUI, документы.
 ### 5.2 Вместимость — НЕ трогать
 

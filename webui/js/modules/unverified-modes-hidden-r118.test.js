@@ -48,28 +48,21 @@ function check(name, fn) { fn(); checks++; console.log('  ✓ ' + name); }
 
 const INDEX = path.join(__dirname, '..', '..', 'index.html');
 
-check('R118: в настройках виден только проверенный режим standard', function () {
+check('R562 (W1): режимы работы убраны из WebUI полностью', function () {
+    // БЫЛО (R118): показывать только проверенный режим, остальные карточки скрывать.
+    // СТАЛО (решение владельца 2026-11-19, «режимы сносим»): секции режимов нет вовсе —
+    // ни карточек .mode-card, ни радио name="operatingMode". Проверка инвертирована:
+    // возврат любой из этих разметок — красный тест.
     const html = fs.readFileSync(INDEX, 'utf8');
     const cards = html.match(/<label class="mode-card"[^>]*data-mode="[a-z_]+"[^>]*>/g) || [];
-    assert.ok(cards.length >= 5, 'не нашёл карточки режимов: ' + cards.length);
-
-    const visible = [];
-    cards.forEach(function (tag) {
-        const mode = (tag.match(/data-mode="([a-z_]+)"/) || [])[1];
-        if (!/display\s*:\s*none/.test(tag)) visible.push(mode);
-    });
-    assert.deepStrictEqual(visible, ['standard'],
-        'видны непроверенные режимы работы: ' + visible.join(', '));
-
-    // Radio «standard» отмечен по умолчанию — стандартный режим и есть общий.
-    assert.ok(/name="operatingMode" value="standard" checked/.test(html),
-        'radio standard должен быть отмечен по умолчанию');
-    // Непроверенные radio остались в DOM (чтобы не ломать логику сохранения),
-    // но их карточки скрыты — проверим, что каждый такой radio внутри скрытой.
-    ['replication', 'rpc_coordinator', 'virtual_router', 'distributed_inference'].forEach(function (mode) {
-        const re = new RegExp('<label class="mode-card"[^>]*data-mode="' + mode + '"[^>]*style="display:none"');
-        assert.ok(re.test(html), 'карточка режима ' + mode + ' не скрыта');
-    });
+    assert.strictEqual(cards.length, 0,
+        'карточки режимов вернулись в разметку: ' + cards.length + ' — режимы из UI удалены в R562');
+    assert.strictEqual(html.indexOf('name="operatingMode"'), -1,
+        'радио name="operatingMode" вернулось: выбор режима из UI удалён');
+    assert.strictEqual(html.indexOf('id="section-mode"'), -1,
+        'секция #section-mode вернулась: она удалена вместе с режимами');
+    assert.strictEqual(html.indexOf('mode-wizard.js'), -1,
+        'модуль mode-wizard.js снова подключён: мастер режима удалён в R560');
 });
 
 check('R118: в форме загрузки нет непроверенных backend раскладки', function () {

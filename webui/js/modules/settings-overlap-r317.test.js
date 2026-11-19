@@ -69,7 +69,6 @@ const OVERLAPS = [
             'LB_RELOAD_DEFER_MAX_SEC', 'LB_RELOAD_DEFER_FAST_FAIL_SEC'],
     },
     { field: 'idleUnloadMinutes', hot: ['LB_DESTRUCTIVE_OP_WAIT_SEC'] },
-    { field: 'modelReplicationIdleUnload', hot: ['LB_DESTRUCTIVE_OP_WAIT_SEC'] },
 ];
 
 // Ключи, добавленные этапом 5. Обязаны быть в ОБОИХ словарях.
@@ -180,8 +179,10 @@ function fieldBlock(html, fieldId) {
         const notice = INDEX_HTML.indexOf('id="settingsRestartNotice"');
         assert.ok(notice >= 0, 'нет блока #settingsRestartNotice — два механизма снова выглядят одинаково');
         const hotSection = INDEX_HTML.indexOf('id="section-hot-settings"');
-        const modeSection = INDEX_HTML.indexOf('id="section-mode"');
-        assert.ok(hotSection >= 0 && modeSection >= 0, 'не найдены секции реестра/режима');
+        // R562 (W1): секция режимов удалена; границу проводим по следующей ЖИВОЙ секции
+        // старых полей — той, где лежит #idleUnloadMinutes.
+        const modeSection = INDEX_HTML.indexOf('id="idleUnloadMinutes"');
+        assert.ok(hotSection >= 0 && modeSection >= 0, 'не найдены секция реестра или первое живое старое поле (#idleUnloadMinutes)');
         assert.ok(notice > hotSection, 'подпись стоит ВЫШЕ секции реестра — она говорит не о тех полях');
         assert.ok(notice < modeSection, 'подпись стоит НИЖЕ первого старого поля — граница проведена неверно');
     });

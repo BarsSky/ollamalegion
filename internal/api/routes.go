@@ -286,8 +286,6 @@ func (s *Server) setupRoutes() {
 		// (им нужны токен и параметры), поэтому здесь их нет.
 		for _, page := range []string{
 			"/index.html",
-			"/rpc-status.html",
-			"/tp-pipeline.html",
 			"/virtual-models.html",
 		} {
 			s.mux.Handle(page, fileServer)

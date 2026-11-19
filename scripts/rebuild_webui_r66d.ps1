@@ -101,7 +101,6 @@ docker ps --filter name=ol-bundled-webui --format '{{.Names}}\t{{.Status}}\t{{.I
 
 Write-Host "[webui] Проверка страниц (обрати внимание: все html из webui/ должны отдаваться 200):" -ForegroundColor Cyan
 $port = "18083"
-foreach ($page in @("/", "/monitor.html", "/health.html", "/virtual-models.html", "/rpc-status.html", "/tp-pipeline.html")) {
     $code = curl.exe -s -o NUL -w "%{http_code}" --max-time 10 "http://127.0.0.1:${port}${page}"
     $mark = if ($code -eq "200") { "OK " } else { "!! " }
     Write-Host ("  {0}{1} -> {2}" -f $mark, $page, $code)

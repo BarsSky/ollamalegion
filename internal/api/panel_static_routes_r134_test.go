@@ -43,7 +43,6 @@ func TestR134_PanelServesIconFontsAndDashboard(t *testing.T) {
 		{"/index.html", "", true},
 		{"/", `data-page="agents"`, false},
 		{"/virtual-models.html", "", false},
-		{"/rpc-status.html", "", false},
 	}
 	for _, c := range cases {
 		req := httptest.NewRequest(http.MethodGet, c.path, nil)

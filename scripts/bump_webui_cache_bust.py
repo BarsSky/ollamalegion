@@ -21,8 +21,6 @@ import sys
 from pathlib import Path
 
 DEFAULT_OLD_PATTERN = re.compile(r"\?v=[0-9A-Za-z._-]+")
-DEFAULT_FILES = ["index.html", "monitor.html", "health.html", "rpc-status.html",
-                 "tp-pipeline.html", "virtual-models.html"]
 
 
 def bump_file(path: Path, new_version: str, dry_run: bool = False) -> tuple[int, str]:

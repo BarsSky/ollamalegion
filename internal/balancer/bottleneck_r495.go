@@ -211,6 +211,10 @@ type BottleneckStateR495 struct {
 	// видно, иначе агрегат выглядит как факт по конкретной карте (§4.1 п.3).
 	Aggregated bool   `json:"aggregated,omitempty"`
 	Since      string `json:"since,omitempty"`
+	// Advice — advisory-подсказка оператору по вердикту (S4, §5.3).
+	// "increase_parallel" для memory-bound, "reduce_batch" для power-bound;
+	// пусто для остальных. Это СОВЕТ: балансер ничего не применяет сам.
+	Advice string `json:"advice,omitempty"`
 	// Numbers — по каким числам принят вердикт (для лога и разбора).
 	SM         float64 `json:"sm,omitempty"`
 	MemBusy    float64 `json:"memBusy,omitempty"`
@@ -279,6 +283,7 @@ func (t *bottleneckTrackerR495) update(backendID string, in BottleneckInputR495,
 		if known {
 			state.Since = prev.Since
 		}
+		state.Advice = bottleneckAdviceR495(state.Kind)
 		t.current[backendID] = state
 		return state, false
 	}
@@ -300,6 +305,7 @@ func (t *bottleneckTrackerR495) update(backendID string, in BottleneckInputR495,
 	if r, ok := powerRatioR495(in); ok {
 		state.PowerRatio = r
 	}
+	state.Advice = bottleneckAdviceR495(state.Kind)
 	t.current[backendID] = state
 	return state, true
 }
@@ -340,4 +346,41 @@ func (m BottleneckModeR495) String() string {
 		return "on"
 	}
 	return string(m)
+}
+
+// Коды advisory-подсказок (R495 S4, §5.3 плана).
+//
+// ПОЧЕМУ КОДЫ, А НЕ ТЕКСТ. Подсказку показывают и лог, и панель; текст в коде
+// означал бы третью копию формулировки рядом с i18n. Код переводится на стороне
+// панели, а в JSON он читается одинаково на любом языке.
+const (
+	// BottleneckAdviceIncreaseParallelR495 — memory-bound: главный рычаг —
+	// ПОДНЯТЬ parallel/слоты. При декоде веса читаются один раз на N токенов,
+	// поэтому батчинг почти линейно поднимает агрегатный tok/s на одной карте.
+	// Это противоположно интуиции «разгрузить карту», и именно поэтому подсказка
+	// нужна: без неё оператор уменьшает нагрузку и получает хуже.
+	BottleneckAdviceIncreaseParallelR495 = "increase_parallel"
+	// BottleneckAdviceReduceBatchR495 — power-bound: рост батча упирается в TDP,
+	// частота сбрасывается, время до первого токена растёт. Рычаг — уменьшить
+	// n_ubatch/n_batch.
+	BottleneckAdviceReduceBatchR495 = "reduce_batch"
+)
+
+// bottleneckAdviceR495 — подсказка по вердикту. Пустая строка = совета нет.
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. Ответ «что делать» обязан быть один на все места
+// публикации (лог, /api/metrics, панель). Прецедент R83-fix: «совет оператору,
+// ничего не меняем сами» — автоприменение это отдельная задача после замеров.
+func bottleneckAdviceR495(kind BottleneckKindR495) string {
+	switch kind {
+	case BottleneckMemoryR495:
+		return BottleneckAdviceIncreaseParallelR495
+	case BottleneckPowerR495:
+		return BottleneckAdviceReduceBatchR495
+	}
+	// compute: упираемся в тензорные ядра — подсказки по конфигу нет.
+	// stall: причина вне карты (сеть/PCIe/RPC/CPU) — совет зависел бы от того,
+	// чего у нас нет в числах, поэтому молчим, а не советуем наугад.
+	// idle/unknown: делать нечего или данных нет.
+	return ""
 }

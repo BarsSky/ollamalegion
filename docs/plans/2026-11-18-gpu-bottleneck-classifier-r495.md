@@ -1,6 +1,6 @@
 # GPU: отличить «уперлась в память» от «уперлась в вычисления» и учесть это в выборе бэкенда (R495)
 
-**Дата:** 2026-11-18. **Статус:** 🟡 **В РАБОТЕ:** S1 сделан (`0.7.298`), S2 (классификатор в shadow) — `0.7.300`; S2b (EMA prefill/decode), S3 (влияние на score), S4 (advisory + панель + доки) впереди.
+**Дата:** 2026-11-18. **Статус:** 🟡 **S1 (`0.7.298`), S2 (`0.7.300`, shadow) и S3 (`0.7.358`, `LB_GPU_BOTTLENECK=on` — давление=max(SM,MemBusy) + штраф stall) сделаны**; впереди S2b (EMA prefill/decode) и S4 (advisory + панель + доки).
 **Номер раунда:** R495 свободен (проверено 2026-11-18: ни одного вхождения в коде и доках).
 **Связанные документы:** `docs/architecture/balancing-guide.ru.md` §2, `docs/architecture/debts.ru.md`,
 `docs/plans/2026-11-17-selection-order-plan.md` (образец формы: «шов + флаг + выключено по умолчанию»),
@@ -223,6 +223,23 @@ LB_GPU_BOTTLENECK=off|shadow|on     # off — прежнее поведение;
 Формулу и веса `baseScore` не переписывать целиком: правка минимальная и
 проверяемая, иначе получим «два мозга» вместо одной формулы.
 
+### 5.1-статус (R555, 0.7.358) — СДЕЛАНО
+
+Реализовано ровно §5.1: в `computeBaseScoreAndPenalty` (`scoring.go`) при
+`LB_GPU_BOTTLENECK=on` занятость GPU берётся из давления, а не из одного SM:
+
+| Вердикт | Что делает score | Проверка |
+|---|---|---|
+| `memory` | давление = `max(SM, mem_busy)` — только ИЗМЕРЕННАЯ память (0 = «драйвер не отдал») | `TestR555_MemoryBoundLooksBusy`: SM 62 / память 96 → score **падает** (карта перестаёт выглядеть свободной) |
+| `stall` | штраф `bottleneckStallPenaltyR495 = 15` (соразмерно максимуму `requestPenalty`) | `TestR555_StallGetsPenalty` |
+| `compute`/`power`/`idle`/`unknown` | прежняя формула | `TestR555_NoDataKeepsFormula` (данных нет → score не меняется даже при `on`) |
+
+По умолчанию (`shadow`) score НЕ меняется — проверено `TestR555_ShadowKeepsOldFormula`
+и мутацией «игнорировать флаг». Вместимость (R71/R83) не затронута (§5.2 соблюдён):
+меняется только выбор. 3 мутации красный→зелёный.
+
+**Остался S4:** advisory-подсказки (`power` → `n_ubatch` вниз, `memory` → `parallel`
+вверх) в cluster state и `/api/metrics`, строка в карточке бэкенда WebUI, документы.
 ### 5.2 Вместимость — НЕ трогать
 
 `EffectiveMaxConcurrentRequests` и `EffectiveMaxConcurrentRequests`-эхо из R71/R83 не

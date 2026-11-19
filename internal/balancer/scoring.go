@@ -19,10 +19,50 @@ type scoreComponents struct {
 	weightFactor       float64
 }
 
+// bottleneckStallPenaltyR495 — штраф к score за вердикт «stall» (R495 S3).
+//
+// Величина соразмерна максимуму `requestPenalty` (15.0): простаивающая карта с
+// живыми запросами — не «свободная», она их только задержит (ждёт сеть, PCIe,
+// RPC-узел или CPU). Штраф не блокирует узел, а ставит его ниже действительно
+// свободных — поведение остаётся мягким, как у остальных штрафов score.
+const bottleneckStallPenaltyR495 = 15.0
+
 // computeBaseScoreAndPenalty вычисляет базовый score и штраф за загрузку
 // из метрик бэкенда. Используется и simple, и enhanced scoring.
+//
+// R495 S3 (§5.1 плана): при `LB_GPU_BOTTLENECK=on` занятость GPU берётся из
+// ДАВЛЕНИЯ, а не из одного счётчика SM.
+//
+// ЗАЧЕМ. На декоде каждый токен читает все веса модели и KV-cache, поэтому предел
+// скорости — полоса памяти: SM при этом падает до 40–70 %, и прежняя формула
+// `gpuFree = 100 - SM` показывала 30–60 % «свободы» у карты, уже насыщенной по
+// памяти (§1.1 плана). Новые запросы уходили именно туда.
+//
+// Правило (§5.1):
+//   - memory → давление = max(SM, занятость памяти);
+//   - stall → штраф (аналог requestPenalty);
+//   - compute/power/idle/unknown → прежняя формула (unknown = «данных нет», а не
+//     «плохо»).
+//
+// Формула и веса НЕ переписаны: меняется только источник величины «занятость GPU»,
+// и только под флагом S3. Вместимость (R71/R83) не затрагивается — §5.2.
 func computeBaseScoreAndPenalty(m *types.BackendMetrics) (baseScore, requestPenalty float64) {
-	gpuFree := 100 - m.GPU.UsagePercent
+	gpuLoad := m.GPU.UsagePercent
+	stallPenalty := 0.0
+	if bottleneckModeFromEnvR495() == BottleneckModeOnR495 {
+		in := bottleneckInputFromMetricsR495(m.GPU, m.Ollama.ActiveRequests)
+		switch classifyBottleneckR495(in) {
+		case BottleneckMemoryR495:
+			// Только ИЗМЕРЕННАЯ занятость памяти: 0 у mem_busy означает «драйвер
+			// не отдал» (N/A), и подставлять его вместо SM нельзя.
+			if in.MemBusyMeasured && in.MemBusy > gpuLoad {
+				gpuLoad = in.MemBusy
+			}
+		case BottleneckStallR495:
+			stallPenalty = bottleneckStallPenaltyR495
+		}
+	}
+	gpuFree := 100 - gpuLoad
 	vramFree := 100.0
 	if m.GPU.MemoryTotal > 0 {
 		vramFree = float64(m.GPU.MemoryFree) * 100 / float64(m.GPU.MemoryTotal)
@@ -35,6 +75,7 @@ func computeBaseScoreAndPenalty(m *types.BackendMetrics) (baseScore, requestPena
 	} else if m.Ollama.ActiveRequests > 5 {
 		requestPenalty = float64(m.Ollama.ActiveRequests) * 1.5
 	}
+	requestPenalty += stallPenalty
 	return
 }
 

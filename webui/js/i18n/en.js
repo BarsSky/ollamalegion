@@ -2,7 +2,6 @@
 window.I18N_EN = {
   // Nav
   "nav.dashboard": "Dashboard",
-  "nav.menu": "Menu",
   "nav.monitor": "Monitor",
   "nav.backends": "Backends",
   "nav.models": "Models",
@@ -17,7 +16,6 @@ window.I18N_EN = {
   "header.diagnostics": "Stand diagnostics",
   "diag.title": "Data for analysis",
   "diag.hint": "Everything that used to be searched for in five places: versions, context window, model profiles, flags, backend state. Copy a whole block or a single value with a click.",
-  "diag.refresh": "Refresh",
   "diag.copy_all": "Copy all (JSON)",
   "diag.copy_section": "Copy block",
   "diag.download_bundle": "Download diagnostics bundle",
@@ -66,7 +64,6 @@ window.I18N_EN = {
   "header.settings": "Settings",
 
   // Dashboard
-  "dashboard.total_gpus": "Total GPUs",
   "dashboard.active_backends": "Active Nodes",
   "dashboard.loaded_models": "Loaded Models",
   "dashboard.queue_size": "In Queue",
@@ -76,16 +73,9 @@ window.I18N_EN = {
   "dashboard.available_models": "Available Models",
   "dashboard.backend_load": "Backend Load",
   "dashboard.prediction_alerts": "Predictions & Alerts",
-  "dashboard.healthy": "Healthy",
-  "dashboard.warning": "Warning",
-  "dashboard.critical": "Critical",
-  "dashboard.requests_handling": "Requests Handled",
-  "dashboard.active_connections": "Active Connections",
 
   // Metrics
   "metrics.gpu_util": "GPU Utilization",
-  "metrics.vram_used": "VRAM Used",
-  "metrics.ram_used": "RAM Used",
   "metrics.gpuUtil": "GPU Utilization",
   "metrics.vramUsed": "VRAM Used",
   "metrics.ramUsed": "RAM Used",
@@ -98,15 +88,7 @@ window.I18N_EN = {
   "metrics.cpu_usage": "CPU utilization",
   "metrics.gpu_temp": "GPU temperature",
   "metrics.cpu_temp": "CPU temperature",
-  "metrics.temperature": "Temperature",
-  "metrics.fan_speed": "Fan Speed",
-  "metrics.power": "Power Draw",
-  "metrics.model": "Model",
-  "metrics.mode": "Mode",
   "metrics.status": "Status",
-  "metrics.endpoint": "Endpoint",
-  "metrics.sessions": "Sessions",
-  "metrics.queue": "Queue",
   "metrics.loaded_models": "Models",
   "metrics.last_seen": "Last Seen",
   "metrics.rps": "RPS",
@@ -176,32 +158,21 @@ window.I18N_EN = {
   "sessions.client": "Client",
   "sessions.model": "Model",
   "sessions.backend": "Backend",
-  "sessions.started": "Started",
-  "sessions.duration": "Duration",
-  "sessions.tokens": "Tokens",
   "sessions.requests": "Requests",
   "sessions.status": "Status",
-  "sessions.active": "Active",
-  "sessions.idle": "Idle",
-  "sessions.closed": "Closed",
   "sessions.no_sessions": "No active sessions",
 
   // Queue
   "queue.title": "Queue",
   "queue.position": "Position",
-  "queue.client": "Client",
-  "queue.model_requested": "Requested Model",
-  "queue.backend_assigned": "Backend",
   "queue.waiting_since": "Waiting Since",
   "queue.estimated_wait": "Est. Wait",
-  "queue.priority": "Priority",
   "queue.status": "Status",
   "queue.pending": "Pending",
   "queue.processing": "Processing",
   "queue.completed": "Completed",
   "queue.no_tasks": "Queue is empty",
   "queue.visualization": "Queue Visualization",
-  "queue.utilization": "Utilization",
   // R91 (2026-10-08): the REAL queue is waiting for a free slot
   // (LB_ADMISSION_WAIT_SEC). Legacy counters (current_size/processed_total) are
   // always zero in this mode, so the Queue page said "empty" while dozens of
@@ -224,10 +195,6 @@ window.I18N_EN = {
   // Logs
   "logs.title": "System Logs",
   "logs.time": "Time",
-  "logs.level": "Level",
-  "logs.message": "Message",
-  "logs.source": "Source",
-  "logs.auto_scroll": "Auto-scroll",
   "logs.clear": "Clear",
   "logs.no_logs": "No log entries",
   "logs.export": "Export",
@@ -244,7 +211,6 @@ window.I18N_EN = {
   "logs.filter_level_warn": "Warning",
   "logs.filter_level_error": "Error",
   "logs.level_info": "INFO",
-  "logs.level_warn": "WARN",
   // R481: readable log fields, search, expandable errors, download and a
   // direct entry point to the Diagnostics page.
   "logs.search_placeholder": "Search: text, source, backend, request_id",
@@ -262,7 +228,6 @@ window.I18N_EN = {
   "logs.open_diagnostics_title": "Open the Diagnostics page: summary, flags, recent failures",
   "logs.proxy_export": "Download",
   "logs.proxy_export_title": "Download the filtered proxy logs (CSV or JSON)",
-  "logs.proxy_export_select": "Clear the \"All\" filter first — the export would be empty",
   "logs.proxy_all": "All",
   "logs.proxy_status_2xx": "2xx OK",
   "logs.proxy_status_4xx": "4xx client",
@@ -271,12 +236,10 @@ window.I18N_EN = {
   "logs.proxy_error": "Error",
   "logs.proxy_request_id": "Request",
   "logs.proxy_stage": "Stage",
-  "logs.proxy_details": "Request details",
   "logs.proxy_copy_error": "Copy error text",
   "logs.proxy_copy_path": "Copy path",
   "logs.export_empty": "Nothing to export: no entries left after filtering",
   "logs.export_done": "Saved: {filename} ({count} entries)",
-  "logs.source_webui": "panel",  "logs.level_error": "ERROR",
   "logs.system": "System",
   "logs.proxy": "Proxy",
   "logs.proxy_title": "Proxy Requests",
@@ -340,13 +303,11 @@ window.I18N_EN = {
   "common.success": "Success",
   "common.close": "Close",
   "common.save": "Save",
-  "common.confirm": "Confirm",
   "common.cancel": "Cancel",
   "common.yes": "Yes",
   "common.no": "No",
   // Round 18e: refresh state, not retry.
   "common.retry": "Refresh",
-  "common.refresh": "Refresh",
 
   // ==== R84 (2026-10-03): single data-refresh entry point ====
   // The header freshness indicator (#dataFreshness) answers "is what I see
@@ -369,21 +330,16 @@ window.I18N_EN = {
   "refresh.toggle_auto_pause": "Pause auto-refresh",
   "refresh.toggle_auto_resume": "Resume auto-refresh",
   "common.unknown": "Unknown",
-  "common.offline": "Offline",
-  "common.online": "Online",
   "common.connected": "Connected",
   "common.disconnected": "Disconnected",
   "common.connecting": "Connecting...",
-  "common.version": "Version",
 
   // Footer
   "footer.documentation": "Documentation",
   "footer.github": "GitHub",
   "footer.license": "MIT License",
-  "footer.version": "Build version",
 
   // Help
-  "help.title": "Help",
   "help.scheme": "Request lifecycle: request, window, response",
   "help.scheme_desc": "Interactive map of every stage: where the context window is decided, why the answer finished, where the client gets the context size. Linked to the code.",
   "help.documentation": "Full Documentation",
@@ -394,14 +350,11 @@ window.I18N_EN = {
   "help.balancing_guide_desc": "Description of balancing modes and selection recommendations",
   "help.github_repo": "GitHub Repository",
   "help.github_repo_desc": "Source code, issues, and discussions",
-  "help.monitor_legend": "Monitor Legend",
-  "help.monitor_legend_desc": "Color codes and element descriptions on the monitor",
 
   // ===== RPC / Model Distribution (EN) =====
 
   // Monitor
   "monitor.sparkline.empty": "Metrics are still being collected…",
-  "monitor.sparkline.trend": "{metric}: min {min}% / max {max}% / current {current}%",
   // R91 (2026-10-08): short summary line under the sparkline. Before it,
   // min/avg/max lived only in the title and the scale was fitted to the window,
   // so the picture gave no idea how big the peak was (13% looked like 90%).
@@ -540,7 +493,6 @@ window.I18N_EN = {
   "monitor.stats.models": "Models",
 
   // R70: admission queue (waiting for a free slot)
-  "monitor.admission.title": "Admission queue (slots)",
   "monitor.admission.waiting": "Waiting for slot",
   "monitor.admission.activeSessions": "Active sessions",
   "monitor.admission.served": "Served after wait",
@@ -590,7 +542,6 @@ window.I18N_EN = {
   "monitor.autoPull.on": "On",
   "monitor.autoPull.off": "Off",
   "monitor.autoPull.maxConcurrent": "Max Concurrent:",
-  "monitor.autoPull.pullTimeout": "Pull Timeout:",
   "monitor.autoPull.retryCount": "Retry Count:",
   "monitor.autoPull.save": "💾 Save",
   "monitor.autoPull.activePulls": "Active Pulls",
@@ -609,7 +560,6 @@ window.I18N_EN = {
   "monitor.panel.feasibility": "📊 Load Feasibility",
   "monitor.panel.diskNetwork": "💾 Disk / 🌐 Network",
 
-  "monitor.dispatch.title": "⚡ Dispatch Stats",
   "monitor.dispatch.modelAffinity": "Model Affinity",
   "monitor.dispatch.resourceAware": "Resource-Aware",
   "monitor.dispatch.weightConfig": "Weight/Config",
@@ -694,10 +644,6 @@ window.I18N_EN = {
   "loading": "⏳ loading…",
 
   // Connection
-  "connection.connecting": "Connecting to balancer...",
-  "connection.connected": "Connected to balancer",
-  "connection.disconnected": "Connection to balancer lost",
-  "connection.reconnect": "Attempting to reconnect...",
 
   // Canvas labels (NEW)
   "monitor.canvas.clients": "Clients",
@@ -721,12 +667,9 @@ window.I18N_EN = {
   "app.backend_limits_warn": "Warning: runtime limits for {id} not updated",
   "app.backend_saved": "Backend updated",
   "app.backend_created": "Backend added",
-  "app.data_updated": "Data updated",
   "app.status_changed": "Status {id}: {old} → {new}",
   "app.limits_changed": "Limits {id} updated",
   "app.lang_changed": "Language changed",
-  "app.lang_changed_en": "Language changed",
-  "app.id_and_host_required": "ID and host are required",
   "app.error_loading_cluster": "Error loading cluster state",
   "app.error_loading_queue": "Error loading queue statistics",
   "app.error_loading_queue_details": "Error loading queue details",
@@ -736,8 +679,6 @@ window.I18N_EN = {
   "app.error_loading_agents": "Error loading agents",
 
   // Theme toggle title
-  "theme.toggle_dark": "Dark theme",
-  "theme.toggle_light": "Light theme",
 
   // Backend search placeholder
   "backends.session_placeholder": "Search session...",
@@ -905,7 +846,6 @@ window.I18N_EN = {
 
   // availableModels
   "renderers.no_available_models": "No available models",
-  "renderers.extra_models": "+{count} models",
 
   // renderOllamaParams - section titles
   "renderers.section_runtime_flags": "⚙️ Ollama Runtime Flags",
@@ -939,7 +879,6 @@ window.I18N_EN = {
   "renderers.context": "Context",
   "renderers.effective": "Effective",
   "renderers.model_memory": "Model Memory",
-  "renderers.context_memory": "Context Memory",
   "renderers.kv_cache": "KV Cache",
   "renderers.layers": "Layers",
   "renderers.kv_precision": "KV Precision",
@@ -1006,7 +945,6 @@ window.I18N_EN = {
 
   "renderers.section_gpu": "GPU Metrics",
   "renderers.section_system": "System Metrics",
-  "renderers.common_in": "in",
 
   // ===== Model details in grid (NEW) =====
 
@@ -1133,11 +1071,9 @@ window.I18N_EN = {
   "config.import": "Import Configuration",
   "config.import_title": "Import Configuration",
   "config.import_success": "Configuration imported successfully",
-  "config.import_error": "Import error",
   "config.import_confirm": "The following settings will be applied:",
   "config.import_invalid": "Invalid configuration file format",
   "config.import_parse_error": "JSON parse error",
-  "config.import_choose_file": "Choose JSON file",
 
   // ===== Settings Sections (NEW) =====
       "settings.selection_title": "Backend selection",
@@ -1270,8 +1206,6 @@ window.I18N_EN = {
   "renderers.digest": "Digest",
   "renderers.expires": "Expires",
   "renderers.expired": "Expired",
-  "renderers.vram_estimated_tooltip": "Estimated from model size + GPU layer split. cppworker does not report actual per-model VRAM usage.",
-  "renderers.ram_estimated_tooltip": "Estimated from model size + GPU layer split. cppworker does not report actual per-model RAM usage.",
   "renderers.no_candidate_data": "No candidate data",
 
   // ===== Localization Audit Fixes (2026-05-12) =====
@@ -1280,7 +1214,6 @@ window.I18N_EN = {
   "monitor.feasibility.modeCpu": "CPU",
   "monitor.feasibility.modeGpu": "GPU",
   "monitor.feasibility.noCapacity": "No capacity data",
-  "monitor.feasibility.vramShort": "VRAM",
   "monitor.feasibility.vram": "VRAM",
   "monitor.feasibility.freeVram": "Free VRAM",
   "monitor.feasibility.loadable": "Loadable",
@@ -1290,7 +1223,6 @@ window.I18N_EN = {
   "monitor.feasibility.modeLlamaCpp": "llama.cpp",
 
   "monitor.models.expired": "Expired",
-  "monitor.models.cloudNA": "N/A",
 
   "monitor.autoPull.statusDone": "Done",
   "monitor.autoPull.statusError": "Error",
@@ -1314,10 +1246,6 @@ window.I18N_EN = {
 
   "vm.jobRunning": "Running",
 
-  "renderers.cpuMode": "CPU",
-  "renderers.gpuMode": "GPU",
-  "renderers.throttledYes": "⚠️ YES",
-  "renderers.throttledOk": "OK",
   "renderers.cloud": "cloud",
   "renderers.active": "Active",
   "renderers.minutes": "m",
@@ -1326,8 +1254,6 @@ window.I18N_EN = {
   "common.edit": "Edit",
   "common.delete": "Delete",
   "common.load": "Load",
-  "common.loaded": "Loaded",
-  "common.notLoaded": "Not loaded",
   "common.free": "Free",
   // R90: label of the "Total (Model Memory)" row in the backend parameter card.
   "common.total": "Total",
@@ -1395,7 +1321,6 @@ window.I18N_EN = {
   "gguf.detail_load_timeout": "The balancer did not answer in time",
   "gguf.detail_load_retry": "Retry",
   "gguf.version": "Version",
-  "gguf.refresh": "Refresh",
   "gguf.auto_gpu_distribution": "Auto GPU Distribution",
   "gguf.tensor_split": "Tensor Split",
   "gguf.presets_label": "Presets:",
@@ -1580,7 +1505,6 @@ window.I18N_EN = {
   "imagePolicy.allow_load_env": "Environment flag: {flag}",
   "imagePolicy.allow_load_hint": "With the checkbox on, the text model sees the model catalog (list_image_models) and can load the one it needs; with it off, the tool is advertised for the already loaded model only.",
   "imagePolicy.err_load_timeout": "Waiting for the model to load: {min}…{max} s (0 = no cap)",
-  "imagePolicy.load_timeout": "Model load wait, s (0 = no cap)",
   "imagePolicy.load_timeout_env": "Environment variable: {flag}",
   "imagePolicy.load_timeout_hint": "Load wait: how many seconds to wait for the selected model to come up. 0 = no cap (timeout doctrine: we wait for the terminal state - the model came up, the worker reported an error, or the process died). A nonzero value is a watchdog: when it expires the reason goes back to the tool call and the model explains the delay to the user.",
   "imagePolicy.unsaved": "You have unsaved changes — press Save. The form auto-refresh is paused so it does not overwrite your input.",
@@ -1866,14 +1790,9 @@ window.I18N_EN = {
   "gguf.overrides_reset_done": "Runtime overrides cleared. llamaCpp reverted to bundled defaults.",
 
   // ===== Common Status =====
-  "common.online": "Online",
-  "common.offline": "Offline",
 
   // Sprint 1 (2026-06-29): data-density variant i18n keys
-  "density.title": "UI density",
   "density.toggle": "Toggle density (compact/comfortable)",
-  "density.normal": "Comfortable",
-  "density.dense": "Compact",
 
   // Phase 8 P.2 (2026-07-11): virtual_router mode
   "vm.title": "Virtual Models",
@@ -1881,7 +1800,6 @@ window.I18N_EN = {
   "vm.timeout": "Timeout (ms, default 30000)",
 
   // R-Image Phase 5 (2026-10-02): Image generation page (stable-diffusion.cpp).
-  "nav.image": "Images",
   "header.image": "Image models",
   "image.title": "Backend and model",
   "image.backend": "Image backend",
@@ -2150,7 +2068,6 @@ window.I18N_EN = {
   "imageModels.load_name": "Loading {name}",
 
   // ==== R-Image Phase 8 (2026-10-03): "Image backends" page ====
-  "nav.image_backends": "Image backends",
   "imageBackends.title": "Image backend management",
   "imageBackends.hint": "Image generation backends (type image_cpp): worker port, GPU, state, models and request flow. The nav item appears when the cluster has at least one such backend.",
   "imageBackends.col_id": "ID",
@@ -2171,7 +2088,6 @@ window.I18N_EN = {
   "imageBackends.add": "Add backend",
   "imageBackends.edit": "Edit",
   "imageBackends.remove": "Delete",
-  "imageBackends.refresh": "Refresh",
   "imageBackends.open_images": "To models",
   "imageBackends.load": "Load model",
   "imageBackends.unload": "Unload model",

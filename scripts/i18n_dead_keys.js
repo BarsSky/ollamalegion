@@ -139,6 +139,18 @@ markLiteralUses(allText);
         const parts = k.split('.');
         for (let i = 1; i < parts.length; i++) {
             const pre = parts.slice(0, i).join('.') + '.';
+            // R588: граница бывает не только по точке, но и по подчёркиванию:
+            // модуль собирает 'image.profiles.state_' + state (найдено тестом
+            // image-profiles-dom: три ключа были объявлены мёртвыми и удалены).
+            // R588: база может кончаться на подчёркивание в ЛЮБОМ месте ключа:
+            // модуль собирает t('image.profiles.state_' + outcome).
+            const cands = [pre];
+            for (let u = k.indexOf("_"); u !== -1; u = k.indexOf("_", u + 1)) cands.push(k.slice(0, u + 1));
+            for (const cand of cands) {
+                if (allText.indexOf(Q1 + cand + Q1 + " +") !== -1 ||
+                    allText.indexOf(Q2 + cand + Q2 + " +") !== -1 ||
+                    allText.indexOf(BT + cand + DL + "{") !== -1) { used.add(k); break; }
+            }
             if (allText.indexOf(Q1 + pre + Q1 + ' +') !== -1 ||
                 allText.indexOf(Q2 + pre + Q2 + ' +') !== -1 ||
                 allText.indexOf(BT + pre + DL + '{') !== -1) { used.add(k); break; }

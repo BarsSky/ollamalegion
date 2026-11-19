@@ -39,8 +39,8 @@ function check(name, fn) {
 }
 
 // Базовая линия зафиксирована на R584 (после откатов R574/R585).
-const MIN_USED_R586 = 2222;
-const MAX_UNUSED_R586 = 88;
+const MIN_USED_R586 = 2228;
+const MAX_UNUSED_R586 = 0;
 // R587: динамические ключи теперь считаются использованными сразу (сильнее), граница = 0.
 const MIN_DYNAMIC_R586 = 0;
 

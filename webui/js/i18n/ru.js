@@ -2,7 +2,6 @@
 window.I18N_RU = {
   // Nav
   "nav.dashboard": "Дашборд",
-  "nav.menu": "Меню",
   "nav.monitor": "Монитор",
   "nav.backends": "Бэкенды",
   "nav.models": "Модели",
@@ -17,7 +16,6 @@ window.I18N_RU = {
   "header.diagnostics": "Диагностика стенда",
   "diag.title": "Данные для разбора",
   "diag.hint": "Здесь собрано то, что обычно ищут по пяти местам: версии, окно контекста, профили моделей, флаги, состояние бэкендов. Копируйте блок целиком или значение по клику.",
-  "diag.refresh": "Обновить",
   "diag.copy_all": "Копировать всё (JSON)",
   "diag.copy_section": "Копировать блок",
   "diag.download_bundle": "Скачать архив диагностики",
@@ -66,7 +64,6 @@ window.I18N_RU = {
   "header.settings": "Настройки",
 
   // Dashboard
-  "dashboard.total_gpus": "Всего GPU",
   "dashboard.active_backends": "Активных узлов",
   "dashboard.loaded_models": "Загружено моделей",
   "dashboard.queue_size": "В очереди",
@@ -76,16 +73,9 @@ window.I18N_RU = {
   "dashboard.available_models": "Доступные модели",
   "dashboard.backend_load": "Загрузка бэкендов",
   "dashboard.prediction_alerts": "Прогнозы и уведомления",
-  "dashboard.healthy": "Здоров",
-  "dashboard.warning": "Предупреждение",
-  "dashboard.critical": "Критично",
-  "dashboard.requests_handling": "Обработано запросов",
-  "dashboard.active_connections": "Активных соединений",
 
   // Metrics
   "metrics.gpu_util": "GPU Утилизация",
-  "metrics.vram_used": "VRAM занято",
-  "metrics.ram_used": "RAM занято",
   "metrics.gpuUtil": "GPU Утилизация",
   "metrics.vramUsed": "VRAM занято",
   "metrics.ramUsed": "RAM занято",
@@ -100,15 +90,7 @@ window.I18N_RU = {
   "metrics.cpu_usage": "Загрузка CPU",
   "metrics.gpu_temp": "Температура GPU",
   "metrics.cpu_temp": "Температура CPU",
-  "metrics.temperature": "Температура",
-  "metrics.fan_speed": "Вентиляторы",
-  "metrics.power": "Энергопотребление",
-  "metrics.model": "Модель",
-  "metrics.mode": "Режим",
   "metrics.status": "Статус",
-  "metrics.endpoint": "Эндпоинт",
-  "metrics.sessions": "Сессии",
-  "metrics.queue": "Очередь",
   "metrics.loaded_models": "Модели",
   "metrics.last_seen": "Последняя активность",
   "metrics.rps": "RPS",
@@ -176,32 +158,21 @@ window.I18N_RU = {
   "sessions.client": "Клиент",
   "sessions.model": "Модель",
   "sessions.backend": "Бэкенд",
-  "sessions.started": "Начало",
-  "sessions.duration": "Длительность",
-  "sessions.tokens": "Токенов",
   "sessions.requests": "Запросов",
   "sessions.status": "Статус",
-  "sessions.active": "Активна",
-  "sessions.idle": "Ожидание",
-  "sessions.closed": "Завершена",
   "sessions.no_sessions": "Нет активных сессий",
 
   // Queue
   "queue.title": "Очередь",
   "queue.position": "Позиция",
-  "queue.client": "Клиент",
-  "queue.model_requested": "Запрошенная модель",
-  "queue.backend_assigned": "Бэкенд",
   "queue.waiting_since": "Ожидает с",
   "queue.estimated_wait": "Ожидаемое время",
-  "queue.priority": "Приоритет",
   "queue.status": "Статус",
   "queue.pending": "В ожидании",
   "queue.processing": "Обрабатывается",
   "queue.completed": "Завершено",
   "queue.no_tasks": "Очередь пуста",
   "queue.visualization": "Визуализация очереди",
-  "queue.utilization": "Использование",
   // R91 (2026-10-08): РЕАЛЬНАЯ очередь — ожидание свободного слота
   // (LB_ADMISSION_WAIT_SEC). Легаси-счётчики (current_size/processed_total)
   // в этом режиме всегда нули, поэтому страница «Очередь» показывала «пусто»
@@ -225,10 +196,6 @@ window.I18N_RU = {
   // Logs
   "logs.title": "Системные логи",
   "logs.time": "Время",
-  "logs.level": "Уровень",
-  "logs.message": "Сообщение",
-  "logs.source": "Источник",
-  "logs.auto_scroll": "Автопрокрутка",
   "logs.clear": "Очистить",
   "logs.no_logs": "Нет записей в логах",
   "logs.export": "Экспорт",
@@ -245,7 +212,6 @@ window.I18N_RU = {
   "logs.filter_level_warn": "Предупреждение",
   "logs.filter_level_error": "Ошибка",
   "logs.level_info": "INFO",
-  "logs.level_warn": "WARN",
   // R481: страница логов — читаемые поля, поиск, разворачивание ошибок,
   // скачивание и вход в «Диагностику» прямо из логов.
   "logs.search_placeholder": "Поиск: текст, источник, backend, request_id",
@@ -263,7 +229,6 @@ window.I18N_RU = {
   "logs.open_diagnostics_title": "Открыть страницу «Диагностика»: сводка, флаги, последние сбои",
   "logs.proxy_export": "Скачать",
   "logs.proxy_export_title": "Скачать отфильтрованные прокси-логи (CSV или JSON)",
-  "logs.proxy_export_select": "Сначала снимите фильтр «Все» — выгрузка пустая",
   "logs.proxy_all": "Все",
   "logs.proxy_status_2xx": "2xx OK",
   "logs.proxy_status_4xx": "4xx клиент",
@@ -272,12 +237,10 @@ window.I18N_RU = {
   "logs.proxy_error": "Ошибка",
   "logs.proxy_request_id": "Запрос",
   "logs.proxy_stage": "Стадия",
-  "logs.proxy_details": "Подробности запроса",
   "logs.proxy_copy_error": "Копировать текст ошибки",
   "logs.proxy_copy_path": "Копировать путь",
   "logs.export_empty": "Нечего экспортировать: после фильтров не осталось записей",
   "logs.export_done": "Файл сохранён: {filename} ({count} записей)",
-  "logs.source_webui": "панель",  "logs.level_error": "ERROR",
 
   // Settings
   "settings.title": "Настройки",
@@ -327,7 +290,6 @@ window.I18N_RU = {
   "common.error": "Ошибка",
   "common.success": "Успешно",
   "common.close": "Закрыть",
-  "common.confirm": "Подтвердить",
   "common.cancel": "Отмена",
   "common.yes": "Да",
   "common.no": "Нет",
@@ -335,7 +297,6 @@ window.I18N_RU = {
   // используется для refresh state (не для retry failed op). В английском
   // retry → refresh. Семантика «обновить состояние», а не «повторить запрос».
   "common.retry": "Обновить",
-  "common.refresh": "Обновить",
 
   // ==== R84 (2026-10-03): единая точка обновления данных ====
   // Индикатор свежести в шапке (#dataFreshness) отвечает на вопрос «актуально ли
@@ -358,12 +319,9 @@ window.I18N_RU = {
   "refresh.toggle_auto_pause": "Приостановить авто-обновление",
   "refresh.toggle_auto_resume": "Возобновить авто-обновление",
   "common.unknown": "Неизвестно",
-  "common.offline": "Офлайн",
-  "common.online": "Онлайн",
   "common.connected": "Подключено",
   "common.disconnected": "Отключено",
   "common.connecting": "Подключение...",
-  "common.version": "Версия",
   "common.free": "Свободно",
   // R90: подпись строки «Всего (память модели)» в карточке параметров бэкенда.
   "common.total": "Всего",
@@ -372,10 +330,8 @@ window.I18N_RU = {
   "footer.documentation": "Документация",
   "footer.github": "GitHub",
   "footer.license": "Лицензия MIT",
-  "footer.version": "Версия сборки",
 
   // Help
-  "help.title": "Справка",
   "help.scheme": "Схема работы: запрос, окно, ответ",
   "help.scheme_desc": "Интерактивная схема всех стадий: где решается окно контекста, почему ответ завершён, откуда клиент берёт объём контекста. С привязкой к коду.",
   "help.documentation": "Полная документация",
@@ -386,8 +342,6 @@ window.I18N_RU = {
   "help.balancing_guide_desc": "Описание режимов балансировки и рекомендации по выбору",
   "help.github_repo": "Репозиторий на GitHub",
   "help.github_repo_desc": "Исходный код, задачи и обсуждения",
-  "help.monitor_legend": "Легенда монитора",
-  "help.monitor_legend_desc": "Обозначения цветов и элементов на мониторе",
 
   // ===== RPC / Model Distribution (RU) =====
 
@@ -439,11 +393,9 @@ window.I18N_RU = {
   "config.import": "Импорт конфигурации",
   "config.import_title": "Импорт конфигурации",
   "config.import_success": "Конфигурация импортирована",
-  "config.import_error": "Ошибка импорта",
   "config.import_confirm": "Следующие настройки будут применены:",
   "config.import_invalid": "Неверный формат файла конфигурации",
   "config.import_parse_error": "Ошибка разбора JSON",
-  "config.import_choose_file": "Выберите JSON-файл",
 
   // ===== Settings Sections (NEW) =====
       "settings.selection_title": "Выбор бэкенда",
@@ -580,7 +532,6 @@ window.I18N_RU = {
 
   // Monitor
   "monitor.sparkline.empty": "Метрики ещё собираются…",
-  "monitor.sparkline.trend": "{metric}: мин {min}% / макс {max}% / текущее {current}%",
   // R91 (2026-10-08): короткая строка сводки под спарклайном. До неё min/avg/max
   // были ТОЛЬКО в title, а шкала подгонялась под окно — по картинке нельзя было
   // понять ни величину пика, ни то, 13% это или 90%. Показываем максимум за окно
@@ -726,7 +677,6 @@ window.I18N_RU = {
   "monitor.stats.models": "Моделей",
 
   // R70: admission-очередь (ожидание свободного слота)
-  "monitor.admission.title": "Очередь допуска (слоты)",
   "monitor.admission.waiting": "Ждут слот",
   "monitor.admission.activeSessions": "Активных сессий",
   "monitor.admission.served": "Обслужено после ожидания",
@@ -773,7 +723,6 @@ window.I18N_RU = {
   "monitor.autoPull.on": "Вкл",
   "monitor.autoPull.off": "Выкл",
   "monitor.autoPull.maxConcurrent": "Макс. одновременно:",
-  "monitor.autoPull.pullTimeout": "Таймаут pull:",
   "monitor.autoPull.retryCount": "Кол-во повторов:",
   "monitor.autoPull.save": "💾 Сохранить",
   "monitor.autoPull.activePulls": "Активных Pull",
@@ -797,7 +746,6 @@ window.I18N_RU = {
   "monitor.table.operation": "Операция",
 
 
-  "monitor.dispatch.title": "⚡ Статистика распределения",
   "monitor.dispatch.modelAffinity": "Привязка к модели",
   "monitor.dispatch.resourceAware": "По ресурсам",
   "monitor.dispatch.weightConfig": "Вес/конфиг",
@@ -887,10 +835,6 @@ window.I18N_RU = {
   "loading": "⏳ загрузка…",
 
   // Connection
-  "connection.connecting": "Подключение к балансеру...",
-  "connection.connected": "Подключено к балансеру",
-  "connection.disconnected": "Соединение с балансером потеряно",
-  "connection.reconnect": "Попытка переподключения...",
 
   // App strings (NEW)
   "app.processed": "обработано",
@@ -907,12 +851,9 @@ window.I18N_RU = {
   "app.backend_limits_warn": "Предупреждение: runtime-лимиты для {id} не обновлены",
   "app.backend_saved": "Бэкенд обновлен",
   "app.backend_created": "Бэкенд добавлен",
-  "app.data_updated": "Данные обновлены",
   "app.status_changed": "Статус {id}: {old} → {new}",
   "app.limits_changed": "Лимиты {id} обновлены",
   "app.lang_changed": "Язык изменён",
-  "app.lang_changed_en": "Language changed",
-  "app.id_and_host_required": "ID и хост обязательны",
   "app.error_loading_cluster": "Ошибка загрузки состояния кластера",
   "app.error_loading_queue": "Ошибка загрузки статистики очереди",
   "app.error_loading_queue_details": "Ошибка загрузки деталей очереди",
@@ -920,8 +861,6 @@ window.I18N_RU = {
   "app.error_loading_sessions": "Ошибка загрузки сессий",
 
   // Theme toggle title
-  "theme.toggle_dark": "Тёмная тема",
-  "theme.toggle_light": "Светлая тема",
 
   // Backend search placeholder
   "backends.session_placeholder": "Поиск сессии...",
@@ -1055,7 +994,6 @@ window.I18N_RU = {
 
   // availableModels
   "renderers.no_available_models": "Нет доступных моделей",
-  "renderers.extra_models": "+{count} моделей",
 
   // renderOllamaParams - section titles
   "renderers.section_runtime_flags": "⚙️ Runtime-флаги Ollama",
@@ -1089,7 +1027,6 @@ window.I18N_RU = {
   "renderers.context": "Контекст",
   "renderers.effective": "Эффективный",
   "renderers.model_memory": "Память модели",
-  "renderers.context_memory": "Контекст память",
   "renderers.kv_cache": "KV-кэш",
   "renderers.layers": "Слоёв",
   "renderers.kv_precision": "Точность KV",
@@ -1116,8 +1053,6 @@ window.I18N_RU = {
   "renderers.digest": "Digest",
   "renderers.expires": "Истекает",
   "renderers.expired": "Истёк",
-  "renderers.vram_estimated_tooltip": "Оценка по размеру модели + распределению слоёв по GPU. cppworker не сообщает фактическое использование VRAM на модель.",
-  "renderers.ram_estimated_tooltip": "Оценка по размеру модели + распределению слоёв по GPU. cppworker не сообщает фактическое использование RAM на модель.",
   "renderers.no_candidate_data": "Нет данных о кандидатах",
 
   // ===== Исправления локализации (2026-05-12) =====
@@ -1126,7 +1061,6 @@ window.I18N_RU = {
   "monitor.feasibility.modeCpu": "CPU",
   "monitor.feasibility.modeGpu": "GPU",
   "monitor.feasibility.noCapacity": "Нет данных о ёмкости",
-  "monitor.feasibility.vramShort": "VRAM",
   "monitor.feasibility.vram": "VRAM",
   "monitor.feasibility.freeVram": "Свободно VRAM",
   "monitor.feasibility.loadable": "Можно загрузить",
@@ -1136,7 +1070,6 @@ window.I18N_RU = {
   "monitor.feasibility.modeLlamaCpp": "llama.cpp",
 
   "monitor.models.expired": "Истёк",
-  "monitor.models.cloudNA": "N/A",
 
   "monitor.autoPull.statusDone": "Готово",
   "monitor.autoPull.statusError": "Ошибка",
@@ -1160,10 +1093,6 @@ window.I18N_RU = {
 
   "vm.jobRunning": "Выполняется",
 
-  "renderers.cpuMode": "CPU",
-  "renderers.gpuMode": "GPU",
-  "renderers.throttledYes": "⚠️ ДА",
-  "renderers.throttledOk": "OK",
   "renderers.cloud": "облако",
   "renderers.active": "Активен",
   "renderers.minutes": "м",
@@ -1172,8 +1101,6 @@ window.I18N_RU = {
   "common.edit": "Редактировать",
   "common.delete": "Удалить",
   "common.load": "Загрузить",
-  "common.loaded": "Загружено",
-  "common.notLoaded": "Не загружено",
 
   // ===== Disk/Network details (NEW) =====
   "renderers.section_disk_network": "💾 Диск / 🌐 Сеть",
@@ -1185,7 +1112,6 @@ window.I18N_RU = {
 
   "renderers.section_gpu": "Метрики GPU",
   "renderers.section_system": "Метрики системы",
-  "renderers.common_in": "через",
 
   // ===== Model details in grid (NEW) =====
 
@@ -1313,7 +1239,6 @@ window.I18N_RU = {
   "gguf.detail_load_timeout": "Балансер не ответил вовремя",
   "gguf.detail_load_retry": "Повторить",
   "gguf.version": "Версия",
-  "gguf.refresh": "Обновить",
   "gguf.auto_gpu_distribution": "Авто-распределение GPU",
   "gguf.tensor_split": "Tensor Split",
   "gguf.presets_label": "Пресеты:",
@@ -1497,7 +1422,6 @@ window.I18N_RU = {
   "imagePolicy.allow_load_env": "Флаг окружения: {flag}",
   "imagePolicy.allow_load_hint": "При включённой галочке текстовая модель видит каталог моделей (list_image_models) и может сама поднять нужную; при выключенной инструмент объявляется только для уже загруженной модели.",
   "imagePolicy.err_load_timeout": "Ожидание загрузки модели: {min}…{max} с (0 = без капа)",
-  "imagePolicy.load_timeout": "Ожидание загрузки модели, с (0 = без капа)",
   "imagePolicy.load_timeout_env": "Переменная окружения: {flag}",
   "imagePolicy.load_timeout_hint": "Ожидание загрузки: сколько секунд ждать, пока поднимется выбранная модель. 0 = капа нет (доктрина таймаутов: ждём терминального состояния — модель поднялась, воркер сообщил ошибку или процесс умер). Ненулевое значение — предохранитель: по истечении в ответ инструменту уходит причина, и модель объяснит задержку пользователю.",
   "imagePolicy.unsaved": "Есть несохранённые изменения — нажмите «Сохранить». Автообновление формы приостановлено, чтобы не стереть ввод.",
@@ -1895,14 +1819,9 @@ window.I18N_RU = {
   "models.operation_error": "Ошибка операции",
 
   // ===== Common Status =====
-  "common.online": "Онлайн",
-  "common.offline": "Офлайн",
 
   // Sprint 1 (2026-06-29): data-density variant i18n keys
-  "density.title": "Плотность интерфейса",
   "density.toggle": "Переключить плотность (компактно/комфортно)",
-  "density.normal": "Комфортно",
-  "density.dense": "Компактно",
 
   // Phase 8 P.2 (2026-07-11): virtual_router mode
   "vm.title": "Виртуальные модели",
@@ -1910,7 +1829,6 @@ window.I18N_RU = {
   "vm.timeout": "Таймаут (мс, по умолчанию 30000)",
 
   // R-Image Phase 5 (2026-10-02): страница генерации изображений (stable-diffusion.cpp).
-  "nav.image": "Изображения",
   "header.image": "Image-модели",
   "image.title": "Бэкенд и модель",
   "image.backend": "Image-бэкенд",
@@ -2178,7 +2096,6 @@ window.I18N_RU = {
   "imageModels.load_name": "Загрузка {name}",
 
   // ==== R-Image Phase 8 (2026-10-03): страница «Image-бэкенды» ====
-  "nav.image_backends": "Image-бэкенды",
   "imageBackends.title": "Управление image-бэкендами",
   "imageBackends.hint": "Бэкенды генерации изображений (тип image_cpp): порт воркера, GPU, состояние, модели и поток запросов. Пункт появляется, когда в кластере есть хотя бы один такой бэкенд.",
   "imageBackends.col_id": "ID",
@@ -2199,7 +2116,6 @@ window.I18N_RU = {
   "imageBackends.add": "Добавить бэкенд",
   "imageBackends.edit": "Изменить",
   "imageBackends.remove": "Удалить",
-  "imageBackends.refresh": "Обновить",
   "imageBackends.open_images": "К моделям",
   "imageBackends.load": "Загрузить модель",
   "imageBackends.unload": "Выгрузить модель",

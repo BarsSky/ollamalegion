@@ -1,6 +1,6 @@
-package balancer
+﻿package balancer
 
-// proxy_request_openai_auto_stream_r258.go — R258 (2026-10-28): не-стрим
+// proxy_request_openai_auto_stream_limits.go — R258 (2026-10-28): не-стрим
 // агентские запросы не «копят молча».
 //
 // ЖИВОЙ ФАКТ (DSH, deepseek-harness). Часть запросов агент шлёт с `stream=false`.

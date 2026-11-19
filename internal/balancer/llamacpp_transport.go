@@ -834,7 +834,7 @@ func (p *Proxy) newUpstreamRequest(reqCtx context.Context, r *http.Request, full
 			req.Header.Add(key, value)
 		}
 	}
-	// R376: id клиента — в воркер (отмена по request_id, см. upstream_request_id_r376.go).
+	// R376: id клиента — в воркер (отмена по request_id, см. upstream_request_id.go).
 	stampUpstreamRequestIDFromRequestR376(req, r)
 	// R307: административные ручки воркера закрыты токеном. Клиентский токен
 	// (для балансера) воркеру не годится — подставляем токен ЭТОГО воркера.

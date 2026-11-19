@@ -48,7 +48,7 @@ var stallPathRegistryR298 = map[string]stallPathStatus{
 	"proxy_request_openai_auto_stream.go": {
 		why: "авто-стрим для клиентов, попросивших stream:false (не агентский путь)",
 	},
-	"proxy_request_openai_auto_stream_r258.go": {
+	"proxy_request_openai_auto_stream_limits.go": {
 		why: "то же, версия R258",
 	},
 	"llamacpp_transport_nonstream.go": {

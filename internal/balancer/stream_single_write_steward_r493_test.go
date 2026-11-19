@@ -128,7 +128,7 @@ func TestR493r_StreamLinePlanIsTheOnlyDecisionPoint(t *testing.T) {
 	// поток по кадру-ошибке).
 	loops := map[string]string{
 		"stream_openai_sse.go":                "func (p *Proxy) runOpenAISSEStreamR493(",
-		"proxy_request_openai_auto_stream_r258.go": "func (p *Proxy) streamUpstreamSSEToClient(",
+		"proxy_request_openai_auto_stream_limits.go": "func (p *Proxy) streamUpstreamSSEToClient(",
 	}
 	for file, sig := range loops {
 		checkSSEPipelineStewardR493(t, file, sig)

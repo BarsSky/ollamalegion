@@ -1,4 +1,4 @@
-// Round 52 (2026-08-24): tests for load-lock release semantics.
+﻿// Round 52 (2026-08-24): tests for load-lock release semantics.
 //
 // Background:
 //   Pre-R52 had a lock leak in handleLoadWithParams SYNC path. The inline
@@ -38,7 +38,7 @@ func setupLoadLockTestBackend(t *testing.T) {
 	//
 	//	WARNING: DATA RACE
 	//	Write at ... by goroutine 820: setupLoadLockTestBackend (эта функция)
-	//	Previous read at ... by goroutine 819: donorMarkR304 (donor_guard_r304.go)
+	//	Previous read at ... by goroutine 819: donorMarkR304 (donor_guard.go)
 	//
 	// Чтение — из фоновой загрузки модели, запущенной предыдущим кейсом и ещё не
 	// завершённой; она читает глобальный backend ровно тогда, когда следующий кейс

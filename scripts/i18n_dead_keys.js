@@ -155,7 +155,7 @@ const report = {
 };
 
 if (process.argv.includes('--json')) {
-    console.log(JSON.stringify({ ...report, unusedKeys: dead.slice(0, 200) }, null, 2));
+    console.log(JSON.stringify({ ...report, unusedKeys: dead }, null, 2));
     process.exit(0);
 }
 

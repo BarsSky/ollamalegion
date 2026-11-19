@@ -140,15 +140,6 @@
         return checked ? checked.value : 'standard';
     }
 
-    function updateModeCards(mode) {
-        document.querySelectorAll('.mode-card').forEach(function (card) {
-            if (card.dataset.mode === mode) {
-                card.classList.add('active');
-            } else {
-                card.classList.remove('active');
-            }
-        });
-    }
 
     /**
      * showModeFields(mode, rootEl) — показать набор полей выбранного режима.
@@ -160,24 +151,6 @@
      * Теперь id мастера уникальны (`wiz-modeFields-<mode>`), а rootEl
      * позволяет искать строго внутри переданного контейнера.
      */
-    function showModeFields(mode, rootEl) {
-        var scope = rootEl || document;
-        // Hide all mode field containers
-        scope.querySelectorAll('.mode-fields').forEach(function (container) {
-            container.classList.remove('active');
-            container.style.display = 'none';
-        });
-        // Show active mode fields: сначала id мастера (wiz-), затем общий.
-        var activeFields = scope.querySelector('[id="wiz-modeFields-' + mode + '"]') ||
-            scope.querySelector('[id="modeFields-' + mode + '"]');
-        if (activeFields) {
-            activeFields.classList.add('active');
-            activeFields.style.display = 'block';
-        }
-
-        // --- Adaptive UI: hide/show variant-related sections ---
-        updateVariantSections(mode);
-    }
 
     function updateVariantSections(mode) {
         // Map mode to variant class

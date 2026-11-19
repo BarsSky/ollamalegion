@@ -235,7 +235,7 @@ func loadWorkerConfig(log *zap.SugaredLogger) cppbackend.Config {
 	// поэтому после каждого пересоздания контейнера раскладка, назначенная
 	// балансером, молча отключалась (rpc_enabled=false, ни одной RPC-строки в
 	// логе загрузки) — двухузловой стенд деградировал в однопузловой без единого
-	// сообщения. См. startup_config_r370.go.
+	// сообщения. См. startup_config.go.
 	return cfg
 }
 
@@ -328,7 +328,7 @@ func applyLayoutEnvOverrides(cfgPtr *cppbackend.Config, log *zap.SugaredLogger) 
 	// Раньше именно этот блок, стоящий ПОСЛЕ них, затирал раскладку, назначенную
 	// балансером: в compose RPC-переменные пустые → «выключено, узлов нет» → после
 	// каждого пересоздания контейнера двухузловой стенд молча становился
-	// однопузловым (см. startup_config_r370.go).
+	// однопузловым (см. startup_config.go).
 	if envVal := strings.TrimSpace(os.Getenv("CPPWORKER_MAIN_GPU")); envVal != "" {
 		if v, err := strconv.Atoi(envVal); err == nil && v >= 0 {
 			cfg.DefaultMainGPU = v

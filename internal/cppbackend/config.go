@@ -1,4 +1,4 @@
-// Package cppbackend — конфигурация для CppBackend
+﻿// Package cppbackend — конфигурация для CppBackend
 package cppbackend
 
 import (
@@ -156,7 +156,7 @@ type Config struct {
 	// мы об этом не по приказу, а по факту: машина молча перестала бы грузить
 	// модели. Поэтому здесь нет env-фолбэка (сравните с RPCServerEnabled выше):
 	// значение приезжает только приказом и лежит в файле операторских
-	// переопределений (cmd/cppworker/runtime_overrides_r119.go).
+	// переопределений (cmd/cppworker/runtime_overrides.go).
 	BackendRole string `json:"backendRole"`
 
 	// LlamaBuild — версия/коммит сборки llama.cpp, которую узел сообщает

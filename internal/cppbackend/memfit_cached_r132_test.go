@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // memfit_cached_r132_test.go — R132 (2026-10-16): справочные ручки не ходят к узлам
 // раскладки НИ ОДНИМ вызовом.
@@ -85,7 +85,7 @@ func TestR132_ReadOnlyHandlersDoNotDialNodes(t *testing.T) {
 	handlers := []struct{ path, fn string }{
 		{"../../cmd/cppworker/handlers_model.go", "handleListModels"},
 		{"../../cmd/cppworker/handlers_model.go", "handleGetModel"},
-		{"../../cmd/cppworker/handlers_effective_r116.go", "handleModelEffective"},
+		{"../../cmd/cppworker/handlers_effective.go", "handleModelEffective"},
 	}
 	for _, h := range handlers {
 		body := funcBody(t, h.path, h.fn)
@@ -136,7 +136,7 @@ func TestR132_ListHandlerDoesNotDialNodes(t *testing.T) {
 // TestR132_EffectiveHandlerDoesNotDialNodes — вторая справочная ручка:
 // GET /api/models/effective считает вердикт памяти и звала MemfitBudget() (с RPC).
 func TestR132_EffectiveHandlerDoesNotDialNodes(t *testing.T) {
-	src := readSource(t, "../../cmd/cppworker/handlers_effective_r116.go")
+	src := readSource(t, "../../cmd/cppworker/handlers_effective.go")
 	if strings.Contains(src, "backend.MemfitBudget()") {
 		t.Error("handleModelEffective всё ещё зовёт MemfitBudget() (с RPC) — " +
 			"открытие карточки модели могло уронить мастер")

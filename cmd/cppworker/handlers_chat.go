@@ -1820,7 +1820,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	if len(toolCalls) == 0 {
 		// R188 (2026-10-20): клиентский лимит длины ответа делает повтор бессмысленным —
 		// тот же лимит отрежет тот же вывод. При ограниченном выводе разрешён максимум
-		// один повтор (см. handlers_chat_retry_r188.go).
+		// один повтор (см. handlers_chat_retry.go).
 		retryBudget := emptyOutputRetryBudget(clientCapped)
 		if clientCapped {
 			// R464 (2026-11-06): «клиент задал длину» — это только ЯВНЫЙ

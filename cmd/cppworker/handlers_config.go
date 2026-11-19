@@ -1,4 +1,4 @@
-// handlers_config.go ? CppWorker runtime configuration handlers (get, update, reload).
+﻿// handlers_config.go ? CppWorker runtime configuration handlers (get, update, reload).
 package main
 
 import (
@@ -592,7 +592,7 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	// === Логируем нераспознанные ключи (помогает WebUI отлаживать) ===
 	//
-	// R374 (2026-11-01): карта вынесена в update_config_keys_r374.go. Раньше она
+	// R374 (2026-11-01): карта вынесена в update_config_keys.go. Раньше она
 	// жила здесь и отставала от того, что обработчик применяет: rpcServerEnabled/
 	// rpcServerPort применялись (см. applyBool/applyInt выше), но в карту их не
 	// добавили — и на КАЖДОЙ смене роли донора воркер писал «unknown field» ровно

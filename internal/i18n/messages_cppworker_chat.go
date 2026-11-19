@@ -1,4 +1,4 @@
-package i18n
+﻿package i18n
 
 // R234: сообщения cppworker — вторая часть (батч по assigned-файлам).
 //
@@ -200,7 +200,7 @@ var messagesCppworker = map[string]map[Lang]string{
 		EN: "reload force=true: requests did not drain within 5s — loading anyway",
 	},
 
-	// === cppworker: операторские переопределения (runtime_overrides_r119.go) ===
+	// === cppworker: операторские переопределения (runtime_overrides.go) ===
 	"cppworker.runtime_overrides_r119.file_unparsed": {
 		RU: "runtime overrides: файл не разобран, игнорирую",
 		EN: "runtime overrides: the file could not be parsed, ignoring it",

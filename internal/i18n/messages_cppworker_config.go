@@ -217,7 +217,7 @@ var messagesMisc = map[string]map[Lang]string{
 		EN: "auto_offload: KV computed from the real cache parameters (R83 §9.4 step 2)",
 	},
 
-	// === cmd/cppworker/handlers_effective_r116.go =======================
+	// === cmd/cppworker/handlers_effective.go =======================
 	"cppworker.handlers_effective_r116.ctx_hint": {
 		RU: "укажите ?ctx= или задайте контекст в профиле модели",
 		EN: "pass ?ctx= or set the context in the model profile",

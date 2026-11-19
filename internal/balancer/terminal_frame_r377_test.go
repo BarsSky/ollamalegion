@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 // terminal_frame_r377_test.go — R377 (2026-11-01): терминальный кадр на
 // транслируемом пути собирает ОДИН владелец — writeTerminalFrameR377.
@@ -184,7 +184,7 @@ func TestR377_Steward_OneTerminalFrameBuilder(t *testing.T) {
 	files := []string{
 		"llamacpp_transport.go",
 		"llamacpp_transport_helpers.go",
-		"terminal_frame_r377.go",
+		"terminal_frame.go",
 	}
 	ownerHits := 0
 	for _, name := range files {
@@ -209,7 +209,7 @@ func TestR377_Steward_OneTerminalFrameBuilder(t *testing.T) {
 			if !found {
 				continue
 			}
-			if name == "terminal_frame_r377.go" && fn.Name.Name == "writeTerminalFrameR377" {
+			if name == "terminal_frame.go" && fn.Name.Name == "writeTerminalFrameR377" {
 				ownerHits++
 				continue
 			}

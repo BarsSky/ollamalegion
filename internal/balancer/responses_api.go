@@ -1,4 +1,4 @@
-// responses_r247.go — R247, этап C плана
+﻿// responses_api.go — R247, этап C плана
 // (docs/plans/2026-10-26-clients-agents-contract-r247.md).
 //
 // ЗАЧЕМ. Новые OpenAI-клиенты (Codex-style, часть SDK-обёрток) ходят только в

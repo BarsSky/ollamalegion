@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"net/http"
@@ -167,7 +167,7 @@ func (lr *LlamaCppRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	// R247 (2026-10-26), этап B плана: Anthropic-native клиенты (Claude Code,
 	// anthropic SDK) ходят только в /v1/messages. Трансляция в OpenAI-поверхность
-	// через self-proxy — см. internal/balancer/anthropic_r247.go.
+	// через self-proxy — см. internal/balancer/anthropic_api.go.
 	case "/v1/messages":
 		lr.handleAnthropicMessages(w, r)
 		return true

@@ -518,3 +518,5 @@ ctx_ceiling_cluster.go (кластерный потолок). Счётчик: с
 **R5 — продолжение (R611, 0.7.415).** Темы «загрузка и раскладка» (4) и «завершение ответа и очередь» (4) в internal/balancer. Счётчик: собственный 131 → 123, structure_report.ps1 130 → 122. Остаток: internal/balancer (66) и cmd/cppworker (57).
 
 **R5 — продолжение (R612, 0.7.416).** Темы «рассуждения» (4) и «пустой ответ» (3) в cmd/cppworker; два empty_output_retry различены как механизм и бюджет. Счётчик: собственный 123 → 116, structure_report.ps1 122 → 116. Остаток: internal/balancer (66) и cmd/cppworker (50).
+
+**R5 — продолжение (R613, 0.7.417).** Темы «поверхности API» (4: anthropic/responses/vision) и «завершение нативного ответа» (4) в internal/balancer; два ision различены как поверхность и стрим-вариант. Счётчик: собственный 116 → 108, structure_report.ps1 116 → 108. Остаток: internal/balancer (58) и cmd/cppworker (50).

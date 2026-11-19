@@ -118,7 +118,7 @@ func requestPlanOfR493(r *http.Request) *requestPlanR493 {
 // поведение существующего вызова.
 //
 // max_output_tokens (Responses-поверхность) переводится в max_tokens только
-// адаптером responses_r247.go:211, поэтому здесь он не учитывается: на этой
+// адаптером responses_api.go:211, поэтому здесь он не учитывается: на этой
 // поверхности тело уже приведено к OpenAI-форме к моменту сборки плана.
 func outputLimitFromBodyR493(body []byte) (int, string) {
 	if len(body) == 0 {

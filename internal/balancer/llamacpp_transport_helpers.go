@@ -1,4 +1,4 @@
-// llamacpp_transport_helpers.go — Вспомогательные функции для streaming-прокси
+﻿// llamacpp_transport_helpers.go — Вспомогательные функции для streaming-прокси
 // llama.cpp/cppworker. Используются llamacpp_transport.go (proxyRequestLlamaCpp)
 // для корректного завершения streaming-ответов и инкрементального сбора tool_calls.
 package balancer
@@ -150,7 +150,7 @@ func cleanFinalContent(s string) string {
 //
 // R377 (2026-11-01): эта функция больше НЕ собирает кадр — она решает только,
 // какой текст положить в него (восстановить полный ответ). Саму форму кадра
-// пишет единственный владелец writeTerminalFrameR377 (terminal_frame_r377.go).
+// пишет единственный владелец writeTerminalFrameR377 (terminal_frame.go).
 func writeStreamingSSEDone(
 	w http.ResponseWriter,
 	originalPath, modelFromCtx string,

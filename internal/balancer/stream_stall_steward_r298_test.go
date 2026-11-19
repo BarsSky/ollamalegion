@@ -57,10 +57,10 @@ var stallPathRegistryR298 = map[string]stallPathStatus{
 	"preflight_stream_dialog.go": {
 		why: "короткий служебный диалог preflight, не ответ клиенту",
 	},
-	"anthropic_r247.go": {
+	"anthropic_api.go": {
 		why: "адаптер Anthropic — пробел R298, сторож не подключён",
 	},
-	"responses_r247.go": {
+	"responses_api.go": {
 		why: "адаптер /v1/responses — пробел R298, сторож не подключён",
 	},
 	"virtual_router.go": {

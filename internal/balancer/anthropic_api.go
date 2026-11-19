@@ -1,4 +1,4 @@
-// anthropic_r247.go — R247, этап B плана
+﻿// anthropic_api.go — R247, этап B плана
 // (docs/plans/2026-10-26-clients-agents-contract-r247.md).
 //
 // ЗАЧЕМ. Anthropic-native клиенты (Claude Code, `anthropic` SDK, часть IDE-плагинов)

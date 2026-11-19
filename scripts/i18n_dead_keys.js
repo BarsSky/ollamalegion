@@ -125,7 +125,26 @@ for (const f of htmlFiles.concat(jsFiles)) {
     if (path.relative(WEBUI, f).split(path.sep).indexOf("i18n") !== -1) continue;
     allText += fs.readFileSync(f, 'utf8') + '\\n';
 }
+// R587: (1) ТЕСТЫ — тоже потребители ключей (найдено в R584: ключ, на который ссылается
+// только тест, измеритель считал мёртвым, и удаление рвало проверку словаря);
+// (2) динамика проверяется по ВСЕМ сегментам ключа, а не только по первому
+// ('image.profiles.' + state — реальный пример, который R584 объявил мёртвым).
+const testFiles = walk(path.join(WEBUI, 'js'), [], (n) => n.endsWith('.test.js'));
+for (const tf of testFiles) allText += fs.readFileSync(tf, 'utf8') + '\\n';
 markLiteralUses(allText);
+(function dynamicAllSegments() {
+    const BT = String.fromCharCode(96), Q1 = String.fromCharCode(39), Q2 = String.fromCharCode(34);
+    const DL = String.fromCharCode(0x24);
+    for (const k of ruKeys) {
+        const parts = k.split('.');
+        for (let i = 1; i < parts.length; i++) {
+            const pre = parts.slice(0, i).join('.') + '.';
+            if (allText.indexOf(Q1 + pre + Q1 + ' +') !== -1 ||
+                allText.indexOf(Q2 + pre + Q2 + ' +') !== -1 ||
+                allText.indexOf(BT + pre + DL + '{') !== -1) { used.add(k); break; }
+        }
+    }
+})();
 
 // Ключ, начинающийся с зафиксированного динамического префикса, считаем используемым.
 const prefixes = [...new Set(dynamicHints.map((h) => h.prefix))];

@@ -39,9 +39,10 @@ function check(name, fn) {
 }
 
 // Базовая линия зафиксирована на R584 (после откатов R574/R585).
-const MIN_USED_R586 = 2144;
-const MAX_UNUSED_R586 = 91;
-const MIN_DYNAMIC_R586 = 75;
+const MIN_USED_R586 = 2222;
+const MAX_UNUSED_R586 = 88;
+// R587: динамические ключи теперь считаются использованными сразу (сильнее), граница = 0.
+const MIN_DYNAMIC_R586 = 0;
 
 const script = path.join(__dirname, '..', '..', 'scripts', 'i18n_dead_keys.js');
 const out = execFileSync(process.execPath, [script, '--json'], { encoding: 'utf8' });

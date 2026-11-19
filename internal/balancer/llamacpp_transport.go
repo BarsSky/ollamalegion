@@ -555,14 +555,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		return nil
 	}
 
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("Cache-Control", "no-cache")
-	// R65d (2026-09-20): проброс заголовков предупреждений ДО WriteHeader.
-	// cppworker урезает n_predict, чтобы ответ поместился в n_ctx, и сообщает
-	// об этом заголовками (nctx_clamp.go:360-388); без проброса клиент получает
-	// короткий ответ без объяснения причины. Заголовки обязаны быть выставлены
-	// строго до WriteHeader — после него они уже не уйдут.
-	forwardUpstreamWarningHeaders(w, resp)
+	// R536 (R2 читаемости): заголовки ответа, которые обязаны уйти ДО
+	// WriteHeader, выставляются одной функцией (порядок и состав прежние).
+	applyStreamResponseHeaders(w, resp)
 	// R360 (2026-10-31): id генерации на воркере. По нему адресная отмена
 	// (cancelUpstreamGeneration): без него отмена по модели гасит ВСЕ генерации этой
 	// модели на узле, включая чужие (аудит abort, A5).
@@ -2852,4 +2847,20 @@ func upstreamIdentityFromHeaders(resp *http.Response) (requestID string, loadNs 
 		}
 	}
 	return requestID, loadNs
+}
+
+// applyStreamResponseHeaders — заголовки стримингового ответа, которые обязаны
+// быть выставлены строго ДО WriteHeader (после него они уже не уйдут).
+//
+// R65d (2026-09-20): проброс заголовков предупреждений. cppworker урезает
+// n_predict, чтобы ответ поместился в n_ctx, и сообщает об этом заголовками
+// (nctx_clamp.go:360-388); без проброса клиент получает короткий ответ без
+// объяснения причины.
+//
+// R536 (R2 читаемости): вынесено из proxyRequestLlamaCpp дословно — состав и
+// порядок заголовков прежние.
+func applyStreamResponseHeaders(w http.ResponseWriter, resp *http.Response) {
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("Cache-Control", "no-cache")
+	forwardUpstreamWarningHeaders(w, resp)
 }

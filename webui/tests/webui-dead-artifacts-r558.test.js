@@ -65,7 +65,18 @@ check('index.html грузит словари .js, а не .json', function () {
     assert.strictEqual(html.indexOf('i18n/en.json'), -1, 'index.html снова ссылается на en.json');
 });
 
-console.log('\n' + passed + ' проверок зелёные, ' + failures.length + ' красных');
+
+check('удалённые ключи мастера не вернулись (R559)', function () {
+    // Ключи полей, которых в мастере больше нет: поле «API Token» убрано в R544,
+    // шаг «Тип бэкенда» — в R195. Ключ без потребителя не краснеет в CI, но
+    // выглядит как «фича есть» для того, кто правит словарь.
+    const ru = fs.readFileSync(path.join(root, 'js/i18n/ru.js'), 'utf8');
+    const en = fs.readFileSync(path.join(root, 'js/i18n/en.js'), 'utf8');
+    ['"wizard.api_token_label"', '"wizard.tooltip.api_token"'].forEach(function (key) {
+        assert.strictEqual(ru.indexOf(key), -1, 'ru.js: мёртвый ключ ' + key + ' вернулся');
+        assert.strictEqual(en.indexOf(key), -1, 'en.js: мёртвый ключ ' + key + ' вернулся');
+    });
+});console.log('\n' + passed + ' проверок зелёные, ' + failures.length + ' красных');
 if (failures.length > 0) {
     failures.forEach(function (f) { console.error('  FAIL: ' + f); });
     process.exit(1);

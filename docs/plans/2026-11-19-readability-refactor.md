@@ -522,3 +522,5 @@ ctx_ceiling_cluster.go (кластерный потолок). Счётчик: с
 **R5 — продолжение (R613, 0.7.417).** Темы «поверхности API» (4: anthropic/responses/vision) и «завершение нативного ответа» (4) в internal/balancer; два ision различены как поверхность и стрим-вариант. Счётчик: собственный 116 → 108, structure_report.ps1 116 → 108. Остаток: internal/balancer (58) и cmd/cppworker (50).
 
 **R5 — продолжение (R614, 0.7.418).** Темы «диагностика и пробы» (5) и «очередь и приём» (4); два unified_queue различены как очередь и гейт. Счётчик: собственный 108 → 99 (впервые ниже сотни), structure_report.ps1 108 → 100. Остаток: internal/balancer (49) и cmd/cppworker (50).
+
+**R5 — продолжение (R615, 0.7.419).** Темы «визуальные входы» (3) и «Gemma/шаблон чата» (3) в cmd/cppworker. Счётчик: собственный 99 → 93, structure_report.ps1 100 → 94. Остаток: internal/balancer (49) и cmd/cppworker (44).

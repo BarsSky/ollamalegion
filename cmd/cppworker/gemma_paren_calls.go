@@ -1,6 +1,6 @@
-package main
+﻿package main
 
-// gemma_paren_calls_r428.go — R428 (2026-11-04): НАТИВНЫЙ ВЫЗОВ gemma-4 В ФОРМЕ
+// gemma_paren_calls.go — R428 (2026-11-04): НАТИВНЫЙ ВЫЗОВ gemma-4 В ФОРМЕ
 // ВЫЗОВА ФУНКЦИИ (`call:NAME(key: value, …)`) распознаётся.
 //
 // ЖИВОЙ ДЕФЕКТ (снят диагностикой R427 из живой сессии Cline через балансер,

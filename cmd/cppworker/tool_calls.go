@@ -1,4 +1,4 @@
-// tool_calls.go — Parsing tool_calls from model output and building
+﻿// tool_calls.go — Parsing tool_calls from model output and building
 // properly structured OpenAI-compatible responses with finish_reason="tool_calls".
 package main
 
@@ -1076,7 +1076,7 @@ func extractGemmaToolCalls(output string) []openAIToolCall {
 	// перед именем функции и служебный токен кавычки `<|"|>`. Без нормализации
 	// вызов не распознавался и уходил клиенту текстом (Cline: toolCallCount=0).
 	// R441: только теги; токены кавычек `<|"|>` оставляем сканеру нативного тела
-	// (см. gemma_native_args_r441.go).
+	// (см. gemma_native_args.go).
 	output = normalizeGemmaTagTokensOnlyR441(output)
 
 	// Регекс: <tool_call>имя{json}</tool_call>

@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"encoding/json"
@@ -98,7 +98,7 @@ func normalizeGenerateRequest(req *generateRequest) {
 	// теперь собирается шаблоном (как в Ollama), и подмешивать текст заранее —
 	// значит подмешать его дважды (в шаблон и в user-сообщение). Прежнее
 	// поведение сохранено там же как fallback для моделей без шаблона.
-	// См. generate_chat_template_r368.go.
+	// См. generate_chat_template.go.
 
 	// keep_alive: парсим и сохраняем в LastUsedAt (если != 0).
 	// Формат Ollama:

@@ -1,4 +1,4 @@
-// vision_capability_r248.go — R248, часть B1 плана
+﻿// vision_capability.go — R248, часть B1 плана
 // (docs/plans/2026-10-27-mmproj-vision-and-tools-cancel-r248.md).
 //
 // ЗАЧЕМ. До B1 изображения отбивались 415 ВСЕГДА: даже модель, которую можно

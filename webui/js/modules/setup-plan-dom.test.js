@@ -1,4 +1,4 @@
-﻿// setup-plan-dom.test.js — R103 (S5 плана 2026-10-07): шаг мастера «состав
+// setup-plan-dom.test.js — R103 (S5 плана 2026-10-07): шаг мастера «состав
 // кластера» с мок-DOM и мок-fetch (без браузера).
 //
 // Запуск: node webui/js/modules/setup-plan-dom.test.js
@@ -372,8 +372,14 @@ const planResponse = {
     assert.ok(WIZARD_SRC.indexOf('renderModeSelectionStep') < 0, 'мёртвый рендер выбора режима удалён');
     assert.ok(WIZARD_SRC.indexOf('validateWizardModeParams') < 0, 'валидатор режима удалён');
     assert.ok(WIZARD_SRC.indexOf('name="operatingMode"') < 0, 'радио режима мастер больше не рисует');
-    assert.ok(WIZARD_SRC.indexOf('case 3: html = renderGeneralSettingsStep()') >= 0,
-        'шаг 3 — общие параметры');
+    // R543 (W5): номер шага общих параметров — ОДНО число (WIZARD_GENERAL_STEP),
+    // а не литерал `case 3`. Литерал разошёлся после R107 с условием «прочитать
+    // поля при уходе вперёд» (там осталось 4 = сводка), и лимиты перетирались
+    // дефолтами. Поэтому проверяем привязку к константе, а не конкретную цифру в
+    // ветке рендера; саму цифру проверяет setup-wizard-import-step-r543.test.js.
+    assert.ok(WIZARD_SRC.indexOf('case WIZARD_GENERAL_STEP: html = renderGeneralSettingsStep()') >= 0,
+        'шаг общих параметров — через WIZARD_GENERAL_STEP');
+    assert.ok(/var WIZARD_GENERAL_STEP = 3;/.test(WIZARD_SRC), 'WIZARD_GENERAL_STEP = 3');
     assert.ok(WIZARD_SRC.indexOf('case 4: html = renderSummaryStep()') >= 0, 'шаг 4 — сводка');
     assert.ok(WIZARD_SRC.indexOf('operatingMode: wizardState.operatingMode') < 0,
         'payload мастера не должен писать operatingMode');

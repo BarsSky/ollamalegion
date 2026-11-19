@@ -15,6 +15,12 @@
     // R195 (2026-10-20): шаг «Тип бэкенда» УДАЛЁН — стек обслуживает оба типа одновременно
     // (llama.cpp-воркер отдаёт и нативный Ollama API, и OpenAI-совместимую поверхность).
     var totalSteps = 4;
+    // R543 (W5): на каком шаге нарисованы поля общих параметров
+    // (renderStepContent case 3 → renderGeneralSettingsStep). Нужен, чтобы
+    // «прочитать поля» и «какой шаг рисуется» были ОДНИМ числом, а не литералом
+    // в четырёх местах: после R107 литерал 4 остался от прежней нумерации, и
+    // чтение шло на сводке, где полей нет.
+    var WIZARD_GENERAL_STEP = 3;
     // R195: состояние серверного конфига (объявление восстановлено — при удалении шага
     // «Тип бэкенда» оно было потеряно, и start() падал с "currentServerConfig is not defined").
     var currentServerConfig = null;
@@ -176,6 +182,23 @@
     }
 
     function renderStep(step) {
+        // R543 (W5 плана 2026-11-19-webui-pages-and-setup, §4.6): шаг вне
+        // диапазона — это НЕ «пустой экран с кнопкой Завершить».
+        //
+        // Живой дефект: импорт конфига в мастере ставил `currentStep = 5` при
+        // `totalSteps = 4` (строка ниже в handleWizardImport). `renderStepContent`
+        // не находил `case 5`, тело оставалось пустым, а `renderStepFooter(5)`
+        // показывал «Завершить» — оператор после импорта видел белый экран и не
+        // понимал, применился ли конфиг.
+        //
+        // Зажим стоит у ЕДИНСТВЕННОГО рендерера (а не у каждого вызывающего),
+        // поэтому любой будущий шаг «больше последнего» нарисует сводку, а не
+        // пустоту. currentStep синхронизируется с тем, что нарисовано, чтобы
+        // «Назад»/«Далее» считали от факта, а не от намерения.
+        if (!(step >= 1) || step > totalSteps) {
+            step = totalSteps;
+        }
+        currentStep = step;
         renderStepIndicator(step);
         renderStepContent(step);
         renderStepFooter(step);
@@ -215,7 +238,7 @@
         switch (step) {
             case 1: html = renderWelcomeStep(); break;
             case 2: html = renderClusterPlanStep(); break;
-            case 3: html = renderGeneralSettingsStep(); break;
+            case WIZARD_GENERAL_STEP: html = renderGeneralSettingsStep(); break;
             case 4: html = renderSummaryStep(); break;
         }
         body.innerHTML = html;
@@ -229,7 +252,7 @@
         }
         // R107: шаг «параметры режима» удалён вместе с выбором режима; из
         // настраиваемого остались общие параметры (шаг 4) и сводка (шаг 5).
-        if (step === 3) {
+        if (step === WIZARD_GENERAL_STEP) {
             applyWizardStateToGeneralFields();
         }
     }
@@ -441,14 +464,23 @@
             var target = e.target;
 
             if (target.id === 'wizardPrevBtn' || target.closest('#wizardPrevBtn')) {
-                // R107: шаг «параметры режима» удалён — читать нечего, кроме общих полей.
-                if (currentStep === 4) readGeneralFieldsIntoState();
+                // R543 (W5): «Назад» НЕ читает поля — шаг 3 при возврате
+                // перерисуется из wizardState (applyWizardStateToGeneralFields),
+                // а на сводке полей ввода вообще нет.
                 if (currentStep > 1) { currentStep--; renderStep(currentStep); }
                 return;
             }
 
             if (target.id === 'wizardNextBtn' || target.closest('#wizardNextBtn')) {
-                if (currentStep === 4) readGeneralFieldsIntoState();
+                // R543 (W5): читаем поля ТОГО шага, где они нарисованы.
+                //
+                // Живой дефект (§4.6 продолжение): после R107 шагов стало 4, а
+                // условие осталось `currentStep === 4` — то есть читали на
+                // СВОДКЕ, где полей ввода нет. getFieldValue возвращает fallback
+                // (90/85/80/85), и `finishWizard` тем же вызовом перетирал
+                // импортированные/введённые лимиты значениями по умолчанию.
+                // Общие параметры живут на шаге 3 (renderStepContent case 3).
+                if (currentStep === WIZARD_GENERAL_STEP) readGeneralFieldsIntoState();
                 if (currentStep < totalSteps) { currentStep++; renderStep(currentStep); }
                 return;
             }
@@ -568,8 +600,12 @@
             return window.ConfigIO.showImportPreview(data).then(function (confirmed) {
                 if (confirmed) {
                     applyWizardConfig(data);
-                    // R107: шагов стало 5 (шаг «параметры режима» удалён).
-                    currentStep = 5;
+                    // R107: шагов стало 4 (шаг «параметры режима» удалён).
+                    // R543 (W5): было `currentStep = 5` — на единицу больше
+                    // последнего шага, отсюда пустой экран после импорта (§4.6).
+                    // Идём на ПОСЛЕДНИЙ существующий шаг (сводка): оператор
+                    // видит, что именно импортировано, и жмёт «Завершить».
+                    currentStep = totalSteps;
                     renderStep(currentStep);
                 }
             });
@@ -597,9 +633,14 @@
     // ================================================================
 
     function finishWizard() {
-        // Считываем параметры с текущих форм если нужно
-        // R107: остался только шаг общих параметров (был шаг 5 → стал 4).
-        if (currentStep === 4) readGeneralFieldsIntoState();
+        // R543 (W5): читаем поля общих параметров ТОЛЬКО если они сейчас
+        // нарисованы. Было `if (currentStep === 4)` — а 4 это СВОДКА, где
+        // полей ввода нет: getFieldValue('gpuMaxUsage', 90) на отсутствующем
+        // элементе возвращает fallback, и введённые оператором (или
+        // импортированные из файла) лимиты молча заменялись значениями
+        // по умолчанию 90/85/80/85 — ровно в тот момент, когда он жмёт
+        // «Завершить».
+        if (wizardField('gpuMaxUsage')) readGeneralFieldsIntoState();
 
         var payload = buildWizardPayload();
         payload.initialized = true;
@@ -665,12 +706,16 @@
         // сохраняется как есть. Раскладку мастер пишет отдельно, политикой
         // (PUT /api/v1/placement, шаг «состав кластера»).
         return {
-            // R112 (2026-10-11): 'auto' — тип не навязан (llama.cpp и Ollama
-            // работают вместе); раньше любое значение, кроме llama_cpp, молча
-            // превращалось в ollama_api и вырезало llama.cpp-бэкенды.
-            backendEngine: wizardState.backendType === 'llama_cpp'
-                ? 'llama_cpp'
-                : (wizardState.backendType === 'auto' || wizardState.backendType === 'all' ? 'auto' : 'ollama_api'),
+            // R543 (W5, §4.6/§5 плана 2026-11-19-webui-pages-and-setup):
+            // `backendEngine` из payload УБРАН. Мастер не спрашивает тип
+            // бэкенда (R195), wizardState.backendType всегда 'llama_cpp',
+            // поэтому каждый свежий стенд получал пин llama_cpp — ровно тот,
+            // который унификация типов (R112) отменила. PUT
+            // /api/v1/cluster/config применяет поле только если оно непустое
+            // (handlers_cluster.go:462), значит текущее значение на стенде
+            // сохраняется как есть; на пустом стенде config.Load даёт auto
+            // (config.go:560-561). Страница «Настройки» этот пин уже не шлёт
+            // (app.js:1805-1820).
             gpuMaxUsage: wizardState.gpuMaxUsage,
             vramMaxUsage: wizardState.vramMaxUsage,
             cpuMaxUsage: wizardState.cpuMaxUsage,

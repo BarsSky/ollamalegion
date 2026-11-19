@@ -1,6 +1,6 @@
 # WebUI: разбор страниц, скрытого и лишнего + нужна ли первичная инициализация (2026-11-19)
 
-**Дата:** 2026-11-19. **Статус:** 🟡 **часть закрыта:** W-дефекты §4.1/§4.2/§4.4/§4.5 исправлены ранее (R497, 0.7.300), образ WebUI пересобран и проверен живьём в R508 (см. «Результат R508» в конце документа). Открыт вопрос §7 (режимы) — решение владельца.
+**Дата:** 2026-11-19. **Статус:** 🟡 **часть закрыта:** W-дефекты §4.1/§4.2/§4.4/§4.5 исправлены ранее (R497, 0.7.300), **§4.6 и `backendEngine` в payload закрыты в R543 (0.7.346)**, образ WebUI пересобран и проверен живьём в R508 (см. «Результат R508» в конце документа). Открыто: W1 (режимы — решение «сносим» принято, работа не начата), W3, W4, W6, W7; карточка первого запуска вместо мастера — решение владельца.
 **Связанные документы:** `docs/plans/2026-11-19-consistency-audit.md` (§S-2 — настройки без эффекта),
 `docs/plans/2026-11-19-readability-refactor.md` (§R6 — размеры JS-модулей),
 `docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md:661-675` (этап S7 — «чистовое удаление режимов»),
@@ -122,9 +122,15 @@ inline `display:none` из `index.html:1483,1489,1495,1501` → скрытые �
 рядом (`virtual-models.html:325-327`) объясняет, зачем auth.js нужен (иначе 401 на `GET /api/v1/virtual-models`).
 В `health.html:485` подключение корректное — эталон.
 
-### 4.6 Мастер инициализации: пустой экран после импорта
-`setup-wizard.js:571-573` ставит `currentStep = 5` при `totalSteps = 4` → `renderStepContent` не находит `case 5`
+### 4.6 Мастер инициализации: пустой экран после импорта — **СДЕЛАНО (R543)**
+`setup-wizard.js:571-573` ставил `currentStep = 5` при `totalSteps = 4` → `renderStepContent` не находит `case 5`
 → пустое тело, в футере «Finish»; `finishWizard` читает поля только при `currentStep === 4` (`:602`).
+
+**R543 (0.7.346):** шаг зажимается в `[1, totalSteps]` у единственного рендерера (`renderStep`), импорт ведёт на
+`totalSteps`, номер шага общих параметров вынесен в `WIZARD_GENERAL_STEP`. Попутно закрыта ВТОРАЯ половина дефекта,
+которой в аудите не было: чтение полей стояло на шаге 4 (сводка, полей нет) → `getFieldValue` возвращал fallback и
+`finishWizard` перетирал введённые/импортированные лимиты значениями 90/85/80/85. Теперь поля читаются на своём шаге,
+а `finishWizard` — только если поле реально в DOM. Тест: `webui/tests/setup-wizard-import-step-r543.test.js`.
 
 ### 4.7 Мёртвый код мастера
 `renderBackendTypeStep()` (`:300`) не вызывается; i18n `wizard.step_backend_type`/`wizard.backend_type_desc`
@@ -174,7 +180,7 @@ inline `display:none` из `index.html:1483,1489,1495,1501` → скрытые �
 | **W2** | Починить три `<script>` (убрать вложенность) — возвращает авторизацию служебным страницам | добавить проверку «нет вложенных `<script>`» в `scripts/check_webui_assets.py` |
 | **W3** | Четыре страницы: удалить `rpc-status.html` и `tp-pipeline.html` (+ маршруты), `health.html` — влить в «Диагностику», `virtual-models.html` — CRUD в SPA; пункты меню `health`/`virtual-models` починить или снять | `panel_static_routes_r134_test.go:42-47`, `handlers_health_test.go:529-560`, `nginx.conf:542-545`, `bump_webui_cache_bust.py:24-25`, `placement-live-acceptance.ps1:541` |
 | **W4** | Дубли: одна пара Export/Import, одна поверхность раскладки, честный заголовок карточки image | `config_export_import_test.go`, `settings-overlap-r317` |
-| **W5** | Мастер → карточка первого запуска; убрать `backendEngine` из payload; починить импорт (§4.6) | новые: «первый запуск ставит initialized», «payload без backendEngine» |
+| **W5** | Мастер → карточка первого запуска; убрать `backendEngine` из payload; починить импорт (§4.6) | 🟡 **§4.6 и `backendEngine` закрыты (R543)**; карточка первого запуска — решение владельца (смена сценария, не дефект) |
 | **W6** | Снять/пометить «API Токен» и секцию агента; починить `mode-wizard`-ids, если W1 не сделан | — |
 | **W7** | Уборка: `webui_field_tests.html`, мёртвые i18n-ключи, `ru.json`/`en.json`, `help` в `pageFromURL`, `hashchange`/`popstate` | `no-timeout-fields-r106c.test.js`, i18n-сверка |
 

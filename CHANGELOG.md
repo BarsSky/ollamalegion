@@ -23,6 +23,23 @@ JSON-ключи). Порядок проверок preflight и ретраев п
 **Остаток по этому файлу:** координатор 510 строк — вынести разбор 503-загрузки,
 не-2xx (R60.10/R160/R335.1) и диагностику пустого тела; после них функция
 укладывается в лимит `funlen`.
+
+**Выпуск и версии образов (актуализировано 2026-11-19).** Образ балансера
+пересобран с этого коммита и проштампован идентичностью сборки:
+`ollama-legion/balancer:r261119-r541`, коммит `725d07fb`, алиас `latest`.
+Стенд перезалит (`docker compose -f docker-compose.stack.yml --profile full up -d
+loadbalancer`), контейнер `ol-stack-balancer` здоров, внутри
+`/app/identity.json` = `r261119-r541 (725d07fb)`; живые проверки
+`scripts/stand_check_consistency.ps1` — **22/22 PASS**.
+Теги в `deployments/.env`/`.env.example` и `release-manifest.json` приведены к
+**фактическим** образам стенда: `BALANCER_TAG=r261119-r541`,
+`CPPWORKER_GPU_TAG=r261119-r513a` (коммит `4b0b0dde`), `WEBUI_TAG=r261119-r513a`
+(`967d9a3c`), `AGENT_TAG=r261112-2258` (не пересобирался), `IMAGE_WORKER_TAG=72ec210a`;
+`gitCommit` выпуска — `725d07fb`. До правки манифест фиксировал более старые
+cppworker/webui (`gpu-r261116-2259`/`r261112-1716`), чем реально работало на
+стенде, — это и был рассинхрон «собрано, а тег не зафиксирован».
+Проверка CI-эквивалента (`scripts/check-image-tags.ps1 -ComposeFile
+docker-compose.stack.yml -EnvFile .env.example`) — **OK** по всем пяти образам.
 ## [0.7.343 - R540: R2 читаемости — подготовка, preflight и отправка разложены, R2 закрыт по приёмке, 2026-11-18]
 
 Последний шаг очереди R2 (план `docs/plans/2026-11-19-readability-refactor.md`,

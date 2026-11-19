@@ -14,7 +14,6 @@
 package api
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -240,10 +239,9 @@ func TestR119_LoadFailureLooksLikeMemoryShortage(t *testing.T) {
 // TestR119_HandlersUseEvictionPath — защита от отката: обработчик действительно
 // ходит через правило, а не выгружает чужую модель сам.
 func TestR119_HandlersUseEvictionPath(t *testing.T) {
-	src, err := os.ReadFile("handlers_cluster_models.go")
-	if err != nil {
-		t.Fatalf("read handlers_cluster_models.go: %v", err)
-	}
+	// R639: слой разложен на шесть файлов — читаем весь слой
+	// (см. cluster_models_sources_r639_test.go), иначе сторож краснел бы на переносе.
+	src := readClusterModelsSourcesR639(t)
 	if !strings.Contains(string(src), "loadWithEvictionOnMemoryFailure(mm, backendID, modelName, loadedOther, opReq)") {
 		t.Error("executeReloadOnBackend больше не использует loadWithEvictionOnMemoryFailure — " +
 			"вернулось безусловное вытеснение?")

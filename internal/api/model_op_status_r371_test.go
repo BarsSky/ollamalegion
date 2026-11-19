@@ -14,7 +14,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 
@@ -51,11 +50,10 @@ func TestR371_OtherFailuresStay500(t *testing.T) {
 // операций обязан решать код через opFailureStatusR371, а не писать 500 руками.
 // Иначе следующая правка вернёт «409 живёт только в тесте».
 func TestR371STEWARD_HandlerUsesStatusHelper(t *testing.T) {
-	const path = "handlers_cluster_models.go"
-	src, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
+	// R639: слой разложен на шесть файлов — читаем весь слой
+	// (см. cluster_models_sources_r639_test.go), иначе сторож краснел бы на переносе.
+	const path = "handlers_cluster_models*.go"
+	src := readClusterModelsSourcesR639(t)
 	if !strings.Contains(string(src), "opFailureStatusR371(opResult)") {
 		t.Errorf("%s: нет вызова opFailureStatusR371(opResult) — код отказа снова зашит цифрой", path)
 	}

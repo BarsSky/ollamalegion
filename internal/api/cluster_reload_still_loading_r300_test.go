@@ -19,7 +19,6 @@ package api
 
 import (
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 
@@ -149,11 +148,9 @@ func TestR300_OverallStatusAccepted(t *testing.T) {
 // StillLoading стоит в HTTP-слое ДО превращения в error, а «уже загружено»
 // проверяется после состояния loading.
 func TestR300_HandlersKeepStillLoadingContract(t *testing.T) {
-	src, err := os.ReadFile("handlers_cluster_models.go")
-	if err != nil {
-		t.Fatalf("read handlers_cluster_models.go: %v", err)
-	}
-	text := string(src)
+	// R639: слой разложен на шесть файлов — читаем весь слой
+	// (см. cluster_models_sources_r639_test.go), иначе сторож краснел бы на переносе.
+	text := readClusterModelsSourcesR639(t)
 
 	if !strings.Contains(text, "if opResult.StillLoading {") {
 		t.Fatal("HTTP-слой кластерного reload больше не различает StillLoading: " +

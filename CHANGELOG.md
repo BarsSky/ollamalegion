@@ -1,4 +1,42 @@
-﻿## [0.7.402 - R598: R495 S2b — EMA скорости префилла/декода (второй источник для классификатора, только данные), 2026-11-19]
+﻿## [0.7.403 - R599: R5 — переименование `_rNNN` начато, 10 боевых файлов в малых пакетах, 2026-11-19]
+
+Первый шаг R5 («переименование по темам, по одной теме за коммит») из плана
+читаемости. Тема этого коммита — **хвосты вне двух больших пакетов**: десять боевых
+файлов в семи малых пакетах, где номер раунда в имени давно ничего не сообщал.
+
+| Было | Стало |
+|---|---|
+| `internal/agent/ollama_host_r392.go` | `ollama_host.go` |
+| `internal/agent/worker_identity_r493.go` | `worker_identity.go` |
+| `internal/modelreplication/scale_by_load_r379.go` | `scale_by_load.go` |
+| `internal/runtimeoverrides/backend_disabled_r250.go` | `backend_disabled.go` |
+| `internal/runtimeoverrides/backend_roles_r118.go` | `backend_roles.go` |
+| `internal/settings/builtin_r278.go` | `builtin.go` |
+| `pkg/logger/capture_buffer_r489.go` | `capture_buffer.go` |
+| `pkg/logger/capture_race_r489.go` | `capture_race.go` |
+| `pkg/types/capacity_r501.go` | `capacity.go` |
+| `pkg/version/identity_r486.go` | `identity.go` |
+
+**Числа (измеренные):** собственный счётчик (боевые `*.go` без `_test.go` в
+`internal`+`cmd`+`pkg`): **289 → 279**; `scripts/structure_report.ps1` (у него своё
+правило счёта): **269**. История раунда никуда не делась — она в шапке каждого файла
+(`// capacity.go — R501 (2026-11-19), аудит S3…`); переименование снимает только
+«когда», оставляя «что».
+
+**Что пришлось поправить вместе с именами:** три комментария ссылались на файлы по
+старому имени (`backend_roles_r118.go` внутри `backend_disabled.go`,
+`builtin_r278.go` в двух файлах `internal/balancer` и в тесте настроек) — приведены к
+факту, иначе ссылка в комментарии стала бы ложной.
+
+**Проверено:** `go build -tags llama_stub ./...` — 0; тесты всех затронутых пакетов
+(`internal/balancer` 174.4 s, `agent`, `modelreplication`, `runtimeoverrides`,
+`settings`, `pkg/logger`, `pkg/types`, `pkg/version`) — зелёные. Коллизий имён не
+возникло: ни один целевой файл (и ни один `*_test.go` с той же базой) уже не
+существовал — проверено до переименования.
+
+**Остаток R5:** 279 боевых файлов; следующий коммит — `internal/i18n` (14) или
+`internal/cppbackend` (15) целиком, как одна тема.
+## [0.7.402 - R598: R495 S2b — EMA скорости префилла/декода (второй источник для классификатора, только данные), 2026-11-19]
 
 Закрыт последний открытый пункт плана R495. Классификатор «во что упёрлась карта»
 до S2b смотрел только на МГНОВЕННЫЕ метрики (`SM busy`, `MemBusy`, `power/limit`,

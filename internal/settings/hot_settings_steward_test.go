@@ -1,4 +1,4 @@
-package settings
+﻿package settings
 
 // hot_settings_steward_test.go — R493-12r-fix (2026-11-13): страж «горячих»
 // настроек.
@@ -70,7 +70,7 @@ func TestHotSettings_AllReadNamesAreRegistered(t *testing.T) {
 	for name, where := range names {
 		if _, ok := builtinsR278(name); !ok {
 			t.Errorf("%s читает settings.HotInt(%q), но настройка НЕ зарегистрирована в "+
-				"builtin_r278.go: панель её не покажет, HotInt вернёт (0,false) и флаг будет "+
+				"builtin.go: панель её не покажет, HotInt вернёт (0,false) и флаг будет "+
 				"мёртвым (ни WebUI, ни env). Зарегистрируйте её или читайте os.Getenv — "+
 				"«прочитал, но не зарегистрировал» и есть ложное доказательство",
 				where, name)

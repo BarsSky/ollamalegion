@@ -363,3 +363,36 @@ func nctxModeFields(vramMax, ggufMax, feasibleMax, exactFitMax, contextSize int,
 	}
 	return fields
 }
+
+// nctxShadowFieldsR592 — «тень» резерва VRAM в ответе /api/models.
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. Решение владельца (2026-11-19): сначала ПОКАЗАТЬ оба
+// числа, решения не менять. Значит новые поля не должны проходить через
+// nctxModeFields: тот формирует применяемые значения, и его сигнатуру правят тесты
+// режима загрузки (nctx_feasibility_r83_test.go). Здесь — только справочные поля,
+// чистая функция без состояния, чтобы её можно было проверить тестом.
+//
+// Что отдаём:
+//
+//	max_vram_n_ctx_unreserved — потолок окна, если НЕ резервировать VRAM под
+//	    compute-buffer (так его считает C-мост: свободная VRAM / KV на токен).
+//	vram_reserve_mb — сколько MB вычтено из свободной VRAM в применяемом числе
+//	    (CPPWORKER_VRAM_OVERHEAD_MB).
+//	window_over_unreserved — окно загруженной модели БОЛЬШЕ потолка без резерва.
+//	    Практически это «окно не влезло бы даже по правилам моста»: на 27B/A10
+//	    2026-11-19 мост сообщил 251254, окно стало 201216, свободной VRAM осталось
+//	    414 MB из 22 502, и декод упал. Значение «окно выше и безрезервного потолка»
+//	    объясняет оператору, что упёрлось не в GGUF и не в профиль.
+//
+// Ноль в unreservedMax означает «неизвестно» (нет VRAM/метаданных) — как и у
+// остальных потолков; поле не выдумывается.
+func nctxShadowFieldsR592(unreservedMax, reserveMB, contextSize int, vramKnown bool) map[string]interface{} {
+	fields := map[string]interface{}{
+		"max_vram_n_ctx_unreserved": unreservedMax,
+		"vram_reserve_mb":           reserveMB,
+	}
+	if vramKnown && unreservedMax > 0 {
+		fields["window_over_unreserved"] = contextSize > unreservedMax
+	}
+	return fields
+}

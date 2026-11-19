@@ -1369,6 +1369,9 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 	var totalVRAMMB, availableVRAMMB, totalRAMMB, availableRAMMB uint64
 	maxVRAMNCtx := 0
 	maxRAMNCtx := 0
+	// R592: top-level «тень» резерва VRAM — минимум по моделям, как и max_vram_n_ctx.
+	maxVRAMNCtxUnreserved := 0
+	vramReserveMB := 0
 	modelMaxContext := 0
 
 	// Round 37 (2026-08-18): per-model feasible tracking for conservative-profile detection.
@@ -1385,6 +1388,11 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		exactFitMax int
 		// R83 шаг 3: различать «VRAM неизвестна» и «известна, но веса не влезают».
 		vramKnown bool
+		// R592 (2026-11-19): «тень» резерва VRAM — тот же потолок без резерва
+		// (так его считает C-мост) и размер самого резерва. Решения не меняют,
+		// показывают оператору, из чего получилось применяемое число.
+		unreservedMax int
+		reserveMB     int
 	}
 	perModelFeasible := make(map[string]feasibleAgg, len(models))
 	// R83: top-level vram_known отражает НАЛИЧИЕ GPU, а не наличие загруженных
@@ -1426,6 +1434,13 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		if maxVRAMNCtx == 0 || limits.MaxVRAMNCtx < maxVRAMNCtx {
 			maxVRAMNCtx = limits.MaxVRAMNCtx
 		}
+		// R592: та же логика минимума — для справочного «безрезервного» потолка.
+		if maxVRAMNCtxUnreserved == 0 || (limits.MaxVRAMNCtxUnreserved > 0 && limits.MaxVRAMNCtxUnreserved < maxVRAMNCtxUnreserved) {
+			maxVRAMNCtxUnreserved = limits.MaxVRAMNCtxUnreserved
+		}
+		if vramReserveMB == 0 && limits.VRAMReserveMB > 0 {
+			vramReserveMB = int(limits.VRAMReserveMB)
+		}
 		if maxRAMNCtx == 0 || limits.MaxRAMNCtx < maxRAMNCtx {
 			maxRAMNCtx = limits.MaxRAMNCtx
 		}
@@ -1442,11 +1457,13 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			feasibleI = m.GGUFContextLength
 		}
 		perModelFeasible[m.Name] = feasibleAgg{
-			feasibleMax: feasibleI,
-			ggufMax:     m.GGUFContextLength,
-			vramMax:     limits.MaxVRAMNCtx,
-			exactFitMax: limits.MaxVRAMNCtx,
-			vramKnown:   limits.VRAMKnown,
+			feasibleMax:   feasibleI,
+			ggufMax:       m.GGUFContextLength,
+			vramMax:       limits.MaxVRAMNCtx,
+			exactFitMax:   limits.MaxVRAMNCtx,
+			vramKnown:     limits.VRAMKnown,
+			unreservedMax: limits.MaxVRAMNCtxUnreserved,
+			reserveMB:     int(limits.VRAMReserveMB),
 		}
 	}
 
@@ -1662,14 +1679,21 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		// «деградировано» и не понимал, во что именно упёрлось.
 		vramMax, feasibleMax, ggufMax, exactFitMax := 0, 0, m.GGUFContextLength, 0
 		vramKnown := false
+		unreservedMax, reserveMB := 0, 0
 		if fa, ok := perModelFeasible[m.Name]; ok {
 			feasibleMax = fa.feasibleMax
 			ggufMax = fa.ggufMax
 			vramMax = fa.vramMax
 			vramKnown = fa.vramKnown
 			exactFitMax = fa.exactFitMax
+			unreservedMax = fa.unreservedMax
+			reserveMB = fa.reserveMB
 		}
 		for k, v := range nctxModeFields(vramMax, ggufMax, feasibleMax, exactFitMax, m.ContextSize, vramKnown) {
+			entry[k] = v
+		}
+		// R592: справочная «тень» резерва VRAM (решения не меняет).
+		for k, v := range nctxShadowFieldsR592(unreservedMax, reserveMB, m.ContextSize, vramKnown) {
 			entry[k] = v
 		}
 		enrichedModels = append(enrichedModels, entry)
@@ -1692,7 +1716,12 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		"count":             len(models),
 		"max_vram_n_ctx":    maxVRAMNCtx,
 		"max_ram_n_ctx":     maxRAMNCtx,
-		"available_vram_mb": availableVRAMMB,
+		// R592: «тень» резерва VRAM. max_vram_n_ctx выше — то, что применяется
+		// (с резервом CPPWORKER_VRAM_OVERHEAD_MB); здесь — потолок без резерва,
+		// то есть как его считает мост, и размер самого резерва.
+		"max_vram_n_ctx_unreserved": maxVRAMNCtxUnreserved,
+		"vram_reserve_mb":           vramReserveMB,
+		"available_vram_mb":         availableVRAMMB,
 		"total_vram_mb":     totalVRAMMB,
 		"available_ram_mb":  availableRAMMB,
 		"total_ram_mb":      totalRAMMB,

@@ -65,6 +65,27 @@ type ResourceLimits struct {
 	// R83 шаг 3: различать эти случаи обязательно, иначе нельзя сказать, стоит ли
 	// предупреждать о режиме загрузки (прежний перегруженный ноль это запрещал).
 	VRAMKnown bool
+	// R592 (2026-11-19): «тень» резерва VRAM — ВТОРОЕ число того же потолка,
+	// посчитанное так, как его считает C-мост: вся свободная VRAM без резерва и
+	// без скидки на утилизацию.
+	//
+	// ЗАЧЕМ. Одно и то же число «сколько окна влезает» имело два источника с
+	// разными правилами: Go (это поле, MaxVRAMNCtx) вычитает
+	// CPPWORKER_VRAM_OVERHEAD_MB (дефолт 2048) и умножает на долю утилизации, а
+	// `c/bridge/bridge.c` (`g_max_vram_n_ctx`, попадает в текст ошибки декода) не
+	// вычитает ничего. Живой факт 2026-11-19, 27B/A10: мост сообщил
+	// max_vram_n_ctx=251254, окно поднялось до 201216, после загрузки свободно
+	// 414 MB из 22 502, и декод промпта 33 812 токенов упал с `code 1` при
+	// измеренном `CUDA0 compute buffer = 316.75 MiB`.
+	//
+	// РЕШЕНИЕ ВЛАДЕЛЬЦА (2026-11-19): сначала ТЕНЬ — показывать оба числа, решения
+	// не менять. MaxVRAMNCtx остаётся тем, что применяется (поведение не меняется),
+	// MaxVRAMNCtxUnreserved — справочное, для оператора и для WebUI.
+	MaxVRAMNCtxUnreserved int
+	// VRAMReserveMB — сколько именно MB было вычтено из свободной VRAM при расчёте
+	// MaxVRAMNCtx (то самое CPPWORKER_VRAM_OVERHEAD_MB). Нужно, чтобы разницу двух
+	// чисел выше можно было объяснить, а не гадать.
+	VRAMReserveMB uint64
 	// Прочее
 	ModelMaxContext int // максимальный контекст из GGUF training metadata (gemma-3: 131072, llama-3: 8192, qwen3.6-72B: 32768)
 }
@@ -163,6 +184,14 @@ func (b *Backend) calculateResourceLimits(name string, budget memfit.Budget) Res
 	limits.MaxRAMNCtx = hard
 	limits.ModelMaxContext = spec.TrainCtx
 
+	// R592: «тень» того же потолка без резерва VRAM — как считает C-мост.
+	//
+	// Почему отдельный вызов Ceilings, а не пересчёт вручную: формула KV/SWA-слоёв
+	// живёт в memfit, и второй её экземпляр здесь разошёлся бы с первым (этот класс
+	// дефекта уже стоил 16-кратной ошибки в мосте — см. c/bridge/kv_budget.h).
+	limits.VRAMReserveMB = uint64(budgetForCeilings.VRAMReserve.MiB())
+	_, limits.MaxVRAMNCtxUnreserved = CeilingsWithReserveShadowR592(spec, kvType, budgetForCeilings, ceilPolicy)
+
 	if logger.Get() != nil {
 		logger.Get().Debugw(i18n.T("cppbackend.backend.resource_limits_ceilings"),
 			"model", name,
@@ -179,6 +208,39 @@ func (b *Backend) calculateResourceLimits(name string, budget memfit.Budget) Res
 			"gguf_max_context", spec.TrainCtx)
 	}
 	return limits
+}
+
+// CeilingsWithReserveShadowR592 — применяемый и справочный потолки окна по VRAM.
+//
+// ЗАЧЕМ. Одно и то же «сколько окна влезает» считалось двумя источниками по
+// разным правилам: Go (см. calculateResourceLimits: свободная VRAM МИНУС резерв
+// CPPWORKER_VRAM_OVERHEAD_MB, умноженная на долю утилизации) и C-мост
+// (`c/bridge/bridge.c`, g_max_vram_n_ctx: вся свободная VRAM, без резерва).
+// Живой факт 2026-11-19, 27B/A10: мост сообщил max_vram_n_ctx=251254 (без
+// резерва), окно подняли до 201216, после загрузки свободно 414 MB из 22 502, и
+// декод промпта 33 812 токенов упал с `code 1` при измеренном
+// `CUDA0 compute buffer = 316.75 MiB`.
+//
+// РЕШЕНИЕ ВЛАДЕЛЬЦА (2026-11-19): сначала тень. Поэтому первый результат —
+// ровно то, что применялось и раньше (поведение не меняется), второй —
+// справочное число «как считает мост», для оператора и WebUI.
+//
+// Второй расчёт — тот же memfit.Ceilings, отличаются ровно ДВА входа политики:
+// резерв → 0 и доля утилизации → 1.0. Своей формулы KV здесь нет намеренно:
+// второй экземпляр формулы уже один раз разошёлся с первым на 16 раз
+// (c/bridge/kv_budget.h).
+func CeilingsWithReserveShadowR592(spec memfit.ModelSpec, kvType memfit.KVType,
+	budget memfit.Budget, policy memfit.Policy) (applied int, unreserved int) {
+	applied, _ = memfit.Ceilings(spec, kvType, budget, policy)
+
+	unreservedBudget := budget
+	unreservedBudget.VRAMReserve = memfit.Bytes(0)
+	unreservedPolicy := policy
+	unreservedPolicy.VRAMUtil = 1.0
+	if v, _ := memfit.Ceilings(spec, kvType, unreservedBudget, unreservedPolicy); v > 0 {
+		unreserved = v
+	}
+	return applied, unreserved
 }
 
 // InjectLoadedModelForTest — test helper, помечает model как loaded

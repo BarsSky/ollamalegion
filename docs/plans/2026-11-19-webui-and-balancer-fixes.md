@@ -561,6 +561,32 @@ curl -s -H "X-API-Token: <t>" "http://127.0.0.1:18081/api/v1/cluster/models/load
 карта RTX 3070 8 GB, 27B не загружается физически. По доктрине проекта («сначала тень /
 сначала измерение») менять потолок вслепую нельзя.
 
+**РЕШЕНИЕ ВЛАДЕЛЬЦА (2026-11-19): сначала «тень»** — считать и показывать ОБА числа
+(с резервом и без), решения не менять; включать резерв по умолчанию только после
+приёмки на A10.
+
+**Сделано в R592 (2026-11-19, 0.7.395) — серверная половина «тени»:**
+
+| Где | Что |
+|---|---|
+| `internal/cppbackend/backend_limits.go` | `CeilingsWithReserveShadowR592(spec, kvType, budget, policy) (applied, unreserved)` — применяемый потолок как раньше; справочный — тот же `memfit.Ceilings` с двумя изменёнными входами политики (`VRAMReserve=0`, `VRAMUtil=1.0`). В `ResourceLimits` + `MaxVRAMNCtxUnreserved`, `VRAMReserveMB` |
+| `cmd/cppworker/nctx_feasibility.go` | `nctxShadowFieldsR592` — справочные поля отдельной чистой функцией (не через `nctxModeFields`: тот формирует применяемые значения) |
+| `cmd/cppworker/handlers_model.go` | `/api/models`: per-model `max_vram_n_ctx_unreserved`, `vram_reserve_mb`, `window_over_unreserved`; top-level `max_vram_n_ctx_unreserved`, `vram_reserve_mb` |
+
+Тесты: 5 в `internal/cppbackend/limits_shadow_r592_test.go`, 4 в
+`cmd/cppworker/nctx_shadow_fields_r592_test.go`, плюс список обязательных ключей в
+`handlers_model_round37_test.go`. Мутации: не обнулить резерв в справочном расчёте
+(краснеет: «разница = 0, want 123361±1»), считать применяемое без резерва (оба числа
+246 723), флаг окна всегда false.
+
+**Осталось по §8.5 (не сделано, зарегистрировано):**
+1. то же справочное число в **текст ошибки декода** из C-моста
+   (`max_vram_n_ctx_reserved=`) — правка `c/bridge/bridge.c`, попадёт в следующую
+   сборку образа;
+2. **строка диагностики в карточке бэкенда WebUI** (данные уже приходят в
+   `/api/models` и в снапшот кластера);
+3. **включение резерва по умолчанию** — только после приёмки на стенде с A10.
+
 **Что предлагается сделать (следующий шаг, нужен стенд с A10):**
 
 1. у `CPPWORKER_VRAM_OVERHEAD_MB` (Go: `internal/cppbackend/kv_cache_type.go`,

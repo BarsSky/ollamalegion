@@ -61,6 +61,10 @@ func TestHandleListModels_ExposesFeasibleAndGGUFMaxContext(t *testing.T) {
 		"models", "count", "max_vram_n_ctx", "max_ram_n_ctx",
 		"available_vram_mb", "total_vram_mb", "available_ram_mb", "total_ram_mb",
 		"model_max_context", "gpu_count",
+		// R592 (2026-11-19): «тень» резерва VRAM — оба числа потолка окна
+		// обязаны быть в ответе ВСЕГДА (нулями, если VRAM неизвестна): отсутствие
+		// поля читалось бы как «мы это не считаем», а не как «данных нет».
+		"max_vram_n_ctx_unreserved", "vram_reserve_mb",
 	} {
 		if _, ok := resp[key]; !ok {
 			t.Errorf("response MISSING backward-compat field: %s", key)

@@ -113,7 +113,10 @@
                 <a href="#image" class="nav-item" data-page="image">
                     <span class="nav-icon-wrap"><i class="fas fa-image fa-fw"></i></span> <span data-i18n="nav.image_models">Image-модели</span>
                 </a>
-                <a href="virtual-models.html" target="_blank" rel="noopener" class="nav-item" data-page="virtual-models">
+                <!-- R595 (2026-11-19): страница стала обычной SPA-страницей. Было
+                     href="virtual-models.html" target="_blank": отдельный файл со
+                     своей авторизацией (без CSRF) и своими текстами без i18n. -->
+                <a href="#virtual-models" class="nav-item" data-page="virtual-models">
                     <span class="nav-icon-wrap"><i class="fas fa-share-nodes fa-fw"></i></span> <span data-i18n="nav.virtual_models">Виртуальные модели</span>
                 </a>
                 <a href="#agents" class="nav-item" data-page="agents">
@@ -1310,6 +1313,58 @@
                  тик пересобирал бы DOM и терял введённый фильтр/выбор бэкенда —
                  ровно дефект, закрытый для GGUF (см. app.js → case 'gguf').
                  Своей кнопки обновления здесь НЕТ и быть не должно. -->
+            <!-- R595 (2026-11-19): «Виртуальные модели» внутри SPA. Раньше это был
+                 отдельный virtual-models.html (547 строк, target="_blank") со своей
+                 авторизацией без CSRF, своими английскими текстами и своим
+                 setInterval. Теперь: провайдер DataRefresh (кнопка «Обновить» и
+                 авто-тик), i18n-ключи vm.*, общий экран ошибок. -->
+            <div class="page" id="virtual-models-page">
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-share-nodes section-icon-i"></i> <span data-i18n="vm.title">Виртуальные модели</span></h3>
+                    </div>
+                    <div class="card-body">
+                        <div id="vm-disabled" class="banner" style="display:none;background:#3d2f0f;border:1px solid #f0ad4e;color:#f0d39e;padding:0.6rem;border-radius:6px;margin-bottom:0.8rem;" data-i18n="vm.disabled">
+                            Виртуальные модели выключены в конфигурации балансера (virtualModels.enabled)
+                        </div>
+                        <div id="vm-error" class="banner" style="display:none;background:#3d0f0f;border:1px solid #f85149;color:#ffa198;padding:0.6rem;border-radius:6px;margin-bottom:0.8rem;"></div>
+                        <div id="vm-content">
+                            <div class="vm-summary" style="display:flex;gap:1.5rem;margin-bottom:0.8rem;font-size:0.9rem;">
+                                <div><span class="vm-summary-label" data-i18n="vm.summary_count">Моделей</span>: <strong id="vm-count">0</strong></div>
+                                <div><span class="vm-summary-label" data-i18n="vm.summary_selections">Выборов бэкенда</span>: <strong id="vm-selections">0</strong></div>
+                            </div>
+                            <form id="vm-form" class="vm-form" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0.6rem;align-items:end;margin-bottom:1rem;">
+                                <label><span data-i18n="vm.field.name">Имя (virtual:)</span>
+                                    <input type="text" class="form-control" id="vm-name" required placeholder="virtual:my-gpt">
+                                </label>
+                                <label><span data-i18n="vm.field.description">Описание</span>
+                                    <input type="text" class="form-control" id="vm-description" placeholder="">
+                                </label>
+                                <label><span data-i18n="vm.field.model">Модель</span>
+                                    <input type="text" class="form-control" id="vm-model" required placeholder="llama-70b">
+                                </label>
+                                <label><span data-i18n="vm.field.selection">Выбор бэкенда</span>
+                                    <select class="form-control" id="vm-selection">
+                                        <option value="round_robin">round_robin</option>
+                                        <option value="random">random</option>
+                                        <option value="least_loaded">least_loaded</option>
+                                    </select>
+                                </label>
+                                <label><span data-i18n="vm.field.backends">Пул бэкендов (по одному в строке)</span>
+                                    <textarea class="form-control" id="vm-backends" rows="2" required placeholder="backend-1:11434&#10;backend-2:11434"></textarea>
+                                </label>
+                                <label><span data-i18n="vm.field.timeout">Таймаут, мс (пусто = по умолчанию)</span>
+                                    <input type="number" class="form-control" id="vm-timeout" min="1000" max="600000" placeholder="30000">
+                                </label>
+                                <div>
+                                    <button type="submit" class="btn btn-primary" data-i18n="vm.create">Создать виртуальную модель</button>
+                                </div>
+                            </form>
+                            <div id="vm-models"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
             <div class="page" id="reference-page">
                 <div class="card">
                     <div class="card-header">
@@ -2610,6 +2665,9 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          на другие через балансер. Грузится ДО image-page.js и gguf-renderer-*.js:
          их кнопки вызывают window.ModelShare.open(...). -->
     <script defer src="js/modules/model-share.js?v=R425"></script>
+    <!-- R595 (2026-11-19): страница «Виртуальные модели» в SPA. Грузится ДО app.js:
+         его refreshPage('virtual-models') вызывает window.VirtualModelsPage.load(). -->
+    <script defer src="js/modules/virtual-models-page.js?v=R595"></script>
     <script defer src="js/modules/image-page.js?v=R425"></script>
     <script defer src="js/modules/image-models-page.js?v=R425"></script>
     <!-- R-Image Phase 9: табы «HuggingFace» и «Загрузки» страницы «Image-модели»

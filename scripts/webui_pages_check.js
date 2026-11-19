@@ -1,4 +1,4 @@
-// webui_pages_check_r508.js — R508 (2026-11-19): факты о страницах WebUI после
+﻿// webui_pages_check_r508.js — R508 (2026-11-19): факты о страницах WebUI после
 // пересборки образа.
 //
 // ЗАЧЕМ. Задача требует не «я посмотрел — работает», а фактов: страницы
@@ -157,9 +157,11 @@ async function main() {
             state.active && state.navActive && state.textLen > 20,
             `секция active=${state.active}, пункт active=${state.navActive}, текста ${state.textLen}`);
     }
-    // 5) Отдельные страницы: virtual-models.html и health.html (открываются в новой
-    //    вкладке по href, поэтому проверяем их напрямую и логинимся в каждой).
-    for (const item of REQUIRED_PAGES.filter((i) => ['virtual-models', 'health'].includes(i.page))) {
+    // 5) Отдельные страницы: остался ТОЛЬКО health.html (открывается в новой вкладке
+    //    по href, поэтому проверяем напрямую и логинимся). «Виртуальные модели»
+    //    переехали в SPA в R595 и проверяются выше, как обычная страница (клик по
+    //    пункту меню), — отдельного virtual-models.html больше нет.
+    for (const item of REQUIRED_PAGES.filter((i) => ['health'].includes(i.page))) {
         const p2 = await context.newPage();
         const resp = await p2.goto(`${BASE_URL}/${item.page}.html`, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await p2.waitForTimeout(800);

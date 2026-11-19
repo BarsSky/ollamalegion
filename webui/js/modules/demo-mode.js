@@ -1,4 +1,4 @@
-// demo-mode.js — R232 (2026-10-24): ДЕМО-РЕЖИМ WebUI.
+﻿// demo-mode.js — R232 (2026-10-24): ДЕМО-РЕЖИМ WebUI.
 //
 // ЗАЧЕМ. Оператору нужно показать панель «как она работает» человеку без доступа
 // к стенду: подключение клиентов, распределение запросов балансером, очередь,
@@ -927,7 +927,7 @@
     var links = document.querySelectorAll('a[href]');
     for (var i = 0; i < links.length; i++) {
       var href = String(links[i].getAttribute('href') || '');
-      if (/^(health|rpc-status|tp-pipeline|virtual-models)\.html/i.test(href)) {
+      if (/^(health|rpc-status|tp-pipeline)\.html/i.test(href)) {
         links[i].style.display = 'none';
         links[i].setAttribute('data-demo-hidden', '1');
       }

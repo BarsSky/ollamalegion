@@ -1,4 +1,4 @@
-/**
+﻿/**
  * OllamaLegion WebUI — Orchestrator
  * Imports: Utils, Api, WebSocketManager, Renderers (loaded before this file)
  */
@@ -269,7 +269,7 @@ const ui = (function () {
     // SPA-роутер не открывает; первые две в списке отсутствуют осознанно (клик
     // по ним отдаётся браузеру, см. app-listeners.js → setupNavigation).
     function pageFromURL() {
-        var known = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'diagnostics', 'reference', 'settings'];
+        var known = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'virtual-models', 'agents', 'logs', 'diagnostics', 'reference', 'settings'];
         var candidate = '';
         try {
             // ?page= приоритетнее хэша: так адрес, записанный switchPage
@@ -384,6 +384,14 @@ const ui = (function () {
                 break;
             case 'monitor':
                 sendMonitorConfig();
+                break;
+            case 'virtual-models':
+                // R595: страница переехала из отдельного virtual-models.html в SPA.
+                if (window.VirtualModelsPage) {
+                    window.VirtualModelsPage.mount();
+                    window.VirtualModelsPage.registerProvider();
+                    window.VirtualModelsPage.load();
+                }
                 break;
             case 'backends':
                 var filteredBackendsB = filterBackendsForUI(data.backends);

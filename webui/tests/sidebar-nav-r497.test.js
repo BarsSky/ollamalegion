@@ -1,4 +1,4 @@
-// sidebar-nav-r497.test.js — R497 (2026-11-19): сайдбар обязан сохранять ВСЕ
+﻿// sidebar-nav-r497.test.js — R497 (2026-11-19): сайдбар обязан сохранять ВСЕ
 // страницы, объявленные в разметке.
 //
 // ЖИВОЙ ДЕФЕКТ (аудит consistency-audit §4.1; наблюдение владельца: «страницы на
@@ -54,36 +54,32 @@ function pagesFromHtml() {
     return found;
 }
 
-// navListsFromJs — массивы navModeDependent + navModeIndependent.
-function navListsFromJs() {
-    const dep = /var navModeDependent = \[([\s\S]*?)\];/.exec(settingsUi);
-    const indep = /var navModeIndependent = \[([\s\S]*?)\];/.exec(settingsUi);
-    assert.ok(dep, 'в settings-ui.js не найден navModeDependent — сторож потерял точку отсчёта');
-    assert.ok(indep, 'в settings-ui.js не найден navModeIndependent — сторож потерял точку отсчёта');
-    const parse = (src) => new Set((src.match(/'[a-z0-9-]+'/g) || []).map((s) => s.replace(/'/g, '')));
-    const all = parse(dep[1]);
-    parse(indep[1]).forEach((p) => all.add(p));
-    return all;
-}
-
-check('каждая страница из index.html есть в списках видимости сайдбара', () => {
+check('каждый пункт меню ведёт туда, где что-то есть (страница SPA или реальный файл)', () => {
+    // R595 (2026-11-19): сторож переписан вместе со снятием механизма скрытия
+    // пунктов меню. Раньше он требовал, чтобы каждая страница была в списках
+    // `navModeDependent`/`navModeIndependent`; после W1 (режимы снесены,
+    // `updateVariantSections` убрана) потребителей у списков не осталось, и они
+    // удалены — а сторож проверял уже несуществующий механизм.
+    //
+    // Новый инвариант — тот самый дефект R497, ради которого сторож и появился:
+    // «пункт меню ведёт в пустоту». Пункт обязан вести ЛИБО на SPA-страницу
+    // (`#<page>` + `<div class="page" id="<page>-page">`), ЛИБО на реальный файл
+    // (href не начинается с «#»): во втором случае клик отдаётся браузеру.
     const pages = pagesFromHtml();
     assert.ok(pages.size >= 13, 'в разметке найдено только ' + pages.size + ' страниц — сторож сломан');
-    const allowed = navListsFromJs();
-    const missing = [...pages].filter((p) => !allowed.has(p));
-    assert.deepStrictEqual(missing, [],
-        'эти страницы есть в разметке, но НЕ в списках видимости — после рендера режима ' +
-        'они исчезнут из сайдбара (живой дефект R497): ' + missing.join(', '));
-});
 
-check('список режимных страниц не размножен по копиям', () => {
-    // Копии списка из пяти строк — причина дефекта: добавили страницу в одну
-    // копию и забыли четыре. Сторож следит, чтобы копий снова не появилось.
-    const copies = /show: \['dashboard'/g;
-    const count = (settingsUi.match(copies) || []).length;
-    assert.strictEqual(count, 0,
-        'найдено ' + count + ' копий(и) списка страниц: список должен собираться один раз ' +
-        '(navModeDependent + navModeIndependent), иначе новая страница снова «потеряется»');
+    const empty = [];
+    const re = /<a[^>]*data-page="([a-z0-9-]+)"[^>]*>/g;
+    let m;
+    while ((m = re.exec(html)) !== null) {
+        const page = m[1];
+        const href = (/href="([^"]*)"/.exec(m[0]) || [])[1] || '';
+        if (href !== '' && href.charAt(0) !== '#') continue; // реальный файл — отдан браузеру
+        if (html.indexOf('id="' + page + '-page"') === -1) empty.push(page);
+    }
+    assert.deepStrictEqual(empty, [],
+        'пункты меню ведут в пустоту (нет секции #<page>-page и нет реального файла): ' +
+        empty.join(', '));
 });
 
 check('R564 (W1): режимы удалены из UI, экспорт updateModeCards снят', () => {

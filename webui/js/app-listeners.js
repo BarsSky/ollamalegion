@@ -83,7 +83,8 @@
         document.querySelectorAll('.nav-item').forEach(function(item) {
             item.addEventListener('click', function (e) {
                 // R497 (2026-11-19): пункты, ведущие на ОТДЕЛЬНЫЙ файл
-                // (`virtual-models.html`, `health.html`), не должны гаситься.
+                // (`health.html`; `virtual-models` переехал в SPA в R595 и больше
+                // сюда не относится), не должны гаситься.
                 //
                 // ЖИВОЙ ДЕФЕКТ (аудит 2026-11-19 §4.2). Здесь стоял безусловный
                 // preventDefault + switchPage(data-page). Для этих двух пунктов

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * settings-ui.js — Mode Selector, Accordion Sections, Field Visibility
  * OllamaLegion WebUI
  */
@@ -157,9 +157,12 @@
     // сайдбара: его сверяет с разметкой тест sidebar-nav-r497.
     // R567 (W1): режимов в UI больше нет, режимного скрытия страниц тоже. Оба списка
     // остаются как РЕЕСТР видимости сайдбара (сверку с разметкой делает sidebar-nav-r497).
-    var navModeDependent = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue',
-        'gguf', 'image', 'agents', 'logs', 'settings'];
-    var navModeIndependent = ['diagnostics', 'reference', 'health', 'virtual-models'];
+    // R595 (2026-11-19): списки видимости сайдбара УДАЛЕНЫ вместе с механизмом,
+    // который их читал. После W1 (R560–R567: режимы снесены, `updateVariantSections`
+    // и `navMap` убраны) у `navModeDependent` и `navModeIndependent` не осталось ни
+    // одного потребителя — их читал только сторож в тесте. Правило проекта
+    // «потребитель или удаление»: держать два массива, которые ни на что не влияют,
+    // значит поддерживать иллюзию, что скрытие пунктов меню ещё существует.
 
 
 

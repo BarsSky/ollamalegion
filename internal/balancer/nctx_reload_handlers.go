@@ -1110,7 +1110,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// на пустом узле, когда она уже загружена на здоровом узле, — трата VRAM и
 	// минут ожидания. Отказываем СРАЗУ и называем узел и его окно, где модель
 	// живая. Клиент повторит и будет обслужен там (выбор узла это уже умеет —
-	// R303 в model_copy_window_r118.go спрашивает живой кластер).
+	// R303 в model_copy_window.go спрашивает живой кластер).
 	if loadedState == loadedWindowAbsent {
 		if alt, altPerSeq, ok := p.modelNotLoadedHereButAliveElsewhereR303(backendID, modelName, requestedNCtx); ok {
 			logger.Get().Warnw("R303: модель не загружена на этом узле, но жива на другом — загрузку с нуля не планируем",

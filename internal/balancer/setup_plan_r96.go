@@ -1,4 +1,4 @@
-// Package balancer — R96 (S5 плана 2026-10-07): предлагаемый план размещения.
+﻿// Package balancer — R96 (S5 плана 2026-10-07): предлагаемый план размещения.
 //
 // План §6 (S5): «Заменить шаг „выбор режима“ на „состав кластера“: обнаружение
 // бэкендов → распределение моделей → проверка → сохранение политики» и
@@ -465,7 +465,7 @@ func (p *Proxy) planModelsR96(requested []SetupPlanModelR96) []SetupPlanModelR96
 // мастеру что показать на шаге «модели и их вес».
 func (p *Proxy) discoverModelsR96() []SetupPlanModelR96 {
 	names := map[string]bool{}
-	// R423: снимок карты профилей (см. model_profiles_guard_r423.go).
+	// R423: снимок карты профилей (см. model_profiles_guard.go).
 	for name := range p.profilesSnapshotR423() {
 		if strings.TrimSpace(name) != "" {
 			names[name] = true

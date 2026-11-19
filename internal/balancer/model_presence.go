@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"sort"
@@ -6,7 +6,7 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// model_presence_r229.go — R229 (2026-10-22): «модели нет нигде» — это 404, а не 503.
+// model_presence.go — R229 (2026-10-22): «модели нет нигде» — это 404, а не 503.
 //
 // ЖИВОЙ ДЕФЕКТ (стенд, до правки): запрос на неизвестную модель через нативную
 // Ollama-поверхность получал

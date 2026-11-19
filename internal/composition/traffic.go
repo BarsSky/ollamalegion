@@ -1,4 +1,4 @@
-package composition
+﻿package composition
 
 import "strings"
 
@@ -6,7 +6,7 @@ import "strings"
 
 const (
 	// defaultVRAMSafetyFactor — запас к весам на KV и накладные (как в
-	// placement-fit, internal/balancer/placement_fit_r75.go).
+	// placement-fit, internal/balancer/placement_fit.go).
 	defaultVRAMSafetyFactor = 1.25
 	// defaultPrefillTokens — длина префилла для оценки трафика по умолчанию
 	// (уровень, на котором в §3 плана посчитаны 37–75 мс).

@@ -60,7 +60,7 @@ type Proxy struct {
 	//
 	// ПОРЯДОК ЗАМКОВ: profilesMu — ЛИСТОВОЙ, после него нельзя брать p.mu или
 	// любой другой замок. Все читатели берут СНИМОК карты (profilesSnapshotR423)
-	// и работают с ним уже без замка — см. model_profiles_guard_r423.go.
+	// и работают с ним уже без замка — см. model_profiles_guard.go.
 	profilesMu sync.RWMutex
 
 	// mu — КОРНЕВОЙ лок реестра бэкендов.
@@ -198,7 +198,7 @@ type Proxy struct {
 	nctxInfeasible map[string]nctxInfeasible
 
 	// R119 (2026-10-15): запомненные отказы «такой модели на бэкенде НЕТ»
-	// (model_missing_r119.go): cppworker ответил 404 на попытку загрузки, то есть
+	// (model_missing.go): cppworker ответил 404 на попытку загрузки, то есть
 	// модель отсутствует на диске. Пока запись жива (TTL 60 c), preflight НЕ
 	// планирует перезагрузку, а клиент сразу получает 404 с причиной и списком
 	// доступных моделей — иначе клиент уходил в retry-цикл 503 «is being
@@ -1462,7 +1462,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			// R118.5: при нескольких загруженных копиях предпочитаем ту, что
-			// покрывает окно клиента (см. model_copy_window_r118.go).
+			// покрывает окно клиента (см. model_copy_window.go).
 			targetBackend = p.selectBackendPreferWindow(model, bt, parsed.NumCtx)
 		}
 		if targetBackend != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {

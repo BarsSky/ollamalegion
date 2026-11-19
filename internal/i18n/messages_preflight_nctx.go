@@ -1,4 +1,4 @@
-package i18n
+﻿package i18n
 
 // messages_balancer2 — R234 (2026-10-24): сообщения балансера, батч r234 (2).
 //
@@ -462,7 +462,7 @@ var messagesBalancer2 = map[string]map[Lang]string{
 		EN: "ResolveNumCtx: R83 — not asking for more than the loaded window",
 	},
 
-	// === placement_replication_r74.go: replicated/pool =================
+	// === placement_replication.go: replicated/pool =================
 	"balancer.placement_replication_r74.manager_start_failed_warn": {
 		RU: "placement: не удалось поднять менеджер репликации для strategy=replicated",
 		EN: "placement: failed to start the replication manager for strategy=replicated",

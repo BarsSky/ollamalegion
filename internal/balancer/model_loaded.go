@@ -1,6 +1,6 @@
-package balancer
+﻿package balancer
 
-// model_loaded_r257.go — R257 (2026-10-28): «загружено» — ОДИН источник истины.
+// model_loaded.go — R257 (2026-10-28): «загружено» — ОДИН источник истины.
 //
 // ЖИВОЙ ФАКТ (стенд 8 ГБ VRAM). После того как Qwen3.8-27B была вытеснена моделью
 // gemma-4-E4B, `GET /api/v1/backends/{id}/models` продолжал отдавать

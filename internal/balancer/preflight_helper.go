@@ -1,4 +1,4 @@
-// preflight_helper.go — высокоуровневая обёртка RunPreflight для роутеров.
+﻿// preflight_helper.go — высокоуровневая обёртка RunPreflight для роутеров.
 //
 // Используется llamacpp_handlers_inference.go перед проксированием запросов
 // на cppworker. Что делает:
@@ -309,7 +309,7 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 	var profileContextLengthMax int
 	if lr.proxy != nil {
 		// R423: снимок карты профилей — админка может писать профиль
-		// одновременно с этим запросом (model_profiles_guard_r423.go).
+		// одновременно с этим запросом (model_profiles_guard.go).
 		if mp, ok := lr.proxy.profilesSnapshotR423()[model]; ok {
 			if mp.ContextLength > 0 {
 				profileMaxContext = mp.ContextLength
@@ -507,7 +507,7 @@ func resolvePhysicalMaxContext(ggufMax, contextLengthMax, autoReloadMaxNCtx int)
 // опустить ниже него самого. Максимум при этом продолжает поднимать потолок
 // для авто-роста, как и раньше.
 func (p *Proxy) profileCapCtx(modelName string, fold bool) int {
-	// R423: работаем со снимком (см. model_profiles_guard_r423.go).
+	// R423: работаем со снимком (см. model_profiles_guard.go).
 	profiles := p.profilesSnapshotR423()
 	if len(profiles) == 0 {
 		return 0

@@ -210,7 +210,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 			// back off instead of busy-looping. Default 30s matches R60.6
 			// async-reload Retry-After.
 			// R119 (2026-10-15): для ОТСУТСТВУЮЩЕЙ модели — терминальный 404, а не
-			// 503 «повтори» (см. model_missing_r119.go): модели от повторения не
+			// 503 «повтори» (см. model_missing.go): модели от повторения не
 			// появится, а клиент уходил в retry-цикл на каждый запрос.
 			if lr.proxy.writeModelMissingIfKnownFor(w, r.URL.Path, backendID, model, loadErr) {
 				return

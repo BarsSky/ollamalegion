@@ -1,4 +1,4 @@
-package api
+﻿package api
 
 import (
 	"encoding/json"
@@ -100,7 +100,7 @@ func (s *Server) configImportHandler(w http.ResponseWriter, r *http.Request) {
 		// модели, AutoTune). Поэтому подмена идёт под замком профилей:
 		// иначе -race и реальная гонка "map read/write" остаются, просто
 		// переезжают в поле структуры (см.
-		// internal/balancer/model_profiles_guard_r423.go).
+		// internal/balancer/model_profiles_guard.go).
 		//
 		// ГРАНИЦА: остальные поля config по-прежнему импортируются без общего
 		// замка — импорт конфига редкая админ-операция, и это отдельная задача;

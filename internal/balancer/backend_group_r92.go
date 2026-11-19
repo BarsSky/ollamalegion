@@ -1,4 +1,4 @@
-// Package balancer — R92 (S2 плана 2026-10-07): логический бэкенд в балансере.
+﻿// Package balancer — R92 (S2 плана 2026-10-07): логический бэкенд в балансере.
 //
 // План: docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md §5:
 //
@@ -186,7 +186,7 @@ func (p *Proxy) groupModelInfoR104(model string) backendgroup.ModelInfo {
 
 // groupMemberInfoR92 — сведения об узле группы для реестра.
 //
-// Источники те же, что у VRAM-fit auto (placement_fit_r75.go): статус бэкенда и
+// Источники те же, что у VRAM-fit auto (placement_fit.go): статус бэкенда и
 // снапшот метрик агента. Метрик VRAM нет (CPU-only, ollama без агента) — так и
 // сообщаем: VRAMKnown=false, реестр не будет выдумывать числа.
 func (p *Proxy) groupMemberInfoR92(backendID string) backendgroup.MemberInfo {

@@ -1,7 +1,7 @@
-// placement_replication_free_r379.go — R379 (2026-11-01): «свободный бэкенд»
+﻿// placement_replication_free.go — R379 (2026-11-01): «свободный бэкенд»
 // для репликации определяется ПАМЯТЬЮ, а не счётчиком запросов (P2-2).
 //
-// ЗАЧЕМ. До R379 SetFreeBackendFn (placement_replication_r74.go) считал
+// ЗАЧЕМ. До R379 SetFreeBackendFn (placement_replication.go) считал
 // свободным бэкенд с ActiveReqs == 0. Оба края этого правила жили на стенде:
 //
 //   - бэкенд обслуживает ОДИН короткий запрос другой модели → ActiveReqs=1 →

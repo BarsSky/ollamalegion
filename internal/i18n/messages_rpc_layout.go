@@ -260,7 +260,7 @@ var messagesBalancer3 = map[string]map[Lang]string{
 		EN: "cancel upstream: the generation was cancelled on the worker",
 	},
 
-	// === model_copy_window_r118.go: выбор копии модели по окну ==========
+	// === model_copy_window.go: выбор копии модели по окну ==========
 	"balancer.model_copy_window.select_backend_info": {
 		RU: "selectBackend: копия модели выбрана по окну клиента",
 		EN: "selectBackend: the model copy was chosen by the client window",
@@ -270,7 +270,7 @@ var messagesBalancer3 = map[string]map[Lang]string{
 		EN: "llama.cpp: the model copy was chosen by the client window",
 	},
 
-	// === model_missing_r119.go: модели нет на бэкенде ===================
+	// === model_missing.go: модели нет на бэкенде ===================
 	"balancer.model_missing.recorded_warn": {
 		RU: "model missing: запомнил, что модели нет на бэкенде — перезагрузку планировать не будем",
 		EN: "model missing: recorded that the model is not on the backend — no reload will be planned",
@@ -280,7 +280,7 @@ var messagesBalancer3 = map[string]map[Lang]string{
 		EN: "auto-load: the model is not on the backend — returning 404 instead of a 503 retry",
 	},
 
-	// === placement_reject_r76.go: отказ политики размещения =============
+	// === placement_reject.go: отказ политики размещения =============
 	"balancer.placement_reject.strategy_not_executable": {
 		RU: "стратегия размещения %s не исполняется этой сборкой " +
 			"(исполняются single/pool/replicated/sharded/auto; rpc — legacy-путь координатора-" +
@@ -412,7 +412,7 @@ var messagesBalancer3 = map[string]map[Lang]string{
 			"the load will use the default values)",
 	},
 
-	// === placement_fit_r75.go: выбор стратегии по VRAM ==================
+	// === placement_fit.go: выбор стратегии по VRAM ==================
 	"balancer.placement_fit.auto_degraded_warn": {
 		RU: "placement auto: не удалось выбрать стратегию по VRAM, деградация на single",
 		EN: "placement auto: failed to choose a strategy by VRAM, degrading to single",

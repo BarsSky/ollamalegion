@@ -212,7 +212,7 @@ func (p *Proxy) nonStreamPreflight(w http.ResponseWriter, r *http.Request, backe
 	}
 
 	// R119 (2026-10-15): модели НЕТ на бэкенде — терминальный 404 с причиной и
-	// списком доступных моделей (см. model_missing_r119.go). Живой дефект:
+	// списком доступных моделей (см. model_missing.go). Живой дефект:
 	// запрос к llama-3-8b через балансер не отвечал более 4 минут, клиент
 	// падал по своему таймауту с «Internal Server Error».
 	//

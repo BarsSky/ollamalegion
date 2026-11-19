@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"sort"
@@ -10,7 +10,7 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// model_copy_window_r118.go — R118.5 (2026-10-14): выбор КОПИИ модели с учётом
+// model_copy_window.go — R118.5 (2026-10-14): выбор КОПИИ модели с учётом
 // окна клиента.
 //
 // ЖИВОЙ ДЕФЕКТ (нашла сценарная проверка на стенде). Одна и та же модель была
@@ -246,7 +246,7 @@ func (p *Proxy) selectBackendPreferWindow(model string, bt types.BackendType, re
 
 // selectLlamaCppBackendForModelWithNCtx — то же, что selectLlamaCppBackendForModel,
 // но с окном клиента: при нескольких ГОТОВЫХ копиях предпочитается та, что
-// покрывает запрошенное окно (см. model_copy_window_r118.go).
+// покрывает запрошенное окно (см. model_copy_window.go).
 //
 // Группы репликации не трогаем: у них собственный учёт инстансов и счётчик
 // выбора (Select меняет состояние), поэтому для моделей группы работает прежний

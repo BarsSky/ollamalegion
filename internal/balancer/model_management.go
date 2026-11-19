@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"bytes"
@@ -860,7 +860,7 @@ func (mm *ModelManager) profileForLoad(modelName string) (types.LlamaCppModelPro
 	}
 	// Точного совпадения нет — ищем substring-совпадение детерминированно.
 	// R423: снимок карты профилей, а не прямое чтение config (см.
-	// model_profiles_guard_r423.go).
+	// model_profiles_guard.go).
 	profiles := mm.proxy.profilesSnapshotR423()
 	if len(profiles) == 0 {
 		return types.LlamaCppModelProfile{}, false

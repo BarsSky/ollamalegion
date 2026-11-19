@@ -1,4 +1,4 @@
-// Package types — Placement Policy (R72, этап P0).
+﻿// Package types — Placement Policy (R72, этап P0).
 //
 // Placement policy — слой, который для КАЖДОЙ модели решает, как её
 // обслуживать при нескольких бэкендах (`single` / `pool` / `replicated` /
@@ -84,7 +84,7 @@ func IsValidPlacementStrategy(s string) bool {
 // R92 (S3 плана 2026-10-07-model-distribution-multi-gpu-next-session.md):
 // `sharded` стал исполнимым — сборка умеет находить логический бэкенд (группу
 // RPC-узлов, `balancing.backendGroups[]`) и считать VRAM-fit по СУММЕ узлов
-// (internal/balancer/placement_sharded_r92.go). Это СТАТИЧЕСКИЙ ответ «в сборке
+// (internal/balancer/placement_sharded.go). Это СТАТИЧЕСКИЙ ответ «в сборке
 // есть исполнитель»: готовность конкретной модели здесь проверить нечем, её
 // считает резолвер и помечает решение Degraded с числами, когда группы для
 // модели нет. Так сохраняется §6 плана: отсутствие исполнителя не подменяется

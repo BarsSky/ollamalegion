@@ -1,4 +1,4 @@
-// donor_exclusive_r304_test.go — R304 (2026-10-30): донор держит только память.
+﻿// donor_exclusive_r304_test.go — R304 (2026-10-30): донор держит только память.
 //
 // ДОКТРИНА ОПЕРАТОРА: «если бэкенд становится донором, он уже не может подымать
 // свои копии моделей — он становится именно донором мастера и может только
@@ -285,10 +285,10 @@ var r304SelectionSites = []struct{ file, fn string }{
 	{"backend_selector.go", "selectFreeBackendAny"},
 	{"backend_selector.go", "selectByResources"},
 	{"candidate.go", "expandCandidates"},
-	{"model_copy_window_r118.go", "collectModelCopyCandidates"},
+	{"model_copy_window.go", "collectModelCopyCandidates"},
 	{"live_copy_probe_r303.go", "liveCopyCandidateIDsR303"},
-	{"placement_over_reload_r293.go", "collectPlacementCandidatesR293"},
-	{"placement_fit_r75.go", "placementFitForModel"},
+	{"placement_over_reload.go", "collectPlacementCandidatesR293"},
+	{"placement_fit.go", "placementFitForModel"},
 	{"slot_manager.go", "findModelOnAnyBackendNoVRAMCheck"},
 	{"slot_manager.go", "selectAnyHealthy"},
 	{"setup_plan_r96.go", "planCandidatesR96"},

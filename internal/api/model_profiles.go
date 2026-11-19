@@ -1,4 +1,4 @@
-package api
+﻿package api
 
 // R423 (2026-11-06): доступ API к карте per-model профилей.
 //
@@ -10,7 +10,7 @@ package api
 // "concurrent map read and map write".
 //
 // Поэтому API ходит в карту ТОЛЬКО через методы прокси (они держат profilesMu,
-// см. internal/balancer/model_profiles_guard_r423.go). Ветка «без прокси» — для
+// см. internal/balancer/model_profiles_guard.go). Ветка «без прокси» — для
 // юнит-тестов, где Server собран без балансера и горутин нет.
 
 import "ollama-loadbalancer/pkg/types"

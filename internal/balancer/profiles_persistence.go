@@ -1,4 +1,4 @@
-// profiles_persistence.go — отдельная персистенция для model profiles (Round 31).
+﻿// profiles_persistence.go — отдельная персистенция для model profiles (Round 31).
 //
 // Проблема (2026-08-09): s.configSaver() пишет в config.json. В bundled compose
 // `../config:/app/config:ro` — read-only mount. PUT /api/v1/cppworker/model-profiles/{name}
@@ -89,7 +89,7 @@ func (p *Proxy) LoadProfilesFromFile() (int, error) {
 		return 0, nil
 	}
 
-	// R423: карта профилей — общие данные (см. model_profiles_guard_r423.go).
+	// R423: карта профилей — общие данные (см. model_profiles_guard.go).
 	// Слияние в два шага: сначала по СНИМКУ решаем, что добавлять (здесь же
 	// пишем логи), потом добавляем под замком. Так замок не держится на
 	// логировании, а запись, появившаяся в config за это время (PUT из
@@ -176,7 +176,7 @@ func (p *Proxy) SaveProfilesToFile() error {
 	file := profilesFileFormat{
 		Version: profilesFileVersion,
 		// R423: снимок — маршалить карту, которую прямо сейчас может менять
-		// админка, нельзя (см. model_profiles_guard_r423.go).
+		// админка, нельзя (см. model_profiles_guard.go).
 		Profiles: p.ModelProfilesSnapshot(),
 		// R83 (2026-09-30): дефолтные настройки загрузки — вместе с профилями,
 		// иначе правка «настроек по умолчанию» из WebUI терялась бы при рестарте,

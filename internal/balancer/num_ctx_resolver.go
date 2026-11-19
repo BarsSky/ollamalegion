@@ -1,4 +1,4 @@
-// Package balancer — 3-tier resolver для n_ctx override (Шаг 2).
+﻿// Package balancer — 3-tier resolver для n_ctx override (Шаг 2).
 //
 // Приоритет (от высшего к низшему):
 //  1. Per-request (body: options.num_ctx для Ollama, num_ctx для OpenAI)
@@ -104,7 +104,7 @@ func asInt(v interface{}) (int, bool) {
 func (p *Proxy) GetModelProfileNumCtx(modelName string) int {
 	// R423: читаем СНИМОК карты профилей, а не config.LlamaCppModelProfiles
 	// напрямую — админка может писать профиль прямо сейчас (см.
-	// model_profiles_guard_r423.go).
+	// model_profiles_guard.go).
 	profiles := p.profilesSnapshotR423()
 	if len(profiles) == 0 {
 		return 0
@@ -163,7 +163,7 @@ func NormalizeModelProfileKey(modelName string) string {
 // GetModelProfile — полный профиль (для API endpoints).
 // Возвращает (profile, true) если найден, иначе (zero, false).
 func (p *Proxy) GetModelProfile(modelName string) (types.LlamaCppModelProfile, bool) {
-	// R423: снимок под RLock — см. model_profiles_guard_r423.go.
+	// R423: снимок под RLock — см. model_profiles_guard.go.
 	profiles := p.profilesSnapshotR423()
 	if len(profiles) == 0 {
 		return types.LlamaCppModelProfile{}, false

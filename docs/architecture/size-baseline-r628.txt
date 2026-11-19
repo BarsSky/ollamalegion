@@ -28,7 +28,6 @@ cmd/cppworker/tool_calls.go
 internal/api/handlers_cluster_models.go
 internal/balancer/autotune.go
 internal/balancer/image_tool.go
-internal/balancer/preflight_nctx.go
 webui/js/app.js
 webui/js/i18n/en.js
 webui/js/i18n/ru.js

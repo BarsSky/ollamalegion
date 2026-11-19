@@ -193,7 +193,7 @@ var messagesBalancer = map[string]map[Lang]string{
 		EN: "RPCLinkMeasure: link measured",
 	},
 
-	// === image_batch_r99.go: пачка картинок по нескольким узлам =========
+	// === image_batch.go: пачка картинок по нескольким узлам =========
 	"balancer.image_batch.body_not_json": {
 		RU: "image batch: тело не JSON: %w",
 		EN: "image batch: the body is not JSON: %w",
@@ -315,7 +315,7 @@ var messagesBalancer = map[string]map[Lang]string{
 		EN: "no result was produced",
 	},
 
-	// === image_tool_gate_r119.go: структурированный отказ гейта =========
+	// === image_tool_gate.go: структурированный отказ гейта =========
 	"balancer.image_tool_gate.result_missing": {
 		RU: "результат не получен",
 		EN: "no result was produced",

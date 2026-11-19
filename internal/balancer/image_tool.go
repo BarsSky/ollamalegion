@@ -1317,7 +1317,7 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 		// `503 {code, hint, freeMb, requiredMb}`.
 		//
 		// Теперь отказ структурирован: машинный код + числа + подсказка доезжают
-		// до модели (image_tool_gate_r119.go).
+		// до модели (image_tool_gate.go).
 		logger.Get().Warnw(i18n.T("balancer.image_tool.gate_denied_warn"),
 			"backend", resolved.BackendID, "model", model, "code", gate.Code,
 			"required_mb", gate.Verdict.RequiredMB, "free_mb", gate.Verdict.FreeMB,
@@ -1416,7 +1416,7 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 }
 
 // imageToolResponseLimitBytes и чтение ответа воркера с обнаружением обрезки —
-// см. image_tool_response_r120.go (R120: ложный «invalid JSON» на живом прогоне).
+// см. image_tool_response.go (R120: ложный «invalid JSON» на живом прогоне).
 
 // firstImageURL — ссылка на первую картинку в ответе генерации.
 func firstImageURL(doc map[string]interface{}) string {

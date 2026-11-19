@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 // Package balancer — хранилище статистики очереди (R78).
 //
@@ -94,7 +94,7 @@ type QueueStats struct {
 	// «ничего не происходит».
 	//
 	// omitempty: на стенде без image-бэкендов и без image-трафика блока нет —
-	// нулевой image-блок только путал бы (см. image_queue_visibility_r98.go).
+	// нулевой image-блок только путал бы (см. image_queue_visibility.go).
 	Image map[string]interface{} `json:"image,omitempty"`
 
 	// BackendWait — R493-12p (этап 4 «два мозга»): ожидание ПОЯВЛЕНИЯ бэкенда

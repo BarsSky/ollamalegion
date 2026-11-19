@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"context"
@@ -66,7 +66,7 @@ type llamaCppMetricsPoller struct {
 	archMu    sync.Mutex
 	archCache map[string]archParams
 	// R493-12i: TTL-состояние «свежести» идентичности воркера (см.
-	// worker_identity_refresh_r493.go). Идентичность из config.json стареет молча
+	// worker_identity_refresh.go). Идентичность из config.json стареет молча
 	// после пересборки воркера, поэтому её нужно переспрашивать у самого узла.
 	identityRefresh identityRefreshR493
 

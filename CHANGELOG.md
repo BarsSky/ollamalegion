@@ -1,4 +1,46 @@
-﻿## [0.7.446 - R642: R6 — страница «Справка и шаблоны» разложена (файлов ≥1500: 8 -> 7); измеритель i18n научился видеть обёртку в другом файле, 2026-11-19]
+﻿## [0.7.447 - R643: R6 — рендер параметров загрузки вынесен из renderers.js (3031 -> 2676), 2026-11-19]
+
+Четвёртый шаг R6. `webui/js/modules/renderers.js` держал 3031 строку: таблица бэкендов, страницы
+моделей и сессий, GPU-карточки, очередь, логи, агенты, GGUF — и отдельный слой «как показать
+параметры загрузки» (образ-воркер и llama.cpp).
+
+| Файл | Строк | Что это |
+|---|---|---|
+| `webui/js/modules/renderers.js` | 3031 → **2676** (непустых 2829 → 2497) | страницы, таблицы, карточки, очередь, логи, агенты, GGUF |
+| `webui/js/modules/renderers-params.js` (новый) | **419** | `renderImageParams`, `renderOllamaParams`, `formatAgeR348`, `formatLoadedAtR346` |
+
+**Порог НЕ пройден, и я это не выдаю за успех:** `файлов ≥1500` осталось **7** — `renderers.js` всё ещё
+2676 строк, до 1500 нужно вынести ещё ~1000. Это первый шаг по файлу, а не закрытие.
+
+**Почему фабрика, а не ещё один глобальный объект.** Слой зависит от `renderers.js` не одним способом:
+`Utils`, четыре функции из деструктуризации (`escapeHtml`, `formatNumber`, `formatMB`, `percent`),
+локальный `_t` и таблица `OLLAMA_PARAMS`. Фабрика `window.RenderersParams(ctx)` делает эти зависимости
+явными в одной строке и ломается на первой строке, если чего-то не передали, — вместо «пустой карточки
+в браузере».
+
+**Три падения на заходе — все пойманы тестами, все записаны:**
+1. `ReferenceError: escapeHtml is not defined` — я нашёл зависимости сканом `function`-объявлений, а
+   `escapeHtml` приходит из деструктуризации `Utils`. Теперь в контекст передаются и они.
+2. `ReferenceError: Cannot access '_t' before initialization` — вызов фабрики стоял в начале файла, а
+   `_t` объявлен ниже через `const` (временная мёртвая зона). Вызов перенесён после `OLLAMA_PARAMS`.
+3. `ReferenceError: OLLAMA_PARAMS is not defined` — таблица подписей параметров осталась в
+   `renderers.js`, а слой её читает; передана в контекст по ссылке.
+
+**Страж `webui/tests/renderers-params-split-r643.test.js`** (5 проверок): порядок `<script>`, вызов
+фабрики с ВСЕМИ восемью зависимостями (`Utils`, `isZeroTimestamp`, `escapeHtml`, `formatNumber`,
+`formatMB`, `percent`, `_t`, `OLLAMA_PARAMS`), отсутствие копий вынесенных функций, неизменность
+публичного `window.Renderers`. Мутации краснеют: убрать `escapeHtml` из контекста → «упадёт
+ReferenceError при первом рендере»; вернуть `renderImageParams` в renderers.js → «копия разойдётся».
+
+**Проверено:** `node scripts/run-webui-tests.js` — **126 наборов, 126 зелёных**; отдельно зелёные
+`renderers-image` (24 проверки), `donor-mark-r304` (14), `llamacpp-vram-loaded-r346` (9),
+`llamacpp-remote-vram-history-r348` (5), `renderers-queue` (11), `renderers-models-dedup` (9),
+`renderers-protocol-r229` (3); `go build -tags llama_stub ./...` = 0; `go test -tags llama_stub ./tests/`
+зелёный; `structure_report.ps1`: файлов ≥1500 — **7**, функций >300 — 39.
+
+**Остаток:** 7 файлов ≥1500 — `gguf-renderer-detail-render.js` 3850, `app.js` 3673, `bridge.c` 3518,
+`renderers.js` **2676**, `i18n/ru.js` 2421, `i18n/en.js` 2393, `bridge.go` 2220.
+## [0.7.446 - R642: R6 — страница «Справка и шаблоны» разложена (файлов ≥1500: 8 -> 7); измеритель i18n научился видеть обёртку в другом файле, 2026-11-19]
 
 Третий шаг R6. `webui/js/modules/reference-page.js` держал 2246 строк: состояние страницы, помощники
 (i18n/DOM/API-обёртки, форматирование, отбор рекомендаций), рендер обеих вкладок, редакторы и

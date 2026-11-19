@@ -2689,6 +2689,9 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          — форма на табе «Обзор» страницы «Image-модели». -->
     <script defer src="js/modules/image-resources-policy.js?v=R425"></script>
     <script defer src="js/modules/websocket.js?v=R425"></script>
+    <!-- R643: рендер параметров загрузки (image/llama.cpp) — фабрика, грузится ПЕРЕД
+         renderers.js: тот зовёт window.RenderersParams и передаёт Utils. -->
+    <script defer src="js/modules/renderers-params.js?v=R643"></script>
     <script defer src="js/modules/renderers.js?v=R425"></script>
     <!-- R102 (2026-10-10, S6 плана 2026-10-07): окно «Объединение бэкендов».
          Модуль сам монтируется в #backendMergePanel на странице «Бэкенды». -->

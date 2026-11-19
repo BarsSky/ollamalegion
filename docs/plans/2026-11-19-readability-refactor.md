@@ -669,3 +669,12 @@ BOM, и страж печатал «в базе есть <BOM># …»).
 файле» — иначе после любого выноса храповик «used ≥ 2201» краснел на корректной правке (мутация: локальный
 сбор даёт 2200, общий — 2201). Первый прогон выноса забыл `backendChoices` — падение при загрузке, поймано
 `require`. WebUI: **126/126**.
+
+**R6 — шаг по renderers.js (R643, 0.7.447).** `webui/js/modules/renderers.js` 3031 → **2676** (непустых 2829 → 2497):
+`renderImageParams`, `renderOllamaParams`, `formatAgeR348`, `formatLoadedAtR346` вынесены в
+`renderers-params.js` (419) как фабрика `window.RenderersParams(ctx)`; в контекст передаются восемь зависимостей
+(`Utils`, `isZeroTimestamp`, `escapeHtml`, `formatNumber`, `formatMB`, `percent`, `_t`, `OLLAMA_PARAMS`).
+Страж `webui/tests/renderers-params-split-r643.test.js` (5 проверок, две мутации). **Порог не пройден:**
+`renderers.js` остаётся ≥1500, нужно ещё ≈1000 строк — следующие шаги R6. Три падения на заходе
+(escapeHtml, `_t` в TDZ, OLLAMA_PARAMS) — пример того, что скан `function`-объявлений не видит зависимостей из
+деструктуризации и таблиц.

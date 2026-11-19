@@ -101,6 +101,9 @@ global.window.I18N = {
 
 require('./utils.js');
 global.Utils = global.window.Utils;
+// R643: рендер параметров вынесен в renderers-params.js (фабрика) — грузим первым,
+// как в index.html; renderers.js зовёт window.RenderersParams при загрузке.
+require('./renderers-params.js');
 require('./renderers.js');
 const R = global.window.Renderers;
 assert.ok(R && typeof R.queueView === 'function', 'Renderers.queueView должен быть экспортирован');

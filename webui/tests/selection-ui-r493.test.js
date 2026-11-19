@@ -37,7 +37,6 @@ const jsFiles = [
     'js/app.js',
     'js/modules/config-io.js',
     'js/modules/setup-wizard.js',
-    'js/modules/mode-wizard.js',
     'js/modules/demo-mode.js',
 ];
 

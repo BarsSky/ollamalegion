@@ -403,79 +403,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 
 	// Если upstream вернул не-2xx — не начинаем streaming, а возвращаем
 	// структурированную ошибку в формате, который клиент сможет прочитать.
+	// R538 (R2 читаемости): весь ответ на не-2xx (n_ctx-перезагрузка, passthrough
+	// 4xx, кадр-ошибка 5xx для SSE и NDJSON) — в writeUpstreamErrorResponse.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			respBody = []byte(fmt.Sprintf(`{"error":"upstream read error: %v"}`, readErr))
-		}
-		logger.Get().Warnw("proxyRequestLlamaCpp: upstream returned non-2xx",
-			"backend", backendID, "status", resp.StatusCode,
-			"body", string(respBody)[:min(500, len(respBody))])
-
-		// 2026-06-24: n_ctx auto-reload — если upstream вернул HTTP 413 / 400
-		// с structured NCtxError (code=2 или code=3 + bridge_info), пытаемся
-		// auto-reload модель на больший n_ctx и retry запрос. БЕЗ этого стрим
-		// от OpenWebUI/Cline обрывается с error в SSE-чанке — клиент видит
-		// "Server Connection Error" вместо нормального ответа после reload.
-		//
-		// Применяем тот же паттерн, что и в proxyRequestLlamaCppNonStream.
-		// bodyBuf уже буферизован (передаётся []byte в сигнатуре), используем
-		// его для retry после reload.
-		// R531 (R2 читаемости): разбор n_ctx-ошибки и адресная перезагрузка
-		// вынесены в retryAfterNCtxError; true — ответ уже отправлен.
-		if p.retryAfterNCtxError(w, r, backendID, modelFromCtx, resp.StatusCode, respBody, bodyBuf) {
-			return nil
-		}
-
-		// R60.10 (2026-09-07): upstream 4xx — pass through body AS-IS, no SSE wrap.
-		// Client hasn't started streaming yet, so returning 4xx + JSON body is
-		// semantically correct (HTTP-level error, not stream-level). This fixes
-		// OpenAI clients getting 502 SSE errors for things like 404 model not found.
-		if resp.StatusCode < 500 {
-			ct := resp.Header.Get("Content-Type")
-			if ct == "" {
-				ct = "application/json"
-			}
-			w.Header().Set("Content-Type", ct)
-			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
-			if upstreamReqID := resp.Header.Get("X-Request-Id"); upstreamReqID != "" {
-				w.Header().Set("X-Upstream-Request-Id", upstreamReqID)
-			}
-			w.WriteHeader(resp.StatusCode)
-			w.Write(respBody)
-			logger.Get().Debugw("proxyRequestLlamaCpp: passed through upstream 4xx (R60.10)",
-				"backend", backendID, "status", resp.StatusCode,
-				"original_path", originalPath, "body_len", len(respBody))
-			return nil
-		}
-
-		if originalPath == "/v1/chat/completions" {
-			w.Header().Set("X-Accel-Buffering", "no")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Connection", "keep-alive")
-			w.WriteHeader(resp.StatusCode)
-			fmt.Fprintf(w, "data: {\"error\":\"upstream returned HTTP %d\",\"choices\":[{\"delta\":{},\"finish_reason\":\"error\"}]}\n\n", resp.StatusCode)
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			// Flush на error path обязателен — иначе клиент получит FIN до [DONE]
-			// и aiohttp / httpx вернут TransferEncodingError.
-			Flush(w)
-			return nil
-		}
-
-		w.Header().Set("X-Accel-Buffering", "no")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		w.Header().Set("Connection", "keep-alive")
-		// Round 18 P0.1: capabilities headers (X-Model-*)
-		p.addModelCapabilitiesHeaders(w, modelFromCtx)
-		// R65d: переносим предупреждения cppworker (context warning / adjusted
-		// n_predict / Retry-After). Без этого урезание n_predict было невидимым.
-		forwardUpstreamWarningHeaders(w, resp)
-		w.WriteHeader(resp.StatusCode)
-		errNDJSON := buildDoneResponse(originalPath, modelFromCtx, 0)
-		fmt.Fprintf(w, "%s\n", string(errNDJSON))
-		Flush(w)
+		p.writeUpstreamErrorResponse(w, r, resp, backendID, modelFromCtx, originalPath, bodyBuf)
 		return nil
 	}
 
@@ -2902,4 +2833,87 @@ func (p *Proxy) newUpstreamRequest(reqCtx context.Context, r *http.Request, full
 	}
 	req.Header.Set("X-Real-IP", clientRealIP)
 	return req, clientRealIP, nil
+}
+
+// writeUpstreamErrorResponse — ответ клиенту, когда апстрим вернул не-2xx ДО
+// начала стрима: сначала шанс адресной перезагрузки по n_ctx-ошибке, затем
+// passthrough 4xx как есть и, наконец, кадр-ошибка в формате поверхности
+// (SSE для /v1/chat/completions, NDJSON для Ollama-путей).
+//
+// R538 (R2 читаемости): вынесено из proxyRequestLlamaCpp дословно — порядок
+// проверок, тексты и заголовки прежние.
+func (p *Proxy) writeUpstreamErrorResponse(w http.ResponseWriter, r *http.Request, resp *http.Response,
+	backendID, modelFromCtx, originalPath string, bodyBuf []byte) {
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		respBody = []byte(fmt.Sprintf(`{"error":"upstream read error: %v"}`, readErr))
+	}
+	logger.Get().Warnw("proxyRequestLlamaCpp: upstream returned non-2xx",
+		"backend", backendID, "status", resp.StatusCode,
+		"body", string(respBody)[:min(500, len(respBody))])
+
+	// 2026-06-24: n_ctx auto-reload — если upstream вернул HTTP 413 / 400
+	// с structured NCtxError (code=2 или code=3 + bridge_info), пытаемся
+	// auto-reload модель на больший n_ctx и retry запрос. БЕЗ этого стрим
+	// от OpenWebUI/Cline обрывается с error в SSE-чанке — клиент видит
+	// "Server Connection Error" вместо нормального ответа после reload.
+	//
+	// Применяем тот же паттерн, что и в proxyRequestLlamaCppNonStream.
+	// bodyBuf уже буферизован (передаётся []byte в сигнатуре), используем
+	// его для retry после reload.
+	// R531 (R2 читаемости): разбор n_ctx-ошибки и адресная перезагрузка
+	// вынесены в retryAfterNCtxError; true — ответ уже отправлен.
+	if p.retryAfterNCtxError(w, r, backendID, modelFromCtx, resp.StatusCode, respBody, bodyBuf) {
+		return
+	}
+
+	// R60.10 (2026-09-07): upstream 4xx — pass through body AS-IS, no SSE wrap.
+	// Client hasn't started streaming yet, so returning 4xx + JSON body is
+	// semantically correct (HTTP-level error, not stream-level). This fixes
+	// OpenAI clients getting 502 SSE errors for things like 404 model not found.
+	if resp.StatusCode < 500 {
+		ct := resp.Header.Get("Content-Type")
+		if ct == "" {
+			ct = "application/json"
+		}
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+		if upstreamReqID := resp.Header.Get("X-Request-Id"); upstreamReqID != "" {
+			w.Header().Set("X-Upstream-Request-Id", upstreamReqID)
+		}
+		w.WriteHeader(resp.StatusCode)
+		w.Write(respBody)
+		logger.Get().Debugw("proxyRequestLlamaCpp: passed through upstream 4xx (R60.10)",
+			"backend", backendID, "status", resp.StatusCode,
+			"original_path", originalPath, "body_len", len(respBody))
+		return
+	}
+
+	if originalPath == "/v1/chat/completions" {
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(resp.StatusCode)
+		fmt.Fprintf(w, "data: {\"error\":\"upstream returned HTTP %d\",\"choices\":[{\"delta\":{},\"finish_reason\":\"error\"}]}\n\n", resp.StatusCode)
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		// Flush на error path обязателен — иначе клиент получит FIN до [DONE]
+		// и aiohttp / httpx вернут TransferEncodingError.
+		Flush(w)
+		return
+	}
+
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Connection", "keep-alive")
+	// Round 18 P0.1: capabilities headers (X-Model-*)
+	p.addModelCapabilitiesHeaders(w, modelFromCtx)
+	// R65d: переносим предупреждения cppworker (context warning / adjusted
+	// n_predict / Retry-After). Без этого урезание n_predict было невидимым.
+	forwardUpstreamWarningHeaders(w, resp)
+	w.WriteHeader(resp.StatusCode)
+	errNDJSON := buildDoneResponse(originalPath, modelFromCtx, 0)
+	fmt.Fprintf(w, "%s\n", string(errNDJSON))
+	Flush(w)
 }

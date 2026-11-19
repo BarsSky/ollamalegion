@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // rpc_split_mode_wiring_r108_test.go — S1 (2026-10-13): статическая защита того,
 // что режим раскладки слоёв доезжает от запроса до моста.
@@ -46,11 +46,18 @@ func TestR108_SplitModeReachesBridge(t *testing.T) {
 // TestR108_SplitModeDefaultIsLayer — «не задано» = -1 (дефолт llama.cpp = LAYER),
 // а не 0 (NONE). Иначе раскладка выключена по умолчанию даже при заданных узлах.
 func TestR108_SplitModeDefaultIsLayer(t *testing.T) {
-	src, err := os.ReadFile("handlers_model.go")
-	if err != nil {
-		t.Fatalf("не удалось прочитать handlers_model.go: %v", err)
+	// R623 (2026-11-19): оба обработчика загрузки больше не в одном файле —
+	// `handleLoadModel` остался в handlers_model.go, `handleLoadWithParams` переехал
+	// в handlers_model_load_params.go. Читаем ОБА: сторож проверяет проводку в обоих
+	// путях, и «файл не найден» не должно превращаться в ложное «дефект вернулся».
+	var text string
+	for _, file := range []string{"handlers_model.go", "handlers_model_load_params.go"} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("не удалось прочитать %s: %v", file, err)
+		}
+		text += stripLineComments(string(src))
 	}
-	text := stripLineComments(string(src))
 	if !strings.Contains(text, "defSplitMode := -1") {
 		t.Error("в handleLoadModel нет `defSplitMode := -1`: по умолчанию режим раскладки " +
 			"снова станет NONE (одно устройство) вместо дефолта llama.cpp (LAYER)")

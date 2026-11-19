@@ -1,4 +1,4 @@
-// prompt_calibration_r302_test.go — R302 (2026-10-29): калибровка оценки
+﻿// prompt_calibration_r302_test.go — R302 (2026-10-29): калибровка оценки
 // промпта по фактическим токенам воркера.
 //
 // ЖИВОЙ ДЕФЕКТ, который здесь зафиксирован: на русском диалоге балансер
@@ -332,12 +332,12 @@ func TestR302_ConcurrentLearnNoRace(t *testing.T) {
 
 // (е) Стерегущий тест: ни один боевой путь не читает оценку промпта в обход
 // калибровки. Разрешены только определение (preflight_nctx.go) и сам
-// калибрующий вход (prompt_calibration_r302.go) — иначе снова появятся «две
+// калибрующий вход (prompt_calibration.go) — иначе снова появятся «две
 // правды» об одном числе (дефект R301.3).
 func TestR302_NoPathBypassesCalibration(t *testing.T) {
 	allowed := map[string]bool{
 		"preflight_nctx.go":          true, // определение ExtractRequestMeta
-		"prompt_calibration_r302.go": true, // обёртка extractRequestMeta/calibratedEstimateOnly
+		"prompt_calibration.go": true, // обёртка extractRequestMeta/calibratedEstimateOnly
 	}
 	entries, err := os.ReadDir(".")
 	if err != nil {

@@ -596,7 +596,7 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 	loadedModels = p.enrichLoadedModelsArch(b, loadedModels)
 
 	// R480 (P1-5): отметка «метрика по этому бэкенду СВЕЖАЯ». Отличает «модели
-	// нет» от «данные устарели» в гейте переезда сессии (cold_candidate_ttl_r480.go).
+	// нет» от «данные устарели» в гейте переезда сессии (cold_candidate_ttl.go).
 	p.proxy.metricsMgr.MarkLlamaCppPolled(b.id, time.Now())
 
 	// Обновляем кэш

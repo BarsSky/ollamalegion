@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 // empty_answer_r261_1_test.go — R261.1 (2026-10-28): счётчик размышлений
 // обязан видеть канал reasoning_content.
@@ -11,7 +11,7 @@ package balancer
 //
 // ПРИЧИНА: в filterAssistantEgressForClient кадр БЕЗ delta.content выходил
 // ранним return ДО счётчиков, а reasoning_content воркер шлёт именно таким
-// кадром. Условие empty_answer_r261.go:170 (visibleChars==0 &&
+// кадром. Условие empty_answer.go:170 (visibleChars==0 &&
 // reasoningChars>0) не могло стать истинным НИКОГДА для такого стрима.
 //
 // Тесты фиксируют:

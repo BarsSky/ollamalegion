@@ -1,4 +1,4 @@
-// growth_needed_rule_r330_test.go — R330 (2026-10-30).
+﻿// growth_needed_rule_r330_test.go — R330 (2026-10-30).
 //
 // Аудит маршрутов: вердикт «растим окно / ждём / отказываем» размазан по трём
 // guard'ам (R288, R299, R301), и число needed считалось ДВУМЯ формулами —
@@ -44,8 +44,8 @@ func TestR330_NeededWindowRule(t *testing.T) {
 // через общую формулу, а не собственной копией.
 func TestR330_GrowthGuardsUseTheSingleRule(t *testing.T) {
 	targets := map[string]string{
-		"contextGrowthNumbers": "deferred_ops_r291.go",
-		"contextGrowthBlocker": "context_growth_r288.go",
+		"contextGrowthNumbers": "deferred_ops.go",
+		"contextGrowthBlocker": "context_growth.go",
 	}
 	for fnName, fileName := range targets {
 		fset := token.NewFileSet()
@@ -84,7 +84,7 @@ func TestR330_GrowthGuardsUseTheSingleRule(t *testing.T) {
 }
 
 // TestR330_ContextGrowthNumbersNoLongerDuplicatesFormula — числа совпадают с
-// правилом (защита от возврата второй копии в deferred_ops_r291.go).
+// правилом (защита от возврата второй копии в deferred_ops.go).
 func TestR330_ContextGrowthNumbersNoLongerDuplicatesFormula(t *testing.T) {
 	meta := &RequestMeta{EstimatedPromptTokens: 20000, RequestedNCtxOverride: 65536}
 	const loaded = 32768

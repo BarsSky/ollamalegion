@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 // force_rebalance_log_r493_test.go — сторож долга 12m: шумный warn не должен
 // вернуться.
@@ -41,7 +41,7 @@ func TestR493_ForceRebalanceWarnOnlyWhenQueueCannotTake(t *testing.T) {
 	}
 
 	// Helper обязан различать два случая: единая очередь (info) и legacy (warn).
-	helper, err := os.ReadFile("force_rebalance_log_r493.go")
+	helper, err := os.ReadFile("force_rebalance_log.go")
 	if err != nil {
 		t.Fatalf("не прочитать helper: %v", err)
 	}

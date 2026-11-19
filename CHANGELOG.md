@@ -1,4 +1,48 @@
-﻿## [0.7.424 - R620: R5 — темы «транспорт и границы тела» и остаток cppworker (11 файлов), 2026-11-19]
+﻿## [0.7.425 - R621: R5 ЗАКРЫТ — боевых файлов с `_rNNN` в репозитории ноль, 2026-11-19]
+
+Финальные шаги R5. Сначала — 40 оставшихся файлов `internal/balancer` одним заходом
+(коллизий ноль, проверено до переименования), затем два «хвоста», которые не попадали
+под правило «`_rNNN` в конце имени»:
+
+- `cmd/balancer/log_buffer_r390.go` → `log_buffer.go`;
+- `internal/balancer/autoload_wait_r325_1.go` → `autoload_wait_continuation.go`,
+  `json_struct_start_r114c.go` → `json_struct_start.go`,
+  `marker_hold_ndjson_r266_1.go` → `marker_hold_ndjson_continued.go`,
+  `toolcall_accum_r118_20.go` → `toolcall_accum.go`,
+  `cmd/cppworker/json_decode_client_r106c.go` → `json_decode_client.go`,
+  `cmd/cppworker/json_bom_strip_r60_16.go` → `json_bom_strip.go`.
+
+**ГЛАВНОЕ ЧИСЛО:** `scripts/structure_report.ps1` → `OK  боевых файлов с _rNNN: 0`
+(цель 0 достигнута). Мой независимый счётчик (файлы с `_r<цифры>` в имени, без
+`_test.go`) — тоже **0**. Исходно было **288** по отчёту и **289** по моему счёту.
+
+**Итог по R5 (R599–R621, 37 шагов, 22 коммита):** 289 → 0. Правила, которые держал:
+
+1. **одна тема — один коммит** (малые пакеты, `internal/i18n`, `internal/cppbackend`,
+   `internal/api`, tool-call, окно контекста, стриминг, раскладка, модель, автотюн,
+   RPC, бэкенд, отмена, сессия, запрос/потоки, образы, доступ к воркеру, загрузка,
+   завершение, рассуждения, пустой ответ, поверхности API, диагностика, очередь,
+   зрение, Gemma, профили, дампы, шаблоны, клиентские подсказки, конфиг воркера,
+   транспорт и т.д.);
+2. **ссылки в комментариях обновлялись с границей слова** (`(?<![A-Za-z0-9_])`):
+   без этого `handlers_rpc_peers_r125.go` превратился бы в `handlers_rpc_peers.go` —
+   проверено на живом случае R601;
+3. **коллизии имён разрешались по смыслу**, а не по номеру: `nctx_ceiling_source` vs
+   `nctx_ceiling_cluster`, `active_streams` vs `active_streams_registry`,
+   `empty_output_retry` vs `empty_output_retry_budget`,
+   `proxy_request_openai_auto_stream` vs `..._limits`, `vision_api` vs
+   `vision_api_stream`, `unified_queue` vs `unified_queue_gate`;
+4. **каждый шаг** — `go build -tags llama_stub ./...` + полный набор тестов
+   затронутого пакета; ни одна правка не меняла поведение.
+
+**Что осталось в R5-«долге» осознанно:** 670 файлов `*_test.go` с номером раунда НЕ
+переименовывались — они не боевые, их имена читаются вместе с проверяемым раундом
+(`nctx_ceiling_r267_test.go` рядом с `nctx_ceiling_source.go` объясняет, ПОЧЕМУ тест
+появился). Если решим чистить и их — это отдельное решение, а не «забыли».
+
+**Проверено:** `go build -tags llama_stub ./...` = 0; `./internal/balancer` (184.3 s),
+`./cmd/cppworker` (32.8 s), `./cmd/balancer` — зелёные.
+## [0.7.424 - R620: R5 — темы «транспорт и границы тела» и остаток cppworker (11 файлов), 2026-11-19]
 
 Тридцать шестой и тридцать седьмой шаги R5. **`cmd/cppworker` закрыт полностью — ни
 одного боевого файла с номером раунда в нём не осталось.**

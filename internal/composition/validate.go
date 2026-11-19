@@ -1,4 +1,4 @@
-// Package composition — валидатор композиции кластера (R95, S4 плана
+﻿// Package composition — валидатор композиции кластера (R95, S4 плана
 // docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md §7).
 //
 // ЗАЧЕМ ОТДЕЛЬНЫЙ ПАКЕТ. Проверки «соберётся ли раскладка» нужны ДВУМ
@@ -10,7 +10,7 @@
 //
 // Поэтому проверки здесь — ЧИСТЫЕ функции над явным входом (Request). Живые
 // данные (метрики, health, доступность портов) собирает адаптер в
-// internal/balancer/composition_r95.go — так же, как ResolvePlacementDecision
+// internal/balancer/composition.go — так же, как ResolvePlacementDecision
 // отделён от Proxy.ResolvePlacement.
 //
 // ПРИНЦИП «НЕ ГАДАЕМ». Если данных нет (n_kv_heads неизвестны, узел не сообщает

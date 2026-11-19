@@ -68,7 +68,7 @@ var (
 //
 // Пусто/off/0/false → off (поведение не меняется без явного включения).
 // warn → warn, retry → retry. НЕИЗВЕСТНОЕ значение → warn + ОДНО предупреждение
-// в лог: как в selection_order_r493.go, молча игнорировать настройку нельзя —
+// в лог: как в selection_order.go, молча игнорировать настройку нельзя —
 // оператор должен узнать, что его правка не применилась.
 func toolGuardModeFromEnvR496() ToolGuardModeR496 {
 	toolGuardModeOnceR496.Do(func() {

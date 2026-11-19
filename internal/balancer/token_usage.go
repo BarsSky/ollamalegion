@@ -1,4 +1,4 @@
-// token_usage.go — Round 31 #7 (2026-08-09): per-model token usage tracking.
+﻿// token_usage.go — Round 31 #7 (2026-08-09): per-model token usage tracking.
 //
 // cppworker возвращает OpenAI usage: {prompt_tokens, completion_tokens, total_tokens}.
 // Ollama format: {prompt_eval_count, eval_count}.
@@ -73,7 +73,7 @@ func (p *Proxy) recordTokenUsage(model string, promptTokens, completionTokens in
 
 	// R302 (2026-10-29): фактическое число токенов промпта — единственный
 	// источник правды об оценке. Здесь же оно становится обучающим примером
-	// для калибровки (prompt_calibration_r302.go): если для этой модели есть
+	// для калибровки (prompt_calibration.go): если для этой модели есть
 	// свежая сырая оценка, считается отношение actual/estimated. Модели без
 	// ожидающей оценки (например, запрос не проходил через preflight) просто
 	// ничего не меняют.

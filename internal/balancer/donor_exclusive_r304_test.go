@@ -291,7 +291,7 @@ var r304SelectionSites = []struct{ file, fn string }{
 	{"placement_fit.go", "placementFitForModel"},
 	{"slot_manager.go", "findModelOnAnyBackendNoVRAMCheck"},
 	{"slot_manager.go", "selectAnyHealthy"},
-	{"setup_plan_r96.go", "planCandidatesR96"},
+	{"setup_plan.go", "planCandidatesR96"},
 	{"model_catalog.go", "findLeastLoadedOnDisk"},
 	{"backend_registry.go", "findHealthyBackendForModel"},
 	{"llamacpp_backend_helpers.go", "findModelOnLlamaCppBackend"},
@@ -328,7 +328,7 @@ func TestR304_SelectionSitesAskSharedPredicate(t *testing.T) {
 	// Голый isGroupWorkerR92 допустим только там, где он и есть ответ.
 	allowedRaw := map[string]bool{
 		"backend_group.go":    true, // определение предиката
-		"donor_exclusive_r304.go": true, // объединённый предикат
+		"donor_exclusive.go": true, // объединённый предикат
 		"backend_disable.go": true, // диагностика «а не выключил ли я всё сам»
 	}
 	for key, fn := range funcs {

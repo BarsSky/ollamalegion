@@ -125,7 +125,7 @@ type Proxy struct {
 	tokensByModel   map[string]*ModelTokenUsage
 
 	// R302 (2026-10-29): калибровка оценки промпта по фактическим токенам
-	// воркера (см. prompt_calibration_r302.go). nil — калибровка выключена
+	// воркера (см. prompt_calibration.go). nil — калибровка выключена
 	// (Proxy собран литералом в тесте); все потребители обязаны это переносить
 	// и работать по сырому heuristic.
 	promptCalib *promptCalibration
@@ -348,7 +348,7 @@ type Proxy struct {
 	// предикат «донор не держит своих копий» безопасен и там, где блокировка уже
 	// взята (вложенный RLock при ожидающем писателе — дедлок R284).
 	// Пересобирается при смене роли, на старте и на каждом тике гарда раскладки.
-	// См. donor_exclusive_r304.go.
+	// См. donor_exclusive.go.
 	donorIdxR304 atomic.Pointer[donorIndexR304]
 
 	// Phase 8 (2026-07-10): P.1 — rpc_coordinator production mode.
@@ -1818,7 +1818,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				logger.Get().Errorw("auto-pull: request retry failed",
 					"model", model, "backend", newBackendID, "error", err)
-				// R340: JSON-форма вместо plain-text http.Error (см. autopull_errors_r340.go).
+				// R340: JSON-форма вместо plain-text http.Error (см. autopull_errors.go).
 				writeAutoPullErrorR340(w, autoPullErrorFormR340(r.URL.Path), model,
 					http.StatusBadGateway, "model pulled but the retried request failed", err)
 			} else {

@@ -442,7 +442,7 @@ func builtinListR278() []Setting {
 		},
 		{
 			// R292 (2026-10-30): второй клиент больше не вырывает модель у
-			// первого. См. destructive_guard_r292.go.
+			// первого. См. destructive_guard.go.
 			Name:        "LB_DESTRUCTIVE_OP_WAIT_SEC",
 			Type:        TypeDurationSec,
 			Default:     5,

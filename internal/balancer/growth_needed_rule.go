@@ -5,9 +5,9 @@
 // размазано по трём guard'ам (R288 contextGrowthBlocker, R299 growthDeferR299,
 // R301 growthVerdictR301), и число needed считалось ДВУМЯ формулами:
 //
-//   - contextGrowthNumbers (deferred_ops_r291.go): needed =
+//   - contextGrowthNumbers (deferred_ops.go): needed =
 //     max(оценка промпта + бюджет вывода, явно запрошенное окно);
-//   - contextGrowthBlocker (context_growth_r288.go): та же идея, но записанная
+//   - contextGrowthBlocker (context_growth.go): та же идея, но записанная
 //     отдельно через promptNeedsMoreContext — с иным порядком проверок.
 //
 // Пока формулы совпадали по результату, расхождение было незаметно, но любая

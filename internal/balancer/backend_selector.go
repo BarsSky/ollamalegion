@@ -504,7 +504,7 @@ func (p *Proxy) findBackendWithModelExcludingLocked(modelName string, exclude ma
 	for id, state := range p.backends {
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
-		// обслуживает мастер группы (см. sharded_master_r92.go).
+		// обслуживает мастер группы (см. sharded_master.go).
 		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
 		if p.cannotHostModelR304(id) {
 			continue
@@ -591,7 +591,7 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool, allowedTypes
 	for id, state := range p.backends {
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
-		// обслуживает мастер группы (см. sharded_master_r92.go).
+		// обслуживает мастер группы (см. sharded_master.go).
 		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
 		if p.cannotHostModelR304(id) {
 			continue
@@ -670,7 +670,7 @@ func (p *Proxy) findLeastLoadedBackendWithModel(modelName string, allowedTypes [
 	for id, state := range p.backends {
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
-		// обслуживает мастер группы (см. sharded_master_r92.go).
+		// обслуживает мастер группы (см. sharded_master.go).
 		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
 		if p.cannotHostModelR304(id) {
 			continue
@@ -737,7 +737,7 @@ func (p *Proxy) findLessLoadedBackendWithModelWhere(
 	for id, state := range p.backends {
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
-		// обслуживает мастер группы (см. sharded_master_r92.go).
+		// обслуживает мастер группы (см. sharded_master.go).
 		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
 		if p.cannotHostModelR304(id) {
 			continue
@@ -809,7 +809,7 @@ func (p *Proxy) findLessLoadedBackendAnyWhere(
 	for id, state := range p.backends {
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
-		// обслуживает мастер группы (см. sharded_master_r92.go).
+		// обслуживает мастер группы (см. sharded_master.go).
 		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
 		if p.cannotHostModelR304(id) {
 			continue
@@ -921,7 +921,7 @@ func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.Back
 	for id, state := range p.backends {
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
-		// обслуживает мастер группы (см. sharded_master_r92.go).
+		// обслуживает мастер группы (см. sharded_master.go).
 		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
 		if p.cannotHostModelR304(id) {
 			continue
@@ -1003,7 +1003,7 @@ func (p *Proxy) selectFreeBackendAny(allowedTypes []types.BackendType) string {
 	for id, state := range p.backends {
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
-		// обслуживает мастер группы (см. sharded_master_r92.go).
+		// обслуживает мастер группы (см. sharded_master.go).
 		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
 		if p.cannotHostModelR304(id) {
 			continue
@@ -1073,7 +1073,7 @@ func (p *Proxy) selectByResources(allowedTypes []types.BackendType) string {
 	for id, state := range p.backends {
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
-		// обслуживает мастер группы (см. sharded_master_r92.go).
+		// обслуживает мастер группы (см. sharded_master.go).
 		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
 		if p.cannotHostModelR304(id) {
 			continue

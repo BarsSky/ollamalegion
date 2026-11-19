@@ -102,15 +102,15 @@ func stageSetCallsR477(t *testing.T) map[string][]string {
 	return calls
 }
 
-// declaredStagesR477 — все константы stage…R477, объявленные в stage_r477.go.
+// declaredStagesR477 — все константы stage…R477, объявленные в stage.go.
 // Читаем файл объявлений, чтобы «стадия, добавленная мимо списков» ловилась
 // тестом, а не только глазами.
 func declaredStagesR477(t *testing.T) []string {
 	t.Helper()
 	fset := token.NewFileSet()
-	af, err := parser.ParseFile(fset, "stage_r477.go", nil, 0)
+	af, err := parser.ParseFile(fset, "stage.go", nil, 0)
 	if err != nil {
-		t.Fatalf("не разобрать stage_r477.go: %v", err)
+		t.Fatalf("не разобрать stage.go: %v", err)
 	}
 	var names []string
 	ast.Inspect(af, func(n ast.Node) bool {
@@ -157,7 +157,7 @@ func TestR477_EveryStageHasProductionCall(t *testing.T) {
 	}
 	for _, n := range declaredStagesR477(t) {
 		if !classified[n] {
-			t.Errorf("стадия %s объявлена в stage_r477.go, но не классифицирована в тесте: "+
+			t.Errorf("стадия %s объявлена в stage.go, но не классифицирована в тесте: "+
 				"добавьте её в stageSetRequiredR477 (если её ставит SetStageR477) "+
 				"или в stageTerminalR477 (если она вычисляется)", n)
 		}
@@ -170,7 +170,7 @@ func TestR477_EveryStageHasProductionCall(t *testing.T) {
 	}
 	for name, pos := range calls {
 		if !declared[name] {
-			t.Errorf("SetStageR477 вызывается с %s (%s), но такой стадии нет в stage_r477.go",
+			t.Errorf("SetStageR477 вызывается с %s (%s), но такой стадии нет в stage.go",
 				name, pos[0])
 		}
 	}

@@ -1,4 +1,4 @@
-// preflight_nctx.go — Preflight n_ctx check: проверяем, помещается ли запрос
+﻿// preflight_nctx.go — Preflight n_ctx check: проверяем, помещается ли запрос
 // в текущее n_ctx бэкенда ДО отправки. Если нет — auto-reload через
 // NCtxReloadCoordinator (если влезает в MaxVRAMNCtx / модель max). Если даже
 // reload не поможет — структурированный 413.
@@ -69,7 +69,7 @@ type RequestMeta struct {
 	// R302 (2026-10-29): на путях, прошедших через p.extractRequestMeta, это
 	// КАЛИБРОВАННАЯ оценка: сырой heuristic pkg/tokencount, умноженный на
 	// фактическое отношение actual/estimated для модели (см.
-	// prompt_calibration_r302.go). Сырое значение остаётся в
+	// prompt_calibration.go). Сырое значение остаётся в
 	// EstimatedPromptTokensRaw.
 	EstimatedPromptTokens int
 	// EstimatedPromptTokensRaw — сырая эвристическая оценка ДО калибровки.

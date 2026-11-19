@@ -188,7 +188,7 @@ var messagesBalancer3 = map[string]map[Lang]string{
 			"thermal throttling lowers clocks — see throttle reasons in /api/metrics (gpu_diagnosis)",
 	},
 
-	// === stale_model_snapshot_r160.go: устаревший снимок метрик =========
+	// === stale_model_snapshot.go: устаревший снимок метрик =========
 	"balancer.stale_model_snapshot.missing_everywhere_404_warn": {
 		RU: "handleStaleModelSnapshot: модели нет ни на одной машине — отдаю 404 вместо 503",
 		EN: "handleStaleModelSnapshot: the model is on no machine at all — returning 404 instead of 503",
@@ -440,7 +440,7 @@ var messagesBalancer3 = map[string]map[Lang]string{
 		EN: "proxyRequest: read-only/mgmt path — direct proxy without n_ctx preflight and slots",
 	},
 
-	// === sharded_master_r92.go: маршрут на мастер группы ================
+	// === sharded_master.go: маршрут на мастер группы ================
 	"balancer.sharded_master.routed_to_master_info": {
 		RU: "sharded: запрос направлен на мастер логического бэкенда",
 		EN: "sharded: the request was routed to the logical backend master",

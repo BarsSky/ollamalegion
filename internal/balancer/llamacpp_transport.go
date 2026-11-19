@@ -2271,7 +2271,7 @@ func (st *llamaCppStreamState) translateAndWriteFrame(data string) error {
 	}
 	// R493-12a: окна передаём четырьмя моментами — иначе в «время промпта»
 	// снова попали бы очередь и загрузка, а размышления выпали бы из
-	// «времени генерации» (см. stats_windows_r493.go).
+	// «времени генерации» (см. stats_windows.go).
 	statsWindows := statsWindowsForTransportR493(st.requestStartTime, st.upstreamSentTime, st.firstDeltaTime, st.firstContentTime, time.Now())
 	// R493-12a: загрузку модели знает воркер (она внутри запроса) — берём
 	// её из заголовка ответа, иначе 40+ секунд не попадут никуда.
@@ -2996,7 +2996,7 @@ func (p *Proxy) prepareUpstreamCall(w http.ResponseWriter, r *http.Request, back
 	// очереди/загрузки/preflight); firstDeltaTime (поле состояния стрима) —
 	// первый дельта-чанк ЛЮБОГО вида (content, reasoning/thinking, tool_calls).
 	// Разбор окна: docs/architecture/stats-and-context-check.ru.md,
-	// код: stats_windows_r493.go.
+	// код: stats_windows.go.
 	return c, nil
 }
 

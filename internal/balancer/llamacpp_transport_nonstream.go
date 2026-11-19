@@ -822,7 +822,7 @@ func (p *Proxy) answerNonStreamUpstreamError(w http.ResponseWriter, r *http.Requ
 		// Живой случай: балансер знал модель загруженной на доноре, донор её не
 		// знал ("model ... not found"), клиент получал 502 за 13 мс. Вместо
 		// «плохого шлюза» — обновить снимок, запустить загрузку, ответить 503
-		// с Retry-After (см. stale_model_snapshot_r160.go).
+		// с Retry-After (см. stale_model_snapshot.go).
 		if isUpstreamModelAbsent(resp.StatusCode, respBody) && modelFromCtx != "" {
 			p.handleStaleModelSnapshot(w, r, backendID, modelFromCtx, resp.StatusCode, respBody)
 			return true

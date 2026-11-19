@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"time"
@@ -45,7 +45,7 @@ func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendT
 	for id, state := range p.backends {
 		// R92 (S2): воркер логического бэкенда не самостоятелен — он держит
 		// только часть слоёв раскладки, и прямой запрос на него сломается.
-		// Воркеров обслуживает мастер группы (см. sharded_master_r92.go), а из
+		// Воркеров обслуживает мастер группы (см. sharded_master.go), а из
 		// общего пула кандидатов они исключены. Реестр неизменяем, поэтому
 		// проверка безопасна под уже взятым p.mu.RLock.
 		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.

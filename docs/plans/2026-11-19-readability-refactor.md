@@ -1,6 +1,6 @@
-﻿# Читаемость и разбиение перегруженных файлов (не путать с «двумя мозгами»)
+# Читаемость и разбиение перегруженных файлов (не путать с «двумя мозгами»)
 
-**Дата:** 2026-11-19. **Статус:** 🟡 **R1, R4 и R7 закрыты; в R3 сделана часть (R506/R509/R510/R524/R525/R526/R527)** (R506 0.7.310 — стражи структуры; R509 0.7.313 — `internal/cppbackend` по ответственности; R510 0.7.314 — `handlers_openai.go` и `handlers_backends.go` разбиты по операциям; R507 0.7.311 — одна реализация хелперов). Впереди: R2 (`proxyRequestLlamaCpp` по стадиям — **единственная функция >1000 строк**), остаток R3 (`handlers_model.go`, общий модуль стрима), R5 (277 `_rNNN` → тематические имена), R6 (WebUI-модули).
+**Дата:** 2026-11-19. **Статус:** 🟡 **R1, R4 и R7 закрыты; в R3 сделана часть (R506/R509/R510/R524/R525/R526/R527); в R2 сделаны пункты 1–7 очереди и решающий шаг R539** (R506 0.7.310 — стражи структуры; R509 0.7.313 — `internal/cppbackend` по ответственности; R510 0.7.314 — `handlers_openai.go` и `handlers_backends.go` разбиты по операциям; R507 0.7.311 — одна реализация хелперов; R532–R538 — выносы `proxyRequestLlamaCpp`; R539 — цикл и финализация разложены, **функций > 1000 строк больше нет**). Впереди: остаток R2 (подготовка/preflight/отправка — координатор 485 строк), остаток R3 (`handlers_model.go`, общий модуль стрима), R5 (277 `_rNNN` → тематические имена), R6 (WebUI-модули).
 **Замер на момент R506 (2026-11-19, `scripts/structure_report.ps1`):** функций > 1000 строк — 2,
 > 300 — 41, ≥ 150 — 120; файлов ≥ 1500 строк — 27; `internal/cppbackend/backend.go` — 4117;
 **боевых файлов с `_rNNN` — 277** (список-база `docs/architecture/structure-baseline-r506.txt`).
@@ -213,6 +213,29 @@ rpc-ссылки) + `handlers_backends_list.go` 616 + `handlers_backends_mutate.
 Затем — главное: `readUpstreamStream` (966) и `finalizeLlamaCppStream` (465)
 разложить сразу до ≤ 200 строк каждый (швы: ветки «native/NDJSON» и
 «SSE→NDJSON», usage/done, сводки, кадры ошибок), каркас структур описан выше.
+**Статус очереди на 2026-11-18:** пункты 1–7 сделаны (R532/R533/R534/R536/R535/
+R537/R538), решающий шаг — сделан в R539 (ниже).
+**Итог R539 (R2, шаг решающий, факт).** Цикл и финализация разложены сразу до
+лимита `funlen`: `proxyRequestLlamaCpp` **2134 → 485** строк (221 оператор),
+состояние прохода — `llamaCppStreamState` (порядок полей по `fieldalignment`),
+цикл — `readUpstreamStream` (120) + `startUpstreamReaders` (99) +
+`handleNativeNDJSONLine` (66) + `accumulateNativeChunk` (131) +
+`normalizeNativeDoneLine` (63) + `translateSSEToNDJSON` (40) +
+`accumulateChatDelta` (48) + `absorbToolCallBuffer` (167) +
+`absorbChatDoneChunk` (61) + `accumulateGenerateDelta` (47) +
+`translateAndWriteFrame` (154); финализация — `finalizeStream` (38) +
+`flushHeldTail` (34) + `emitDeferredDone` (25) + `emitTerminalDoneOnly` (44) +
+`maybeAutoContinue` (105) + `continueTruncatedResponse` (91) +
+`reportPrematureEnd` (95). Максимум по операторам — 97 (`absorbToolCallBuffer`)
+при лимите 100. **Доказательство неизменности:** `go/scanner`-сверка наборов
+строковых литералов файла до/после — 648 литералов, отличие одно (`lastData := ""`
+стал нулевым значением поля); частоты идентификаторов состояния — разница ровно
+−1 на поле (объявление переехало в структуру); `go test ./internal/balancer/`
+зелёный (167 с) и `-race` зелёный; сторожа R298/R377/R477/R493/R299/R360/R376
+не правились. **Метрика §5:** функций > 1000 строк — **2 → 0 (цель выполнена)**.
+Остаток R2 — стадии подготовки/preflight/отправки (первые пункты очереди по
+логике работы: `prepareUpstreamRequest`, `awaitAdmissionAndLoad`, отправка с
+ретраями), они уже вынесены по частям, но координатор ещё 485 строк.
 **Итог R530 (R2, шаг 2, факт).** После отката R529 — только блоки без состояния:
 `applyPreflightOutcome` (97 строк: вердикт preflight, отказы 413/404/503, правка
 `num_ctx` тела), `autoTuneOnReturn` (38: `defer`-тело AutoTune, имя модели

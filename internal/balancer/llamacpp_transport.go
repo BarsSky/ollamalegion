@@ -115,11 +115,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// в eval_count. Агент получал 21 t/s вместо ~400 и 104 t/s вместо ~8.
 	//
 	// ТЕПЕРЬ: upstreamSentTime — момент реальной отправки запроса воркеру (после
-	// очереди/загрузки/preflight); firstDeltaTime — первый дельта-чанк ЛЮБОГО вида
-	// (content, reasoning/thinking, tool_calls). Разбор окна:
-	// docs/architecture/stats-and-context-check.ru.md, код: stats_windows_r493.go.
+	// очереди/загрузки/preflight); firstDeltaTime (R539: поле состояния стрима) —
+	// первый дельта-чанк ЛЮБОГО вида (content, reasoning/thinking, tool_calls).
+	// Разбор окна: docs/architecture/stats-and-context-check.ru.md,
+	// код: stats_windows_r493.go.
 	var upstreamSentTime time.Time
-	var firstDeltaTime time.Time
 	// EOF-retry counter (1 = первая попытка). Используется в error context и для
 	// retry на тот же бэкенд после 500ms (типичный случай — cppworker перезагружал
 	// модель ровно во время первого запроса).
@@ -437,113 +437,37 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	toolAccum := make(map[int]*accumulatedToolCall)
-
-	// ==== Кросс-чанковое накопление content для JSON tool call детекции =====
-	// Некоторые модели (Gemma-4) выводят JSON tool calls как обычный текст в
-	// content, разбитый на множество SSE чанков. Мы аккумулируем content из
-	// смежных чанков, детектируем полный JSON, и эмитим чистый NDJSON чанк.
-	var contentBuffer string
-	var contentToolCallsProcessed bool
-
-	// ==== Накопление plain content для финального done-чанка ====
-	// cppworker отдаёт полный ответ в финальном NDJSON-чанке (`done:true`), но
-	// balancer его подавляет (см. ниже hasFinishReason) и формирует свой done-чанк.
-	// Чтобы клиент (Cline) не получил пустой `content`, аккумулируем content
-	// из streaming чанков и используем его в финальном done-чанке.
-	var accumulatedPlainContent string
-	// R321 (2026-10-30): сколько символов РАЗМЫШЛЕНИЙ уже уехало клиенту в этом
-	// стриме. Нужно, чтобы отличить «пустой ответ без размышлений» (это другая
-	// история, R261/R314) от «модель израсходовала бюджет на размышления»: во
-	// втором случае завершать ход как «stop» нельзя (см. native_done_hygiene_r321.go).
-	var nativeReasoningChars int
-	// upstreamErrorText — R289: текст ошибки, которую воркер прислал ВНУТРИ потока
-	// (done-чанк с error). Нужен, чтобы отличить «контекст мал» от обрыва и не
-	// запускать auto-continue по заведомо обречённому запросу.
-	var upstreamErrorText string
-	// R266.1 (2026-10-28): придержанный хвост служебных меток для пути SSE→NDJSON.
-	// Живой дефект: `<|assistant|>` приходил четырьмя чанками, а `</think>` вообще
-	// не был в списке меток — оба уезжали клиенту в message.content. Удержание
-	// живёт на ВЕСЬ стрим, а не только в ветке накопления tool-вызова: после
-	// распознанного вызова текст шёл мимо вычищения (см. marker_hold_ndjson_r266_1.go).
-	var ndjsonHold markerHold
-	// R118.20: накопитель фрагментов tool-call'ов на время стрима (аудит C5).
-	toolAcc := newToolCallAccumulator()
-	// R254: состояние ремонта аргументов на этот стрим (диагностика — один раз).
-	toolRepair := &toolRepairState{}
-	// R256: состояние фильтра reasoning/content на этот стрим.
-	egressFilter := &reasoningEgressState{}
-	// ==== Content, извлечённый из done-чанка upstream (если cppworker
-	// уже сформировал content в финальном NDJSON; используем его приоритетно). ====
-	var upstreamDoneContent string
-
-	// ==== Stream-truncation detection (2026-06-26) ====
-	// Корневая причина бага из env_log.txt: cppworker обрывал стрим (broken pipe,
-	// context cancel клиента, OOM kill, и т.п.), балансер проксировал только то,
-	// что пришло до обрыва, и закрывал соединение без финального [DONE]/done-чанка.
-	// Клиент (Cline/OpenWebUI/Roo Code) при этом считал стрим "успешно завершённым"
-	// (TCP FIN == нормальный конец), хотя фактически получил обрезанный ответ.
-	//
-	// После фикса: явно отслеживаем, дошёл ли финальный маркер завершения стрима,
-	// и если нет — логируем truncation и эмитим клиенту финальный NDJSON/SSE-чанк
-	// с error/done:true, чтобы клиент корректно отобразил сбой вместо "успеха".
-	streamCompleted := false
-	upstreamHadFinishReason := false
-	// R60.55 (2026-09-13): defer writing done-chunk until AFTER truncation
-	// check. If auto-continue fires, we want to emit ONE done-chunk with
-	// combined content (not two done-chunks showing as duplicates).
-	deferredDoneChunk := false
-	// Round 53.1 (2026-08-24): per-stream tracking — был ли в этом стриме usage чанк
-	// (cppworker эмитит его ПОСЛЕ finish_reason чанка с prompt_tokens/completion_tokens/
-	// total_tokens и пустыми choices). Если да — translateUsageChunkToOllama уже
-	// эмитил canonical done:true с полным набором статов, и writeStreamingSSEDone
-	// должен SKIP. Если нет (cppworker не прислал usage чанк) — writeStreamingSSEDone
-	// пишет done-чанк с накопленным content как fallback, иначе клиент (Cline/ollama npm)
-	// зависнет без done.
-	usageChunkSeen := false
-	// R60.55 (2026-09-13): флаг "предыдущий эмитированный chunk имел done:true".
-	// Используется внутри translateOpenAISSEDataToOllamaWithFlags: если done:true
-	// уже ушёл (R51.3/R53.1 safety-net на finish_reason+content или путь
-	// tool_calls), поздний usage-чанк НЕ должен эмитить ВТОРОЙ done:true.
-	priorDoneEmitted := false
-	// R354 (2026-10-31): текущий done-кадр пришёл как ОТМЕНА ПОЛЬЗОВАТЕЛЕМ (кнопка
-	// Stop). Нужен, чтобы не пустить такой кадр через R331-hygiene (та вставила бы
-	// пояснение «ответа нет») и отдать клиенту done_reason=cancelled без error.
-	userCancelledDoneChunkR354 := false
-	// H2 (2026-10-16): флаг «статистика (eval_count/prompt_eval_count/
-	// total_duration) уже ушла клиенту». Ведётся РАЗДЕЛЬНО с priorDoneEmitted:
-	// пока статистика не отправлена, usage-чанк нельзя гасить — иначе
-	// OpenWebUI получает нули/N/A (баг H2: priorDoneEmitted гасил usage-чанк
-	// целиком). Подавляем usage-чанк только когда statsEmitted=true.
-	statsEmitted := false
-	// R60.58: bytesForwarded объявлен ДО watcher goroutine чтобы избежать
-	// race condition (горутина читает эту переменную в log statement).
-	var bytesForwarded atomic.Int64
-	var firstForwardErr error
-	var lastForwardErr error
-	// R60.22 (2026-09-08): track time of FIRST non-empty content chunk for
-	// accurate prompt_eval_duration (TTFT) and eval_duration. Without
-	// this, both stay 0 and OpenWebUI shows "N/A" for tokens/sec
-	// (response_token/s, prompt_t/s).
-	var firstContentTime time.Time
-	// Round 31 #4 (2026-08-09): per-stream state — был ли reasoning chunk в этом стриме.
-	// Если да — content (если придёт после reasoning) получит defensive strip от
-	// leading whitespace (gemma-4 после SplitReasoningContent эмитит "\n" перед первым
-	// content токеном как separator после </think>).
-	seenReasoning := false
-
-	// R65d (2026-09-20): per-stream флаг «статистика токенов уже учтена».
-	//
-	// Зачем: recordTokenUsage раньше вызывался ТОЛЬКО из non-streaming путей
-	// (llamacpp_transport_nonstream.go:716, proxy_request.go:686,826,
-	// proxy_request_hijack.go:155). Основной streaming-цикл его не вызывал
-	// вообще, поэтому /api/v1/stats/tokens показывал нули для всего реального
-	// трафика (OpenWebUI/Cline всегда стримят).
-	//
-	// Флаг защищает от двойного учёта одного запроса: на нативном пути
-	// статистика приходит в финальном done-чанке, в SSE — в отдельном
-	// usage-чанке, и оба могут присутствовать в одном стриме.
-	tokenUsageRecorded := false
+	// R539 (R2 читаемости): состояние стрима — одна структура, а не сорок
+	// локальных переменных: цикл и финализация вынесены в методы
+	// llamaCppStreamState (см. ниже). Указатель на имя модели — потому что оно
+	// уточняется в цикле (R422), а `defer` AutoTune читает его уже после возврата.
+	st := &llamaCppStreamState{
+		p:                     p,
+		w:                     w,
+		r:                     r,
+		backendID:             backendID,
+		originalPath:          originalPath,
+		isStreaming:           isStreaming,
+		nativePath:            nativePath,
+		bodyBuf:               bodyBuf,
+		translatedBody:        translatedBody,
+		fullURL:               fullURL,
+		toolSchemas:           toolSchemas,
+		resp:                  resp,
+		reqCtx:                reqCtx,
+		modelFromCtx:          &modelFromCtx,
+		modelNameNow:          modelNameNow,
+		modelCtxAtomic:        &modelFromCtxAtomic,
+		llamaStartTime:        llamaStartTime,
+		requestStartTime:      requestStartTime,
+		upstreamSentTime:      upstreamSentTime,
+		upstreamRequestIDR360: upstreamRequestIDR360,
+		workerLoadNsR493:      workerLoadNsR493,
+		toolAccum:             make(map[int]*accumulatedToolCall),
+		toolAcc:               newToolCallAccumulator(),
+		toolRepair:            &toolRepairState{},
+		egressFilter:          &reasoningEgressState{},
+	}
 
 	// ==== R251/R252 (2026-10-28): живой стрим должен быть ВИДЕН в сессиях и мониторе ====
 	//
@@ -577,1590 +501,17 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			MarkAbortR477(r.Context(), "client_context: "+err.Error())
 		}
 	}()
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
 
-	// R493-12r (этап 6 «два мозга», флаг LB_STREAM_PIPE): единый сток стрима.
-	// nil при выключенном флаге — тогда цикл пишет напрямую, как раньше
-	// (историческое поведение и путь отката).
-	var sink streamSinkR493
-	if streamPipeEnabledR493() {
-		sink = newStreamSinkR493(w)
+	// R539: чтение тела ответа, единый сток кадров и оба сторожа —
+	// отмена клиента/таймаут (R60.58) и тишина upstream (R298).
+	st.startUpstreamReaders()
+	defer close(st.watcherStop)
+	defer st.stallWatch.Stop()
+
+	if err := st.readUpstreamStream(); err != nil {
+		return err
 	}
-	// writeClientLineR493 — одна точка записи кадра в этом цикле.
-	// Возвращает (байт_записано, ошибка). При выключенном флаге это ровно прежний
-	// `fmt.Fprintf(w, "%s\n", line)` + `bytesForwarded.Add` + `Flush`.
-	writeClientLineR493 := func(line []byte) (int, error) {
-		if sink != nil {
-			// Счётчик — у стока (единственный источник правды о том, сколько
-			// байт ушло клиенту): сводка берёт РАЗНИЦУ, а не число из цикла,
-			// иначе два счётчика снова начнут расходиться.
-			before := sink.Written()
-			_, err := sink.WriteLine(line)
-			sent := int(sink.Written() - before)
-			bytesForwarded.Add(int64(sent))
-			return sent, err
-		}
-		n, err := fmt.Fprintf(w, "%s\n", string(line))
-		bytesForwarded.Add(int64(n))
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		return n, err
-	}
-
-	// R493-12a: окна для правки НАТИВНОГО done-кадра. Запрос воркеру уже ушёл
-	// (upstreamSentTime), значит «ожидание» для клиента — это отрезок до него:
-	// очередь, авто-загрузка модели и preflight. Раньше он не попадал никуда.
-	statsWindowsNative := statsWindowsR493{RequestStart: requestStartTime, UpstreamSent: upstreamSentTime}
-	// R292: состояние «подозрительного на tool-вызов» текста.
-	//   contentBufferSince — когда буфер начали копить (для grace-порога);
-	//   contentBufferGaveUp — мы уже решили, что это проза: больше не копим.
-	// Без второго флага следующая порция текста снова ушла бы в буфер, и клиент
-	// опять увидел бы «замер» — то есть лечение было бы одноразовым.
-	var contentBufferSince time.Time
-	contentBufferGaveUp := false
-
-	// flushBufferedTextR292 — отдать накопленный текст клиенту как обычный content.
-	// Один помощник на все причины (предел буфера и «это проза»), чтобы ветки не
-	// разошлись в том, что клиент видит.
-	flushBufferedTextR292 := func(text, reason string) error {
-		clean := strings.TrimSpace(stripQwenServiceMarkers(text))
-		if clean == "" {
-			return nil
-		}
-		chunk := map[string]interface{}{
-			"model":      modelFromCtx,
-			"created_at": time.Now().UTC().Format(time.RFC3339),
-			"done":       false,
-			"message": map[string]interface{}{
-				"role":    "assistant",
-				"content": clean,
-			},
-		}
-		out, errMarshal := json.Marshal(chunk)
-		if errMarshal != nil {
-			return nil
-		}
-		n, errWrite := writeClientLineR493(out)
-		if errWrite != nil {
-			lastForwardErr = errWrite
-			if firstForwardErr == nil {
-				firstForwardErr = errWrite
-			}
-			return fmt.Errorf("write NDJSON (buffered text flush/%s): %v", reason, errWrite)
-		}
-		_ = n
-		accumulatedPlainContent += clean
-		logger.Get().Infow("proxyRequestLlamaCpp: buffered text flushed to client",
-			"backend", backendID, "model", modelFromCtx,
-			"reason", reason, "chars", len(clean))
-		return nil
-	}
-
-	lastData := ""
-
-	// R66c (2026-09-22): режим ответа определяется по первой содержательной
-	// строке (см. ниже), а не только по originalPath. Флаг — чтобы решить это
-	// ровно один раз.
-	nativeModeDecided := false
-
-	// R60.58 watcher goroutine: разблокирует блокирующий scanner.Scan() при cancel/timeout.
-	//
-	// БЕЗ ЭТОГО (R60.58 bug): bufio.Scanner.Scan() — блокирующий вызов. Если upstream
-	// (cppworker) застрял на llama_decode/OOM/deadlock — balancer тоже застрянет на чтении.
-	// Select с default внутри loop БЕСПОЛЕЗЕН потому что мы застряли внутри Scan(),
-	// до select. Клиент получает бесконечный hang до тех пор пока upstream не вернётся
-	// сам (что может быть никогда при deadlock) или connection не умрёт по network timeout.
-	//
-	// РЕШЕНИЕ: отдельная горутина следит за ctx.Done() и закрывает resp.Body при
-	// cancel/timeout. Close прерывает блокирующий Read() в scanner → scanner.Scan()
-	// возвращает false → loop выходит → emit error chunk клиенту.
-	//
-	// Применяется ко всем путям: /v1/chat/completions (Cline), /api/chat (OpenWebUI),
-	// /api/generate (Ollama CLI).
-	watcherStop := make(chan struct{})
-	defer close(watcherStop)
-	go func() {
-		select {
-		case <-r.Context().Done():
-			logger.Get().Infow("proxyRequestLlamaCpp: client cancelled, aborting stream",
-				"backend", backendID, "model", modelNameNow(),
-				"context_error", r.Context().Err(),
-				"bytes_forwarded", bytesForwarded.Load())
-			// R184: закрытие СВОЕГО чтения не останавливает воркер - он продолжает
-			// генерировать и держит единственный слот (живой замер: следующий клиент
-			// ждал 100 429 мс). Отмену надо ПРИСЛАТЬ: POST /api/cancel.
-			p.cancelUpstreamGeneration(backendID, modelNameNow(), upstreamRequestIDR360, "client_cancel")
-		case <-reqCtx.Done():
-			// R60.58: streamTimeout сработал ИЛИ cancel — в обоих случаях
-			// закрываем upstream чтобы разблокировать scanner.Scan().
-			// R184: таймаут тоже обязан освободить слот на воркере.
-			p.cancelUpstreamGeneration(backendID, modelNameNow(), upstreamRequestIDR360, "stream_timeout")
-			logger.Get().Warnw("proxyRequestLlamaCpp: streamTimeout fired, aborting stream",
-				"backend", backendID, "model", modelNameNow(),
-				"context_error", reqCtx.Err(),
-				"stream_timeout_sec", getEffectiveStreamTimeoutSec(p, modelNameNow(), isStreaming),
-				"bytes_forwarded", bytesForwarded.Load())
-		case <-watcherStop:
-			return
-		}
-		if resp.Body != nil {
-			_ = resp.Body.Close()
-		}
-	}()
-
-	// R298 (2026-10-29): СТОРОЖ ТИШИНЫ на блокирующем пути.
-	//
-	// ЖИВОЙ ДЕФЕКТ. Здесь сторож не существовал ВООБЩЕ: `scanner.Scan()` —
-	// блокирующий вызов, а на стенде стоит `LB_STREAMING_NEVER_TIMEOUT=1`, то
-	// есть ни deadline, ни idle-таймаута нет. Мёртвый-но-не-закрытый upstream
-	// (docker pause, зависший llama_decode) оставлял и балансер, и клиента ждать
-	// вечно; при этом hijack-путь (/v1) сторож имел — то есть два протокола вели
-	// себя по-разному, и Cline через /api/chat не получал ни кадра-причины, ни
-	// терминатора.
-	//
-	// Разблокировать `Scan()` можно только закрытием тела ответа, поэтому здесь
-	// сторож работает НЕ через канал, а через onStall: он закрывает resp.Body,
-	// чтение возвращается, и штатный post-loop ниже отдаёт кадры через
-	// abortFramesR296 — ровно тот же контракт терминатора, что и на других путях.
-	stallWatch := newStreamStallWatch(streamStallAbortTimeout(), streamFirstFrameAbortTimeout(), func(ev stallEvent) {
-		// Сначала разблокируем ЧТЕНИЕ (Close), и только потом отменяем генерацию:
-		// отмена — сетевой round-trip к воркеру, и если он завис (docker pause),
-		// ставить её перед Close означало бы держать клиента ещё дольше.
-		if resp.Body != nil {
-			_ = resp.Body.Close()
-		}
-		logger.Get().Warnw("proxyRequestLlamaCpp: upstream stalled — body closed to unblock scan (R298)",
-			"backend", backendID, "model", modelNameNow(),
-			"prefill", ev.prefill,
-			"stalled_sec", int(ev.stalled.Seconds()),
-			"original_path", originalPath,
-			"bytes_forwarded", bytesForwarded.Load())
-		// R184: молчащий воркер всё равно держит слот — отменяем генерацию,
-		// иначе следующий клиент получит «busy».
-		p.cancelUpstreamGeneration(backendID, modelNameNow(), upstreamRequestIDR360, "upstream_stall")
-	})
-	stallWatch.Start()
-	defer stallWatch.Stop()
-
-	for scanner.Scan() {
-		// R298: данные пришли — отсчёт тишины сбрасывается.
-		stallWatch.Touch()
-		// Round 23 (2026-08-04): проверяем отмену клиента ПЕРЕД чтением следующего чанка.
-		// Без этого streaming-прокси ждёт [DONE] от upstream (cppworker генерирует
-		// токены пока cancel не дойдёт через отдельный канал), что приводит к
-		// зависанию при OpenWebUI cancel — клиент закрыл соединение, но прокси
-		// продолжает тянуть токены с cppworker и тратить CPU/GPU.
-		//
-		// Применяется ко всем путям: /v1/chat/completions (Cline), /api/chat
-		// (OpenWebUI), /api/generate (Ollama CLI). При срабатывании — закрываем
-		// upstream body (cppworker прекратит генерацию после текущего token'а)
-		// и выходим из loop.
-		//
-		// R53.6 (2026-08-24): добавлен case <-reqCtx.Done() — streamTimeout (per-model
-		// profile, default 600s). Без этого case balancer зависает на генерации
-		// длинного контекста (cppworker генерирует 0 токенов, балансер ждёт [DONE]).
-		// При срабатывании reqCtx балансер сам отменяет cppworker раньше client timeout
-		// → R53.5 writeStreamErrorChunk эмитит done:true chunk клиенту → клиент
-		// получает "stream proxy error" вместо "Did not receive done" (TCP close).
-		//
-		// R60.58: select с default БОЛЬШЕ не нужен внутри loop — watcher goroutine
-		// (см. выше) закрывает resp.Body при cancel/timeout, scanner.Scan() возвращает
-		// false, loop выходит естественно. Здесь оставлен только для обратной совместимости
-		// и для early-detect cancel между чанками (быстрее чем ждать Close).
-		select {
-		case <-r.Context().Done():
-			if resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-			// R65c (2026-09-16): client cancelled mid-stream — emit truncated
-			// done chunk so the client's chunked parser (aiohttp) sees terminator
-			// before connection tear-down. Without this, OpenWebUI gets
-			// TransferEncodingError "Not enough data to satisfy transfer length header".
-			streamCompleted = true
-			emitTruncatedChunk(w, originalPath, modelFromCtx, time.Since(llamaStartTime), "client_cancel")
-			return nil
-		case <-reqCtx.Done():
-			if resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-			// R65c (2026-09-16): stream timeout — emit truncated done chunk and
-			// return nil so handleChat doesn't write ANOTHER error chunk on top.
-			// Pre-R65c: function returned error here, which caused handleChat's
-			// writeStreamErrorChunk to fail silently (data already buffered in
-			// Go's http.ResponseWriter but never flushed because connection was
-			// being torn down). Result: client sees chunked stream without done
-			// chunk + without terminator → TransferEncodingError "Not enough data
-			// to satisfy transfer length header" в aiohttp/OpenWebUI.
-			streamCompleted = true
-			emitTruncatedChunk(w, originalPath, modelFromCtx, time.Since(llamaStartTime), "timeout")
-			return nil
-		default:
-		}
-
-		line := scanner.Text()
-
-		// R66c (2026-09-22): нативный passthrough валиден ТОЛЬКО если апстрим
-		// реально отвечает Ollama-NDJSON. Если cppworker ответил OpenAI-SSE
-		// (сборка без нативного пути, LB_OLLAMA_NATIVE_PATH=0 или путь был
-		// переписан апстримом), то сырые OpenAI-чанки уходили Ollama-клиенту
-		// КАК NDJSON: вместо message.content приходили choices/delta, а
-		// финального done:true не было вообще — клиент зависает либо считает
-		// ответ пустым ("Model returned empty response").
-		//
-		// Определяем по СТРОКЕ, а не по Content-Type: cppworker исторически
-		// отдаёт NDJSON и с неверным/отсутствующим заголовком, поэтому
-		// заголовку здесь доверять нельзя. Первая же строка с префиксом
-		// "data:" означает SSE — переключаемся на трансляцию SSE→NDJSON ниже.
-		if nativePath && !nativeModeDecided {
-			nativeModeDecided = true
-			firstLine := strings.TrimSpace(line)
-			if strings.HasPrefix(firstLine, "data:") {
-				nativePath = false
-				logger.Get().Warnw("proxyRequestLlamaCpp: upstream answered with OpenAI SSE "+
-					"while request was routed as Ollama-native — switching to SSE→NDJSON translation",
-					"backend", backendID, "model", modelFromCtx, "path", originalPath,
-					"content_type", resp.Header.Get("Content-Type"))
-			}
-		}
-
-		// ==== R65d (2026-09-20): нативный путь — Ollama NDJSON passthrough ====
-		//
-		// cppworker's нативные обработчики (/api/chat, /api/generate) отдают
-		// application/x-ndjson: одна JSON-строка на строку, БЕЗ префикса "data:".
-		// Формат уже тот, который ждёт Ollama-клиент, поэтому перевод не нужен —
-		// отдаём строку как есть (плюс '\n', он же был в исходной строке).
-		//
-		// Что здесь отслеживаем (для диагностики, не для преобразования):
-		//   - streamCompleted: встретили done:true → стрим завершён штатно,
-		//     downstream truncation-detection не должен срабатывать;
-		//   - accumulatedPlainContent: накапливаем message.content / response
-		//     для R60.21 auto-continue и для логов;
-		//   - usageChunkSeen: нативный done-чанк уже содержит eval_count /
-		//     total_duration, поэтому writeStreamingSSEDone не должен писать
-		//     второй done-чанк.
-		//
-		// ВАЖНО: keepalive-строки {"keepalive":true} проходят насквозь — это
-		// валидный NDJSON для Ollama-клиентов (см. handlers_chat.go:861).
-		if nativePath {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" {
-				continue
-			}
-			// Терпимость к SSE-фреймингу: нативный обработчик cppworker отдаёт
-			// «голый» NDJSON, но при смешанных версиях (или когда путь был
-			// переписан апстримом) строка может прийти как `data: {...}`.
-			// Снимаем префикс, чтобы разбор ниже работал единообразно.
-			if strings.HasPrefix(trimmed, "data:") {
-				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-				if trimmed == "" || trimmed == "[DONE]" {
-					// [DONE] — терминатор SSE-стрима; в NDJSON-мире его нет,
-					// поэтому просто фиксируем завершение и не пересылаем
-					// клиенту невалидную для NDJSON строку.
-					if trimmed == "[DONE]" {
-						streamCompleted = true
-					}
-					continue
-				}
-			}
-			var nativeChunk map[string]interface{}
-			// R91 (2026-10-09): текст, отданный ДЕЛЬТАМИ до этой строки. Нужен,
-			// чтобы снимать дубль в done-чанке только тогда, когда ответ уже уехал
-			// клиенту дельтами (см. stripNativeDoneContent).
-			streamedBeforeThisLine := accumulatedPlainContent
-			if err := json.Unmarshal([]byte(trimmed), &nativeChunk); err != nil {
-				// Не JSON (например, SSE-комментарий от старой версии
-				// cppworker) — отдаём как есть, клиент сам решит.
-				logger.Get().Debugw("proxyRequestLlamaCpp[native]: non-JSON NDJSON line passed through",
-					"backend", backendID, "line", trimmed)
-			} else {
-				if modelFromCtx == "" {
-					if m, ok := nativeChunk["model"].(string); ok && m != "" {
-						modelFromCtx = m
-						modelFromCtxAtomic.Store(m)
-					}
-				}
-				// R493-12a: первый дельта-чанк ЛЮБОГО вида (включая thinking) —
-				// граница префилла. Здесь же ловятся и native-чанки, у которых
-				// текст лежит в message.thinking, а не в message.content.
-				if firstDeltaTime.IsZero() && chunkHasStatsDeltaR493(nativeChunk) {
-					firstDeltaTime = time.Now()
-				}
-				// Накапливаем видимый пользователю текст.
-				//   /api/chat     → message.content (reasoning идёт в message.reasoning)
-				//   /api/generate → response
-				//
-				// R118.17 (2026-10-15): done-чанк cppworker несёт ПОЛНЫЙ текст,
-				// который уже ушёл дельтами (клиенту он не отдаётся — R91 снимает
-				// дубль в stripNativeDoneContent). Раньше он ПРИКЛЕИВАЛСЯ к
-				// накопленному, и детектор обрыва R60.21 получал текст в двух
-				// копиях: число ``` становилось чётным, последняя строка —
-				// «полной», и авто-продолжение не срабатывало, хотя клиент видел
-				// обрыв. Живой замер до правки: 147 символов дельт + столько же в
-				// done-чанке = 294 на входе детектора, truncate_reason="".
-				chunkIsDone, _ := nativeChunk["done"].(bool)
-				if msg, ok := nativeChunk["message"].(map[string]interface{}); ok {
-					// R321: считаем размышления по НАИБОЛЬШЕМУ из двух имён —
-					// cppworker отдаёт `thinking` (канон) и `reasoning` (legacy)
-					// ОДНИМ И ТЕМ ЖЕ текстом, и суммирование дало бы вдвое больше
-					// символов в пояснении клиенту.
-					thinkChars := 0
-					if t, ok := msg["thinking"].(string); ok {
-						thinkChars = len(t)
-					}
-					if r, ok := msg["reasoning"].(string); ok && len(r) > thinkChars {
-						thinkChars = len(r)
-					}
-					if thinkChars > 0 {
-						nativeReasoningChars += thinkChars
-					}
-					if c, ok := msg["content"].(string); ok && c != "" {
-						accumulatedPlainContent = appendNativeContent(accumulatedPlainContent, chunkIsDone, c)
-						if firstContentTime.IsZero() {
-							firstContentTime = time.Now()
-						}
-					}
-				}
-				if rsp, ok := nativeChunk["response"].(string); ok && rsp != "" {
-					accumulatedPlainContent = appendNativeContent(accumulatedPlainContent, chunkIsDone, rsp)
-					if firstContentTime.IsZero() {
-						firstContentTime = time.Now()
-					}
-				}
-				if done, ok := nativeChunk["done"].(bool); ok && done {
-					streamCompleted = true
-					usageChunkSeen = true
-					priorDoneEmitted = true
-					// H2 (2026-10-16): нативный done-чанк отдаётся как есть, поэтому
-					// статистика считается дошедшей только если cppworker реально
-					// положил её в чанк (eval_count/prompt_eval_count). Если полей
-					// нет — statsEmitted остаётся false, и поздний SSE usage-чанк
-					// не будет потерян.
-					if _, hasEval := nativeChunk["eval_count"]; hasEval {
-						statsEmitted = true
-					} else if _, hasPrompt := nativeChunk["prompt_eval_count"]; hasPrompt {
-						statsEmitted = true
-					}
-					upstreamHadFinishReason = true
-					if c, ok := nativeChunk["error"].(string); ok && c != "" {
-						// R354 (2026-10-31): отмена ПОЛЬЗОВАТЕЛЕМ (кнопка Stop) — не сбой
-						// воркера. Такой кадр не идёт в upstreamErrorText (по нему
-						// работают auto-continue и распознавание n_ctx) и не пишется как
-						// Warn: клиенту уйдёт нормальный терминатор с done_reason=cancelled.
-						if isUserCancelDoneChunkR354(c) {
-							userCancelledDoneChunkR354 = true
-							logger.Get().Infow("proxyRequestLlamaCpp[native]: генерация отменена клиентом (R354)",
-								"backend", backendID, "model", modelFromCtx)
-						} else {
-							// R289: запоминаем текст ошибки — по нему отличим «контекст
-							// мал» от обрыва до того, как сработает auto-continue.
-							upstreamErrorText = c
-							logger.Get().Warnw("proxyRequestLlamaCpp[native]: upstream done-chunk carries error",
-								"backend", backendID, "model", modelFromCtx, "error", c)
-
-							// R83 (2026-09-29): n_ctx-ошибка в done-чанке = устаревший кэш
-							// n_ctx в балансере. Запускаем тот же auto-reload, что и для
-							// HTTP 4xx ниже — иначе получается ДЕДЛОК.
-							//
-							// Живой сценарий (лог 2026-09-29): балансер держал в
-							// LastKnownNCtx 128000, а cppworker после рестарта поднял
-							// модель с 32768. Preflight видел «128000 >= required» и
-							// возвращал NoOp (reload не запускался), а cppworker на каждый
-							// запрос отвечал done-чанком «code 2: requested n_ctx=128000
-							// exceeds model's effective n_ctx=32768». Клиент (Cline)
-							// получал ошибку на каждом запросе, и так до следующего
-							// удачного reload.
-							//
-							// cppworker отдаёт это как HTTP 200 + error в финальном чанке,
-							// поэтому ветка `resp.StatusCode >= 400` ниже не срабатывала.
-							//
-							// ВАЖНО: ParseCppWorkerError намеренно возвращает nil для
-							// status < 400, поэтому распознаём n_ctx-ошибку по тексту
-							// самого сообщения («code 2» / «code 3» — те же коды, что
-							// bridge.ErrCodeNCtxNeedsReload / ErrCodePromptTooLong).
-							if p.nctxReload != nil && isNCtxDoneChunkError(c) {
-								reloadModel := modelFromCtx
-								if reloadModel == "" {
-									reloadModel = backendID
-								}
-								logger.Get().Infow(i18n.T("balancer.llamacpp_transport.done_chunk_nctx_error_reload_info"),
-									"backend", backendID, "model", reloadModel, "error", c)
-								nctxErr := newNCtxErrorFromDoneChunk(c, backendID)
-								p.handleNCtxReload(r.Context(), w, r, backendID, reloadModel, nctxErr, bodyBuf)
-								return nil
-							}
-						}
-					}
-					// R65d: агрегируем статистику токенов для /api/v1/stats/tokens.
-					// Нативный формат Ollama: prompt_eval_count / eval_count.
-					if !tokenUsageRecorded {
-						promptTokens := int64(intFromMap(nativeChunk, "prompt_eval_count"))
-						evalTokens := int64(intFromMap(nativeChunk, "eval_count"))
-						if promptTokens > 0 || evalTokens > 0 {
-							tokenUsageRecorded = true
-							p.recordTokenUsage(modelFromCtx, promptTokens, evalTokens)
-						}
-					}
-				}
-			}
-			// R83 §9.7 (2026-09-27): нормализуем финальный чанк ПЕРЕД отдачей
-			// клиенту. cppworker кладёт в done-чанк ПОЛНЫЙ текст ответа, хотя
-			// дельты его уже отдали (измерено 2.00×: столько же байт в дельтах
-			// и в done). Настоящая Ollama в done-чанке отдаёт `message.content:
-			// ""`, и OpenWebUI с ней работает — значит дубль ломает именно
-			// клиентов, конкатенирующих чанки. Оставляем все статы.
-			//
-			// R91 (2026-10-09): ТОЛЬКО если текст уже уехал дельтами. Раньше
-			// content вычищался безусловно, и апстрим, отдавший весь ответ ОДНИМ
-			// финальным чанком (mock/статический ответ/фолбэк cppworker, когда
-			// модель ушла в незакрытый reasoning и текст отдан в done-чанке),
-			// терял ответ целиком: клиент получал done:true с пустым content.
-			// Именно это ловили tests/llamacpp_proxy (TestChatStreaming,
-			// TestResponseNotMarkdownBold/streaming) и tests (TestProxyOllama_*).
-			//
-			// ВАЖНО: accumulatedPlainContent/upstreamDoneContent выше уже
-			// накопили полный текст (для R60.21 auto-continue) — здесь правится
-			// только то, что уходит по проводу.
-			// R331 (2026-10-30): ОДИН владелец content завершающего кадра.
-			//
-			// Раньше по проводу кадр правили ДВА независимых слоя подряд:
-			// stripNativeDoneContent (R91: снять дубль уже отданного текста) и
-			// nativeDoneHygieneR321 (R321: причина + пояснение, когда клиент не
-			// видел ничего). Каждый из них не знал о другом: strip мог очистить
-			// content, и тогда hygiene видела «пустой ответ» и вставляла пояснение
-			// поверх нормального завершения (регрессия R321, ловил оператор).
-			//
-			// Теперь решение одно: finalizeNativeDoneFrameR331. Внутри — тот же
-			// порядок (сначала снять дубль, потом решить про причину/пояснение), но
-			// состояние считается ОДИН раз, поэтому слои не могут разойтись.
-			outLine := trimmed
-			if userCancelledDoneChunkR354 {
-				// R354 (2026-10-31): ОДИН владелец кадра отмены. Правим ТОЛЬКО причину
-				// (done_reason=cancelled из реестра R328, без error): model/created_at/
-				// статистика остаются, клиент по ним закрывает ход и считает токены.
-				//
-				// Через finalizeNativeDoneFrameR331 такой кадр НЕ пускаем: тот видит
-				// пустой response и вставил бы пояснение «ответа нет» (регрессия R321),
-				// хотя клиент сам остановил генерацию.
-				if fixed, changed := normalizeCancelDoneChunkR354(trimmed); changed {
-					outLine = fixed
-				}
-			} else if originalPath == "/api/chat" || originalPath == "/api/generate" {
-				fixed, changed := finalizeNativeDoneFrameR331(trimmed, streamedBeforeThisLine,
-					nativeReasoningChars, nativeDoneContentStrippingEnabled())
-				if changed {
-					logger.Get().Infow("proxyRequestLlamaCpp[native]: done-кадр нормализован (R331)",
-						"backend", backendID, "model", modelFromCtx,
-						"reasoning_chars", nativeReasoningChars,
-						"visible_streamed_chars", len(strings.TrimSpace(streamedBeforeThisLine)))
-					outLine = fixed
-				} else {
-					outLine = trimmed
-				}
-			} else {
-				outLine = trimmed
-			}
-			// R493-12a (2026-11-12): нативный done-кадр несёт статистику cppworker,
-			// и она не знает про очередь/авто-загрузку/preflight. Живой замер на
-			// стенде: клиент ждал 62 с (модель грузилась), а получил total_duration
-			// 2.15 с, load_duration 0 и вообще без tokens_per_second. Здесь
-			// добавляется то, что видит ТОЛЬКО балансер: load_duration и
-			// total = load + prompt + eval (см. applyStatsWindowsNativeR493).
-			if originalPath == "/api/chat" || originalPath == "/api/generate" {
-				if fixed, changed := applyStatsWindowsNativeR493(outLine, statsWindowsNative); changed {
-					outLine = fixed
-				}
-			}
-			// R266.1 (2026-10-28): на нативном пути cppworker уже отдаёт NDJSON,
-			// и балансер писал строку клиенту как есть — поэтому служебные метки
-			// шаблона (`<|assistant|>`, `</think>`) утекали в message.content
-			// ровно здесь. Чистим строку перед отправкой, придерживая хвост
-			// разрезанной метки (см. marker_hold_ndjson_r266_1.go).
-			if originalPath == "/api/chat" || originalPath == "/api/generate" {
-				outLine = filterNDJSONLineMarkers(outLine, &ndjsonHold)
-			}
-			n, errFwd := writeClientLineR493([]byte(outLine))
-			if errFwd != nil {
-				lastForwardErr = errFwd
-				if firstForwardErr == nil {
-					firstForwardErr = errFwd
-				}
-				return fmt.Errorf("write native NDJSON: %v", errFwd)
-			}
-			_ = n
-			// R66b (2026-09-22): отмечаем, что для нативного пути апстрим уже
-			// отдал хотя бы одну NDJSON-строку. Без этого lastData оставался ""
-			// (он заполняется только в SSE-ветке ниже), и финальный блок
-			//   if lastData == "" && originalPath != "/v1/chat/completions"
-			// в конце функции досылал клиенту ЛИШНИЙ синтетический done-чанк
-			// ({"done":true,"done_reason":"stop","message":{"content":""}}) уже
-			// ПОСЛЕ настоящего done от cppworker.
-			//
-			// Симптом на реальном клиенте: Cline CLI (ollama provider) получал
-			// два done-чанка — первый с tool_calls, второй пустой — и в итоге
-			// сообщал "Model returned empty response"; инструмент не вызывался.
-			// Ollama-клиенты на два done отвечают
-			// "Did not receive done or success response in stream" (тот же класс
-			// дефекта, что чинили в R60.55 для SSE-ветки).
-			lastData = trimmed
-			// Флаш уже сделан writeClientLineR493 (у стока — свой, у исторической
-			// ветки — тот же http.Flusher). Отдельный флаш здесь означал бы второй
-			// набор правил записи — ровно то, что этап 6 и убирает.
-			continue
-		}
-
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
-			streamCompleted = true
-			// R60.55 (2026-09-13): DEFER writing the done-chunk until AFTER
-			// we check for truncation. Otherwise OpenWebUI receives done=true
-			// for the original truncated content, then sees ANOTHER done=true
-			// for the combined content (after auto-continue) → displays as
-			// duplicate response. We mark `deferredDoneChunk` and emit later.
-			deferredDoneChunk = true
-			break
-		}
-
-		lastData = data
-
-		var chunk map[string]interface{}
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			logger.Get().Debugw("proxyRequestLlamaCpp: skipping non-JSON SSE data",
-				"data", data, "error", err)
-			continue
-		}
-
-		if modelFromCtx == "" {
-			if m, ok := chunk["model"].(string); ok && m != "" {
-				modelFromCtx = m
-			}
-		}
-
-		// R493-12a: первый дельта-чанк ЛЮБОГО вида закрывает префилл. Reasoning
-		// считается так же, как content: время размышлений — это генерация, а не
-		// «оценка промпта» (их токены всегда входят в eval_count).
-		if firstDeltaTime.IsZero() && chunkHasStatsDeltaR493(chunk) {
-			firstDeltaTime = time.Now()
-		}
-
-		// R65d (2026-09-20): агрегируем статистику токенов со streaming-пути.
-		//
-		// До R65d recordTokenUsage вызывался только из non-streaming путей,
-		// поэтому /api/v1/stats/tokens был пуст для всего реального трафика.
-		// cppworker присылает OpenAI usage-чанк ({prompt_tokens,
-		// completion_tokens}) при stream_options.include_usage (по умолчанию
-		// включено, handlers_openai.go:427-438).
-		if !tokenUsageRecorded {
-			if usage, ok := chunk["usage"].(map[string]interface{}); ok {
-				promptTokens := int64(intFromMap(usage, "prompt_tokens"))
-				completionTokens := int64(intFromMap(usage, "completion_tokens"))
-				if promptTokens > 0 || completionTokens > 0 {
-					tokenUsageRecorded = true
-					p.recordTokenUsage(modelFromCtx, promptTokens, completionTokens)
-				}
-			}
-		}
-
-		// Для SSE→SSE passthrough (/v1/chat/completions) — проксируем как есть,
-		// дополнительно накапливая delta.content на случай если клиент захочет
-		// полный контент после [DONE].
-		if originalPath == "/v1/chat/completions" {
-			// Накапливаем plain content для /v1/chat/completions (на случай будущего использования).
-			if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
-				if choice, ok := choices[0].(map[string]interface{}); ok {
-					if delta, ok := choice["delta"].(map[string]interface{}); ok {
-						if c, ok := delta["content"].(string); ok && c != "" {
-							accumulatedPlainContent += c
-						}
-					}
-				}
-			}
-			// SSE → SSE passthrough
-			//
-			// R231 (2026-10-24): ЗДЕСЬ БЫЛА ОШИБКА ВЫЗОВА ФИЛЬТРА, из-за которой
-			// он фактически не работал. filterOpenAIStreamingLine ожидает
-			// SSE-строку "data: {...}" и проверяет HasPrefix("data:"), а сюда
-			// передавался ГОЛЫЙ JSON (префикс уже срезан выше) — проверка не
-			// срабатывала, и служебные токены/маркеры размышлений уезжали клиенту.
-			// Второй дефект: возвращаемый bool означает «модифицирован», но
-			// трактовался как «shouldSkip» — чанк с вырезанным токеном просто
-			// выбрасывался (терялся текст ответа).
-			// Теперь: собираем SSE-строку, фильтруем, и если контент почищен —
-			// продолжаем обработку уже с очищенным JSON.
-			if filteredLine, modified := filterAssistantEgressForClient([]byte("data: "+data), egressFilter); modified {
-				cleaned := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(filteredLine)), "data:"))
-				if cleaned != "" {
-					data = cleaned
-				}
-			}
-			if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
-				if choice, ok := choices[0].(map[string]interface{}); ok {
-					if delta, ok := choice["delta"].(map[string]interface{}); ok {
-						accumulateToolCallsFromDelta(delta, toolAccum)
-					}
-				}
-			}
-			if modified := extractToolCallsFromSSEContentWithSchema([]byte(data), toolSchemas, toolRepair); modified != nil {
-				n, errFwd := fmt.Fprintf(w, "data: %s\n\n", string(modified))
-				bytesForwarded.Add(int64(n))
-				if errFwd != nil {
-					lastForwardErr = errFwd
-					if firstForwardErr == nil {
-						firstForwardErr = errFwd
-					}
-					return fmt.Errorf("write modified SSE (tool calls): %v", errFwd)
-				}
-			} else if normalized := normalizeSSEToolCallChunks([]byte(data), toolSchemas, toolRepair); normalized != nil {
-				// R186: нативные вызовы от воркера тоже приводим к форме OpenAI и к
-				// объявленной схеме — валидатор клиента проверяет схему независимо
-				// от того, кто собрал вызов.
-				n, errFwd := fmt.Fprintf(w, "data: %s\n\n", string(normalized))
-				bytesForwarded.Add(int64(n))
-				if errFwd != nil {
-					lastForwardErr = errFwd
-					if firstForwardErr == nil {
-						firstForwardErr = errFwd
-					}
-					return fmt.Errorf("write normalized SSE (tool calls): %v", errFwd)
-				}
-			} else {
-				n, errFwd := fmt.Fprintf(w, "data: %s\n\n", data)
-				bytesForwarded.Add(int64(n))
-				if errFwd != nil {
-					lastForwardErr = errFwd
-					if firstForwardErr == nil {
-						firstForwardErr = errFwd
-					}
-					return fmt.Errorf("write SSE: %v", errFwd)
-				}
-			}
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-		} else {
-			// ==== SSE → NDJSON: для /api/generate и /api/chat =====
-			var deltaContent string
-			if originalPath == "/api/chat" {
-				if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
-					if choice, ok := choices[0].(map[string]interface{}); ok {
-						if delta, ok := choice["delta"].(map[string]interface{}); ok {
-							accumulateToolCallsFromDelta(delta, toolAccum)
-							if c, ok := delta["content"].(string); ok {
-								deltaContent = c
-								// R60.22: capture time of first non-empty content
-								// chunk (TTFT) for accurate prompt_eval_duration.
-								if c != "" && firstContentTime.IsZero() {
-									firstContentTime = time.Now()
-								}
-							}
-						}
-					}
-				}
-
-				// Если чанк содержит finish_reason (done:true) — извлекаем content и
-				// done_reason из message, чтобы сохранить полный ответ cppworker'а.
-				if upstreamHasDone, msgMap, _ := extractUpstreamDoneChunk(data); upstreamHasDone {
-					if c, ok := msgMap["content"].(string); ok {
-						upstreamDoneContent = c
-						// R60.22: capture time of first non-empty content (TTFT).
-						// cppworker иногда посылает весь ответ в одном done-чанке
-						// (final chunk has both content and finish_reason). В этом
-						// случае firstContentTime отражает время получения первого
-						// значимого content, даже если он пришёл в done-чанке.
-						if c != "" && firstContentTime.IsZero() {
-							firstContentTime = time.Now()
-						}
-					}
-				}
-
-				// Кросс-чанковое накопление content для детекции JSON tool calls.
-				// Поддерживаемые триггеры накопления:
-				//   - "[" — стандартный JSON-массив tool_calls
-				//   - "<tool_call>" / "<|python_tag|>" — Hermes/Qwen/Llama-3 форматы
-				//   - "{name" — начало одиночного JSON-объекта tool_call
-				//   - contentBuffer не пуст — продолжаем накапливать уже начатый tool call
-				if deltaContent != "" && !contentToolCallsProcessed {
-					// R266 (2026-10-28): служебные метки qwen3.8 (`<|tool|>`,
-					// `<|assistant|>`, `<|tool_call|>`, …) в видимом тексте.
-					//
-					// ЖИВОЙ ФАКТ (Cline, /api/chat, qwen3.8): в ответе приходило
-					// «… </think> <|tool|> tool_call_result(run_commands): [...] <|assistant|>
-					// The file has ~348 lines …». Триггеры накопления ниже знали только
-					// `[`, `<tool_call>`, `<|python_tag|>`, `[TOOL_CALLS]`, `{name`, поэтому
-					// чанк с меткой уходил в message.content как обычный текст.
-					//
-					// Метки вычищаем ДО разбора: после этого остаётся либо чистый текст,
-					// либо JSON вызова, который распознаётся штатным детектором.
-					deltaContent = stripQwenServiceMarkers(deltaContent)
-					trimmed := strings.TrimSpace(deltaContent)
-					startToolCallAccum := strings.HasPrefix(trimmed, "[") ||
-						strings.HasPrefix(trimmed, "<tool_call>") ||
-						strings.HasPrefix(trimmed, "<|python_tag|>") ||
-						strings.HasPrefix(trimmed, "[TOOL_CALLS]") ||
-						strings.HasPrefix(trimmed, "{name") ||
-						hasQwenServiceMarker(trimmed) ||
-						// Метка разрезана между чанками: `<|tool_` + `call|>`. Хвост
-						// придерживаем, иначе первая половина уедет клиенту текстом.
-						splitMarkerSuffixLen(trimmed) > 0
-
-					// R114c (2026-10-13): JSON-структура НАЧАЛАСЬ ПОСРЕДИ чанка
-					// (проза + вызов в одном чанке). Раньше такой чанк уходил
-					// клиенту целиком — в теле ответа оказывался обрывок вызова
-					// («…task complete. [{"id":"call_submit_and_exit",…»). Проза
-					// отдаётся сразу, а накопление начинается со скобки.
-					if !startToolCallAccum && contentBuffer == "" {
-						if pos, ok := jsonStructStartPos(deltaContent); ok && pos > 0 {
-							prose := deltaContent[:pos]
-							proseChunk := map[string]interface{}{
-								"model":      modelFromCtx,
-								"created_at": time.Now().UTC().Format(time.RFC3339),
-								"done":       false,
-								"message": map[string]interface{}{
-									"role":    "assistant",
-									"content": prose,
-								},
-							}
-							outProse, _ := json.Marshal(proseChunk)
-							nProse, errProse := fmt.Fprintf(w, "%s\n", string(outProse))
-							bytesForwarded.Add(int64(nProse))
-							if errProse != nil {
-								if firstForwardErr == nil {
-									firstForwardErr = errProse
-								}
-								return fmt.Errorf("write NDJSON (prose before JSON struct): %v", errProse)
-							}
-							if flusher, ok := w.(http.Flusher); ok {
-								flusher.Flush()
-							}
-							accumulatedPlainContent += prose
-							if firstContentTime.IsZero() {
-								firstContentTime = time.Now()
-							}
-							deltaContent = deltaContent[pos:]
-							trimmed = strings.TrimSpace(deltaContent)
-							startToolCallAccum = true
-						}
-					}
-
-					if !contentBufferGaveUp && (startToolCallAccum || contentBuffer != "") {
-						contentBuffer += deltaContent
-						if contentBufferSince.IsZero() {
-							contentBufferSince = time.Now()
-						}
-
-						// Кросс-чанковая склейка может оставить "лишний" символ '}' перед
-						// закрывающим </tool_call> (когда JSON закрывается в одном чанке, а
-						// '}'</tool_call>' приходит в следующем). Схлопываем дубликат.
-						contentBuffer = collapseDuplicateClosingBrace(contentBuffer)
-
-						// Проверяем, не накопился ли полный JSON tool call
-						if detectedTC, remainingTC, found := detectAndExtractToolCallsFromContent(contentBuffer); found {
-							contentToolCallsProcessed = true
-							contentBuffer = ""
-							logger.Get().Infow("proxyRequestLlamaCpp: cross-chunk tool_calls detected in content",
-								"backend", backendID, "model", modelFromCtx,
-								"tool_calls_count", len(detectedTC))
-
-							cleanRemaining := stripServiceTokens(remainingTC)
-							cleanRemaining = cleanContentAfterToolCallExtraction(cleanRemaining)
-
-							msgMap := map[string]interface{}{
-								"role":       "assistant",
-								"content":    cleanRemaining,
-								"tool_calls": detectedTC,
-							}
-							ollamaChunk := map[string]interface{}{
-								"model":      modelFromCtx,
-								"created_at": time.Now().UTC().Format(time.RFC3339),
-								"done":       false,
-								"message":    msgMap,
-							}
-							out, _ := json.Marshal(ollamaChunk)
-							n, errFwd := fmt.Fprintf(w, "%s\n", string(out))
-							bytesForwarded.Add(int64(n))
-							if errFwd != nil {
-								lastForwardErr = errFwd
-								if firstForwardErr == nil {
-									firstForwardErr = errFwd
-								}
-								return fmt.Errorf("write NDJSON (cross-chunk tool calls): %v", errFwd)
-							}
-							if flusher, ok := w.(http.Flusher); ok {
-								flusher.Flush()
-							}
-							continue
-						}
-
-						// Если JSON массив закрыт (найден ']' на правильной глубине),
-						// но tool call не обнаружен — это не tool call JSON.
-						// Сбрасываем буфер и даём чанку пройти через нормальный translate.
-						if endPos := findMatchingClosingBracket(contentBuffer, 0); endPos >= 0 {
-							contentBuffer = ""
-							contentBufferSince = time.Time{}
-						} else if len(contentBuffer) > toolCallBufferLimit() {
-							// R266: раньше здесь буфер ВЫБРАСЫВАЛСЯ (жёсткие 4096 байт),
-							// и вызов инструмента, который пишет файл на сотни строк,
-							// терялся, а его обрывок с метками уезжал клиенту как текст.
-							// Теперь текст не теряем: отдаём очищенным от служебных меток
-							// как обычный content и продолжаем стрим.
-							overflow := contentBuffer
-							contentBuffer = ""
-							contentBufferSince = time.Time{}
-							logger.Get().Warnw("proxyRequestLlamaCpp: tool-call buffer limit reached, text flushed",
-								"backend", backendID, "model", modelFromCtx,
-								"limit_bytes", toolCallBufferLimit(), "flushed_chars", len(overflow))
-							if errFlush := flushBufferedTextR292(overflow, "buffer_limit"); errFlush != nil {
-								return errFlush
-							}
-							continue
-						} else if shouldFlushToolBufferAsProseR292(contentBuffer, contentBufferSince) {
-							// R292: текст лишь НАЧАЛСЯ как JSON/маркер, но признаков
-							// вызова в нём нет (ни "name":, ни <|tool|>, …) и он уже
-							// пересидел grace/объём. Это проза — отдаём клиенту и
-							// прекращаем накопление до конца стрима.
-							//
-							// ЖИВОЙ СИМПТОМ, который это лечит: ответ начинался на `[`
-							// (маркдаун-список/массив в тексте), детектор держал его в
-							// буфере до 64 КиБ, и клиент видел «план вместе с
-							// размышлениями» одним куском в конце, а не потоком.
-							prose := contentBuffer
-							contentBuffer = ""
-							contentBufferSince = time.Time{}
-							contentBufferGaveUp = true
-							logger.Get().Infow("proxyRequestLlamaCpp: buffered text is prose, streaming it",
-								"backend", backendID, "model", modelFromCtx,
-								"chars", len(prose), "grace_ms", toolCallProseGrace().Milliseconds())
-							if errFlush := flushBufferedTextR292(prose, "prose_not_toolcall"); errFlush != nil {
-								return errFlush
-							}
-							continue
-						} else {
-							// Всё ещё накапливаем — пропускаем этот чанк
-							continue
-						}
-					}
-				}
-
-				// Накапливаем plain content (вне tool-call accumulation) для финального
-				// done-чанка — это спасает от пустого content если upstream прислал
-				// полный ответ только в done-чанке.
-				//
-				// НЕ накапливаем чанки с finish_reason: cppworker прислал финальный
-				// чанк с content=" llama.cpp!" + finish_reason="stop". Этот content
-				// уже проксируется через writeStreamingSSEDone ниже (агрегированный
-				// в upstreamDoneContent / accumulatedPlainContent). Без этого guard
-				// в финальный done-чанк попадал дубликат:
-				// "Hello from llama.cpp! llama.cpp!" (см. PF-6 fail 2026-06-27).
-				if deltaContent != "" && !contentToolCallsProcessed && !hasFinishReason(data) {
-					accumulatedPlainContent += deltaContent
-				}
-
-				// Финальный чанк cppworker (с finish_reason) присылает ПОЛНЫЙ content
-				// в message.content — используем его как upstreamDoneContent. Это
-				// перезаписывает накопленный accumulatedPlainContent чтобы избежать
-				// дубликата ("Hello from llama.cpp!" + "Hello from llama.cpp!").
-				if upstreamHasDone, msgMap, _ := extractUpstreamDoneChunk(data); upstreamHasDone {
-					if c, ok := msgMap["content"].(string); ok && c != "" {
-						upstreamDoneContent = c
-					}
-					// R83-фикс (2026-10-01): tool call может прийти ЦЕЛИКОМ в
-					// финальном (done) чанке — ровно так делает cppworker на
-					// пути /api/chat с tools: он буферизует ответ и отдаёт его
-					// одним сообщением с finish_reason.
-					//
-					// Живой дефект (Cline → балансер → /api/chat): модель
-					// выдала JSON-массив tool_calls, cppworker вернул его в
-					// message.content последнего чанка, а балансер этот content
-					// «вырезал» (он ждал tool call в deltaContent, где его не
-					// было) и клиент получал пустой ответ:
-					//   "model produced an empty response (inference succeeded
-					//    but output is empty)" ← сообщение Cline.
-					// Прямой запрос в cppworker при этом отдавал корректный
-					// JSON, а OpenAI-путь (/v1/chat/completions) — корректный
-					// tool_calls. Ломался только Ollama-путь.
-					//
-					// Теперь, как и для дельт, пытаемся извлечь tool calls из
-					// финального content и, если получилось, отдаём их штатным
-					// механизмом (writeStreamingSSEDone с toolAccum). Если не
-					// получилось — content остаётся как есть и доезжает до
-					// клиента: потерять ответ модели нельзя.
-					if !contentToolCallsProcessed && upstreamDoneContent != "" {
-						if detectedTC, remainingTC, found := detectAndExtractToolCallsFromContent(upstreamDoneContent); found && len(detectedTC) > 0 {
-							// Кладём в тот же аккумулятор, что и дельты
-							// (toolAccum — map[index]*accumulatedToolCall),
-							// чтобы финальный NDJSON отдал их штатно.
-							for i, raw := range detectedTC {
-								tcm, ok := raw.(map[string]interface{})
-								if !ok {
-									continue
-								}
-								entry := &accumulatedToolCall{index: i, function: map[string]interface{}{}}
-								if id, ok := tcm["id"].(string); ok {
-									entry.id = id
-								}
-								if fn, ok := tcm["function"].(map[string]interface{}); ok {
-									entry.function = fn
-								}
-								toolAccum[i] = entry
-							}
-							contentToolCallsProcessed = true
-							upstreamDoneContent = cleanContentAfterToolCallExtraction(stripServiceTokens(remainingTC))
-							logger.Get().Infow(i18n.T("balancer.llamacpp_transport.tool_calls_extracted_info"),
-								"backend", backendID, "model", modelFromCtx,
-								"tool_calls_count", len(detectedTC),
-								"remaining_content_len", len(upstreamDoneContent))
-						}
-					}
-				}
-			} else if originalPath == "/api/generate" {
-				// Для /api/generate content лежит в chunk["choices"][0].text или в done_chunk.response
-				if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
-					if choice, ok := choices[0].(map[string]interface{}); ok {
-						if t, ok := choice["text"].(string); ok && t != "" {
-							deltaContent = t
-							// НЕ накапливаем чанки с finish_reason (аналогично /api/chat):
-							// cppworker в финальном чанке шлёт ПОЛНЫЙ content=" llama.cpp!",
-							// а accumulatedPlainContent уже содержит "Hello from". Без guard
-							// финальный done-чанк получал дубликат ("Hello from llama.cpp! llama.cpp!").
-							if !hasFinishReason(data) {
-								accumulatedPlainContent += t
-							}
-						}
-					}
-				}
-				// Финальный чанк cppworker с finish_reason: используем accumulatedPlainContent
-				// (без дубликата " llama.cpp!") как upstreamDoneContent. Если cppworker
-				// прислал в финальном чанке text=" llama.cpp!" И finish_reason="stop",
-				// мы уже НЕ добавили его в accumulatedPlainContent (см. guard выше),
-				// поэтому накопленный контент = "Hello from". Дописываем " llama.cpp!"
-				// из финального чанка для полноты ответа.
-				if hasFinishReason(data) {
-					if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
-						if choice, ok := choices[0].(map[string]interface{}); ok {
-							if t, ok := choice["text"].(string); ok && t != "" {
-								upstreamDoneContent = accumulatedPlainContent + t
-							}
-						}
-					}
-					if upstreamDoneContent == "" {
-						upstreamDoneContent = accumulatedPlainContent
-					}
-				}
-			}
-
-			// Подавляем перевод только если tool_calls уже были обработаны
-			// (cross-chunk или delta) — для них writeStreamingSSEDone формирует
-			// финальный NDJSON с правильным message.tool_calls.
-			//
-			// Для чанков с finish_reason НЕ делаем continue — translateOpenAISSEDataToOllama
-			// сам корректно сформирует финальный NDJSON с done:true, done_reason:stop
-			// и content из текста чанка. Это и есть требуемая passthrough-семантика
-			// для streaming: каждый upstream чанк → отдельный NDJSON чанк клиенту,
-			// включая финальный с done:true.
-			//
-			// PF-6 fix (2026-06-27): cppworker НЕ отправляет [DONE] маркер в
-			// streaming-режиме — он закрывает TCP сразу после чанка с finish_reason.
-			// Чтобы избежать ложного "truncation" alert, помечаем streamCompleted
-			// при первом чанке с finish_reason.
-			if contentToolCallsProcessed || len(toolAccum) > 0 {
-				// tool_calls уже были обработаны выше — writeStreamingSSEDone возьмёт
-				// их из toolAccum и отправит финальный NDJSON с tool_calls.
-				// upstreamHadFinishReason=false: даже если cppworker прислал finish_reason
-				// в этом же чанке, tool_calls должны быть эмитированы (предыдущая ветка
-				// кода обработала cross-chunk tool calls в отдельном NDJSON-чанке).
-				if !streamCompleted {
-					streamCompleted = true
-					errFwd := writeStreamingSSEDone(w, originalPath, modelFromCtx, toolAccum,
-						accumulatedPlainContent, upstreamDoneContent, false, usageChunkSeen)
-					if errFwd != nil {
-						logger.Get().Warnw("proxyRequestLlamaCpp: writeStreamingSSEDone on tool_calls error",
-							"backend", backendID, "error", errFwd)
-						lastForwardErr = errFwd
-						if firstForwardErr == nil {
-							firstForwardErr = errFwd
-						}
-					}
-					// R65d (2026-09-20): помечаем canonical done как отправленный.
-					//
-					// БЕЗ ЭТОГО: writeStreamingSSEDone уже отдал клиенту done:true
-					// (с tool_calls), но priorDoneEmitted/usageChunkSeen оставались
-					// false. Далее cppworker присылает свой wrapper-чанк
-					// (finish_reason без content) и usage-чанк — и
-					// translateUsageChunkToOllama, не видя priorDoneEmitted,
-					// эмитил ВТОРОЙ done:true. Ollama-клиенты (Cline, ollama npm)
-					// на два done-чанка отвечают
-					// "Did not receive done or success response in stream".
-					//
-					// H2 (2026-10-16): writeStreamingSSEDone НЕ пишет статистику,
-					// поэтому statsEmitted здесь СОЗНАТЕЛЬНО не выставляется —
-					// поздний usage-чанк должен дойти до клиента строкой с
-					// done:false (иначе eval_count/prompt_eval_count теряются).
-					usageChunkSeen = true
-					priorDoneEmitted = true
-					Flush(w)
-				}
-				continue
-			}
-			if hasFinishReason(data) && !streamCompleted {
-				// cppworker закрывает TCP после этого чанка — отмечаем что стрим
-				// завершён нормально, чтобы ниже не сработал stream-truncation detection.
-				streamCompleted = true
-				// PF-6 (2026-06-27) + dedup streaming fix (2026-06-30):
-				// translateOpenAISSEDataToOllama сам формирует финальный NDJSON с done:true
-				// и content из финального чанка. Если writeStreamingSSEDone тоже запишет
-				// финальный done-чанк (например, через [DONE] маркер от SSE upstream)
-				// клиент увидит ДУБЛИКАТ done-чанка с тем же content. Чтобы этого избежать
-				// передаём флаг upstreamSentFinishReason — writeStreamingSSEDone пропустит
-				// финальный NDJSON/SSE если upstream уже отправил finish_reason и нет tool_calls.
-				upstreamHadFinishReason = true
-			}
-			// R60.49 (2026-09-12): передаём accumulatedPlainContent в translator —
-			// при получении usage-чанка message.content/response теперь заполняется
-			// накопленным content (а не ""), чтобы OpenWebUI показывал полный ответ.
-			//
-			// R60.55 (2026-09-13): передаём priorDoneEmitted — если предыдущий
-			// чанк уже эмитил done:true (например finish_reason+content safety-net
-			// от R51.3), usage чанк не должен эмитить второй done:true.
-			//
-			// H2 (2026-10-16): передаём и statsEmitted — usage-чанк подавляется
-			// только если статистика УЖЕ ушла; иначе она отдаётся строкой с
-			// done:false (см. translateOpenAISSEDataToOllamaWithFlags).
-			// R118.20 (2026-10-15): фрагменты tool-call'ов копим и отдаём ОДИН раз
-			// целиком — в Ollama-форме частичных аргументов не бывает (аудит C5).
-			// R266.1 (2026-10-28): вычищаем служебные метки шаблона из ВИДИМОГО
-			// content ДО перевода в NDJSON и до любых веток (обычный текст, чанк с
-			// finish_reason, чанк после распознанного tool call). Клиенту уходит
-			// результат перевода из этих данных, поэтому чистить надо данные, а не
-			// локальную переменную: иначе часть веток остаётся без фильтра — именно
-			// так `<|assistant|>` утёк после того, как tool call уже был распознан.
-			if originalPath == "/api/chat" {
-				data = filterSSEDeltaContentMarkers(data, &ndjsonHold)
-			}
-
-			if filtered, ok := toolAcc.filterToolCallDelta(data); !ok {
-				continue
-			} else {
-				data = filtered
-			}
-			// R493-12a: окна передаём четырьмя моментами — иначе в «время промпта»
-			// снова попали бы очередь и загрузка, а размышления выпали бы из
-			// «времени генерации» (см. stats_windows_r493.go).
-			statsWindows := statsWindowsForTransportR493(requestStartTime, upstreamSentTime, firstDeltaTime, firstContentTime, time.Now())
-			// R493-12a: загрузку модели знает воркер (она внутри запроса) — берём
-			// её из заголовка ответа, иначе 40+ секунд не попадут никуда.
-			statsWindows.WorkerLoad = workerLoadNsR493
-			ollamaChunk := translateOpenAISSEDataToOllamaWindowsR493(originalPath, []byte(data), modelFromCtx, &seenReasoning, statsWindows, accumulatedPlainContent, &priorDoneEmitted, &statsEmitted)
-			if len(ollamaChunk) == 0 {
-				continue
-			}
-			// Round 53.1 (2026-08-24): detect usage chunk for writeStreamingSSEDone fallback logic.
-			// translateOpenAISSEDataToOllama уже эмитил canonical done:true с полными статами
-			// из usage чанка — writeStreamingSSEDone на [DONE] должен skip чтобы избежать
-			// double-done. Способ детекта: usage чанк всегда имеет eval_count + done:true
-			// (translateUsageChunkToOllama эмитит prompt_eval_count и eval_count).
-			// Не-usage чанки с done:true (safety net для length/content_filter в одном
-			// чанке с content) тоже считаем — но это OK, writeStreamingSSEDone skip безопасен.
-			//
-			// R60.55: трекаем priorDoneEmitted для ВСЕХ done:true чанков (не только
-			// usage).
-			//
-			// H2 (2026-10-16): статистика и done:true учитываются РАЗДЕЛЬНО.
-			//   - usageChunkSeen/priorDoneEmitted — по полю done (даже для stats-only
-			//     строки с done:false priorDoneEmitted не меняется: сам факт того,
-			//     что done:true уже ушёл, зафиксирован предыдущим чанком);
-			//   - statsEmitted — по наличию eval_count/prompt_eval_count, независимо
-			//     от done. Именно это гасит повторные usage-чанки, а не priorDoneEmitted.
-			var ollamaParsed map[string]interface{}
-			if err := json.Unmarshal(ollamaChunk[:len(ollamaChunk)-1], &ollamaParsed); err == nil {
-				if done, _ := ollamaParsed["done"].(bool); done {
-					// Любой done:true chunk = canonical done (translator эмитил).
-					// writeStreamingSSEDone должен skip.
-					usageChunkSeen = true
-					priorDoneEmitted = true
-				}
-				if _, ok := ollamaParsed["eval_count"]; ok {
-					// H2: статистика уехала клиенту (в done:true чанке или в
-					// stats-only строке с done:false) — второй раз не отдаём.
-					statsEmitted = true
-				} else if _, ok := ollamaParsed["prompt_eval_count"]; ok {
-					statsEmitted = true
-				}
-			}
-			n, errFwd := w.Write(ollamaChunk)
-			bytesForwarded.Add(int64(n))
-			if errFwd != nil {
-				lastForwardErr = errFwd
-				if firstForwardErr == nil {
-					firstForwardErr = errFwd
-				}
-				return fmt.Errorf("write NDJSON: %v", errFwd)
-			}
-
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-		}
-	}
-
-	// R266.1 (2026-10-28): отдаём придержанный хвост, если он оказался обычным
-	// текстом. Без этого ответ, закончившийся на `<` (начало метки, которая так и
-	// не пришла), терял бы последние байты — тот же класс дефекта, что чинили в
-	// R261 на другом пути.
-	//
-	// R279 (2026-10-28): ЭТОТ ХВОСТ ОБЯЗАН УЙТИ КЛИЕНТУ, А НЕ В НАКОПИТЕЛЬ.
-	//
-	// ЖИВОЙ ДЕФЕКТ: здесь стояло `accumulatedPlainContent += held` — то есть
-	// придержанные байты попадали в статистику и в детектор автопродолжения, а в
-	// поток НЕ уходили вовсе. Если хвостом оказывался обычный текст финального
-	// блока (а удержание держит любой суффикс, похожий на начало метки, включая
-	// просто «<» или «[» из кода), клиент этот текст не получал никогда.
-	// Теперь хвост пишется отдельным NDJSON-чанком (done:false) до терминального
-	// чанка: порядок «content → done» сохраняется, второй done клиент не получает.
-	if originalPath == "/api/chat" || originalPath == "/api/generate" {
-		if held := ndjsonHold.Flush(); held != "" {
-			if tail := heldTailChunk(originalPath, modelFromCtx, held); tail != nil {
-				n, errTail := fmt.Fprintf(w, "%s\n", tail)
-				bytesForwarded.Add(int64(n))
-				if errTail != nil {
-					if firstForwardErr == nil {
-						firstForwardErr = errTail
-					}
-					lastForwardErr = errTail
-				} else {
-					if flusher, ok := w.(http.Flusher); ok {
-						flusher.Flush()
-					}
-					logger.Get().Infow("proxyRequestLlamaCpp[native]: emitted held tail to client (R279)",
-						"backend", backendID, "path", originalPath, "held_len", len(held))
-				}
-			}
-			// В накопитель тоже добавляем: он отражает то, что клиент уже видел,
-			// и по нему работают детектор обрыва и автопродолжение.
-			accumulatedPlainContent += held
-		}
-	}
-
-	// ==== R60.21 Auto-Continue on Truncation (2026-09-08) ====
-	// After the main streaming loop ends cleanly (streamCompleted=true),
-	// check if the accumulated content looks truncated. If so AND
-	// LB_AUTO_CONTINUE_ON_TRUNCATION=1, send a "continue" request to
-	// upstream and emit the continuation to client.
-	//
-	// Default: OFF (opt-in). See docs/api/env-vars.ru.md.
-	// For Qwen3-Instruct-2507-q4km which has a tendency to emit
-	// ChatML-EOS <|im_end|> mid-code (R60.20), this auto-recovers
-	// from unclosed code blocks and mid-line cutoffs.
-	//
-	// R60.34 (2026-09-10): guard against spurious fire on empty / failed
-	// responses. Previous behavior:
-	//   - TruncateReason("") → "empty" → fire R60.21
-	//   - empty content (e.g. n_ctx overflow, model error) was treated
-	//     as "truncated, continue!" → garbage request to upstream
-	//   - R60.33 async-load 503: handleChat returned 503, but
-	//     proxyRequestLlamaCpp also fired R60.21 in background → cascade
-	//     of unload+reload cycles
-	// Fix: skip R60.21 when:
-	//   1. accumulatedPlainContent is empty
-	//   2. streamCompleted but no chunks were received
-	//   3. upstream errored (any non-empty err in errMsg)
-	//   4. n_predict/finish_reason is missing or "length" was not the cause
-	// R187 (2026-10-20): АГЕНТСКИЙ ХОД НЕ ПРОДОЛЖЕН БЫТЬ ПРОДЛЁН.
-	//
-	// ЖИВОЙ РАЗБОР (Cline + Qwen3.8). В клиенте видно так: модель «завершает»
-	// ответ (клиент показывает completed), затем появляются размышления, затем
-	// поток встаёт и сессия не закрывается. Причина — здесь: эвристика «ответ
-	// выглядит усечённым» (незакрытый блок кода, обрыв строки) срабатывала на
-	// НОРМАЛЬНОМ конце агентского хода, и балансер:
-	//   1) уже отдал клиенту finish_reason (клиент показал completed);
-	//   2) тянул ВТОРОЙ запрос генерации (на 27B-модели — десятки секунд);
-	//   3) дописывал продолжение ПОСЛЕ finish (клиенты его игнорируют) либо
-	//      подавлял его по политике smart — и [DONE] приходил с большой
-	//      задержкой или не приходил вовсе.
-	// Агентский ход завершается ТЕМ, ЧЕМ ЗАВЕРШИЛСЯ: текстом, вызовом
-	// инструмента или лимитом, который поставил сам клиент. Продолжать за
-	// клиента нельзя: он ведёт диалог сам, а ходы модели в агентской сессии
-	// почти всегда кончаются «незакрытой» строкой (это вызов инструмента, а не
-	// обрыв) — то есть ложное срабатывание здесь штатное, а не исключение.
-	agentTurn := !AutoContinueAllowedForTurn(countClientTools(bodyBuf) > 0, len(toolAccum))
-
-	// emitDeferredDone — отдать отложенный done-чанк (обычный успешный конец).
-	// Вынесено из цепочки ниже, чтобы агентский ход и обычный путь завершали
-	// поток ОДНИМ и тем же кодом (раньше вынос отсутствовал, и «пропустить
-	// автопродолжение» означало «не отдать done вовсе»).
-	// R231: emitDeferredDone вызывается из нескольких веток (агентский ход,
-	// авто-продолжение, happy-path ниже). Делаем его идемпотентным: клиент
-	// обязан получить РОВНО ОДИН завершающий чанк/[DONE].
-	doneEmitted := false
-	emitDeferredDone := func() {
-		if doneEmitted {
-			return
-		}
-		doneEmitted = true
-		errFwd := writeStreamingSSEDone(w, originalPath, modelFromCtx, toolAccum,
-			accumulatedPlainContent, upstreamDoneContent, upstreamHadFinishReason, usageChunkSeen)
-		if errFwd != nil {
-			logger.Get().Warnw("proxyRequestLlamaCpp: deferred writeStreamingSSEDone error",
-				"backend", backendID, "error", errFwd)
-			lastForwardErr = errFwd
-			if firstForwardErr == nil {
-				firstForwardErr = errFwd
-			}
-		}
-		if originalPath != "/v1/chat/completions" {
-			Flush(w)
-		}
-	}
-
-	// emitTerminalDoneOnly — R231: завершающий чанк БЕЗ повторного content.
-	//
-	// Нужен там, где дельты уже отданы клиенту, а отложенный done не был эмитчен
-	// (например, авто-продолжение подавлено как перегенерация). Повтор текста в
-	// done-чанке — это дубль у клиентов, склеивающих все чанки (живой флейк:
-	// исходный ответ приходил дважды). Настоящая Ollama в done-чанке отдаёт
-	// message.content="" — повторяем её контракт; tool_calls сохраняем.
-	emitTerminalDoneOnly := func() {
-		if doneEmitted {
-			return
-		}
-		// R51.3/R53.1: на NDJSON-путях usage-чанк уже отдал canonical done:true
-		// (translateUsageChunkToOllama) — второй done клиент получит как дубль.
-		if usageChunkSeen && originalPath != "/v1/chat/completions" {
-			doneEmitted = true
-			return
-		}
-		doneEmitted = true
-		// R377 (2026-11-01): кадр собирает единственный владелец. Пустой content —
-		// осознанное решение этого места: дельты клиенту уже отданы, повтор текста
-		// в терминальном кадре даёт дубль у клиентов, склеивающих чанки.
-		//
-		// ДО R377 кадр собирался здесь руками и расходился с хелпером в трёх
-		// местах: tool_calls уходили строкой аргументов (нарушение R295 — Ollama
-		// ждёт объект), /api/generate получал поле message вместо response,
-		// done_reason ставился "stop" даже без отданного текста.
-		if errFwd := writeTerminalFrameR377(w, terminalFrameR377{
-			path:      originalPath,
-			model:     modelFromCtx,
-			toolCalls: toolAccum,
-		}); errFwd != nil {
-			logger.Get().Warnw("proxyRequestLlamaCpp: terminal frame write error",
-				"backend", backendID, "path", originalPath, "error", errFwd)
-			lastForwardErr = errFwd
-			if firstForwardErr == nil {
-				firstForwardErr = errFwd
-			}
-		}
-		Flush(w)
-	}
-
-	// R322 (2026-10-30, найдено аудитом маршрутов): после уже отданного клиенту
-	// терминатора писать в поток НЕЛЬЗЯ.
-	//
-	// ЖИВОЙ ДЕФЕКТ. На нативном пути терминальный кадр воркера (`done:true`)
-	// уходит клиенту как есть (passthrough), а блок авто-продолжения ниже всё
-	// равно дорабатывал ответ: `EmitContinuationNDJSON` печатает ещё один
-	// content-кадр и СВОЙ `done:true` — то есть после завершения хода в потоке
-	// появлялся второй терминатор. Клиенты (Cline, OpenWebUI) такой поток
-	// считают битым: часть закрывает ход на первом `done`, часть — на втором, и
-	// «ответ не завершён» выглядит как незавершённая задача (жалоба про
-	// COMPLETE), а часть сообщений теряется.
-	//
-	// Авто-продолжение имеет смысл только там, где терминальный кадр УДЕРЖАН
-	// (deferredDoneChunk): тогда клиент ещё не получил завершения и продолжение
-	// чинит обрыв. Если терминатор уже ушёл — доработка запрещена.
-	if streamCompleted && IsAutoContinueOnTruncationEnabled() && accumulatedPlainContent != "" && !priorDoneEmitted {
-		finalContent := accumulatedPlainContent
-		if upstreamDoneContent != "" {
-			// If cppworker sent full content in the done chunk (not chunked),
-			// use that as the source of truth.
-			finalContent = upstreamDoneContent
-		}
-		if agentTurn {
-			// Агентский ход: продолжаем только если клиент НЕ ограничил ответ и
-			// модель не вызвала инструмент. Здесь ничего не доделываем.
-			recordAutoContinueSuppressed()
-			logger.Get().Infow(i18n.T("balancer.llamacpp_transport.auto_continue_agent_turn_skipped_info"),
-				"backend", backendID, "model", modelFromCtx,
-				"api_path", originalPath,
-				"tools_in_request", countClientTools(bodyBuf) > 0,
-				"tool_calls_in_response", len(toolAccum),
-				"content_chars", len(finalContent))
-			if deferredDoneChunk {
-				emitDeferredDone()
-			}
-		} else {
-			// R174 (2026-10-18, найдено сценариями клиентов): КЛИЕНТ САМ ОГРАНИЧИЛ
-			// ОТВЕТ — продолжать нельзя.
-			//
-			// Живой замер матрицы клиентов: `num_predict: 6` на стриминговом
-			// Ollama-пути → балансер считал обрыв «усечением» и слал второй запрос, воркер
-			// видел промпт на 45 токенов больше прямого вызова, клиент получал ответ
-			// длиннее запрошенного и платил за двойной промпт. Агентные клиенты (Cline,
-			// deepseek harness, hermes) ставят max_tokens на КАЖДЫЙ запрос.
-			if capped, capField := ClientOutputCapped(bodyBuf); capped {
-				recordAutoContinueSuppressed()
-				logger.Get().Infow(i18n.T("balancer.llamacpp_transport.auto_continue_client_capped_info"),
-					"backend", backendID, "model", modelFromCtx,
-					"api_path", originalPath, "cap_field", capField,
-					"content_chars", len(finalContent))
-			} else if blockedCtx, ctxErrText := autoContinueBlockedByContext(upstreamErrorText, upstreamDoneContent, finalContent); blockedCtx {
-				// R289 (2026-10-29): это НЕ обрыв, а отказ по размеру контекста.
-				// Живой дефект: при окне 4096 и промпте 3791 апстрим отвечал 413
-				// `prompt too long`, эвристика видела «незакрытую строку» и
-				// запускала продолжение — второй запрос тоже получал 413, а клиент
-				// так и не узнал настоящую причину.
-				recordAutoContinueSuppressed()
-				windowTokens := p.loadedPerSeqNCtx(backendID, modelFromCtx)
-				writeContextTooSmallNotice(w, originalPath, modelFromCtx,
-					p.calibratedEstimateOnly(bodyBuf, originalPath), windowTokens)
-				logger.Get().Infow("auto-continue suppressed: context overflow is not a truncation (R289)",
-					"backend", backendID, "model", modelFromCtx,
-					"api_path", originalPath, "upstream_error", ctxErrText)
-				if deferredDoneChunk {
-					emitTerminalDoneOnly()
-				}
-			} else if reason := TruncateReason(finalContent); reason != "" {
-				logger.Get().Infow("proxyRequestLlamaCpp: R60.21 detected truncation, auto-continuing",
-					"backend", backendID, "model", modelFromCtx,
-					"api_path", originalPath,
-					"reason", reason,
-					"content_chars", len(finalContent))
-				// R60.25: use env-configured timeout (default 10 min, was
-				// hardcoded 60s which timed out on long code generation).
-				// The 60s default was the failure mode for "model emits
-				// unclosed code block, auto-continue triggers, but the
-				// continue request itself hits the same time limit and
-				// times out before the model finishes the continuation".
-				autoContTimeout := GetAutoContinueTimeout()
-				continuation, contEval, contErr := PerformAutoContinue(
-					fullURL, translatedBody, finalContent, reason,
-					&http.Client{Timeout: autoContTimeout}, autoContTimeout)
-				if contErr == nil && continuation != "" {
-					// R83 (2026-09-25, D3): политика != smart ОТКЛЮЧАЕТ подавление
-					// перегенерации, то есть при `always` дубли ответа гарантированы.
-					// Раньше это было видно только по отсутствию строки «suppressing
-					// duplicate» в логе — теперь есть явное предупреждение и счётчик,
-					// который уходит в /api/v1/metrics (см. auto_continue_stats.go).
-					if policy := GetAutoContinueChatPolicy(); policy != "smart" {
-						recordAutoContinuePolicyDisabled()
-						logger.Get().Warnw(i18n.T("balancer.llamacpp_transport.regeneration_suppression_disabled_warn"),
-							"backend", backendID, "model", modelFromCtx,
-							"api_path", originalPath, "policy", policy,
-							"hint", i18n.T("balancer.llamacpp_transport.regeneration_suppression_hint"))
-					}
-					// R60.55 (2026-09-13): if "smart" chat-policy and continuation
-					// looks like a regeneration (model restarted with greeting),
-					// SUPPRESS the continuation. Sending it would create a duplicate
-					// response in OpenWebUI.
-					if GetAutoContinueChatPolicy() == "smart" && IsContinuationARegeneration(finalContent, continuation) {
-						recordAutoContinueSuppressed()
-						logger.Get().Warnw("proxyRequestLlamaCpp: R60.55 continuation looks like regeneration (chat model antipattern); suppressing duplicate",
-							"backend", backendID, "model", modelFromCtx,
-							"api_path", originalPath,
-							"policy", "smart",
-							"original_chars", len(finalContent),
-							"continuation_chars", len(continuation))
-						// Don't emit continuation. Client already received done-chunk
-						// with truncated original content. Set flag to skip downstream
-						// truncation alert (we did our best).
-						streamCompleted = true
-					} else {
-						recordAutoContinueEmitted()
-						logger.Get().Infow("proxyRequestLlamaCpp: R60.21 auto-continue succeeded",
-							"backend", backendID, "model", modelFromCtx,
-							"api_path", originalPath,
-							"continuation_chars", len(continuation),
-							"cont_eval", contEval)
-						// Emit continuation as a single final done-chunk with
-						// combined content. This is the safest approach — the client
-						// gets one coherent response (no double done-chunks).
-						var flusher http.Flusher
-						if f, ok := w.(http.Flusher); ok {
-							flusher = f
-						}
-						totalEval := 0
-						if contEval > 0 {
-							totalEval = contEval
-						}
-						emitErr := EmitContinuationNDJSON(
-							w, originalPath, modelFromCtx,
-							finalContent, continuation, totalEval, flusher)
-						if emitErr != nil {
-							logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 emit continuation error",
-								"backend", backendID, "error", emitErr)
-						}
-						// Mark stream as completed so downstream truncation
-						// detection doesn't fire.
-						streamCompleted = true
-						// R231: если continuation реально отдана, терминальный чанк
-						// уже ушёл клиенту (combined content + done). Отложенный
-						// done больше не нужен — иначе в конце сработает
-						// безусловная эмиссия и клиент получит ДУБЛЬ исходного
-						// текста (живой флейк TestAutoContinue_Regeneration...).
-						if emitErr == nil {
-							deferredDoneChunk = false
-						}
-					}
-				} else {
-					recordAutoContinueFailed()
-					logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 auto-continue failed (emitting truncated as-is)",
-						"backend", backendID, "model", modelFromCtx,
-						"reason", reason, "error", contErr,
-						"url", fullURL)
-				}
-			} else if deferredDoneChunk && streamCompleted {
-				// R60.55 (2026-09-13): no truncation OR auto-continue didn't fire
-				// (e.g., continuation was suppressed as regen). Emit the deferred
-				// done-chunk now with accumulated content. This is the standard
-				// happy-path case where the model completed normally.
-				emitDeferredDone()
-			}
-		}
-	}
-
-	// R231 (2026-10-24): ЗАВЕРШАЮЩИЙ ЧАНК ОБЯЗАН БЫТЬ ОТДАН ВСЕГДА.
-	//
-	// Живой дефект: emitDeferredDone вызывался ТОЛЬКО внутри ветки
-	// `if streamCompleted && IsAutoContinueOnTruncationEnabled() && content != ""`.
-	// При выключенном авто-продолжении (дефолт — env не задан) маркер `[DONE]`
-	// от cppworker НЕ пересылался клиенту и синтетический done не эмитился:
-	// поток завершался молча. Cline/OpenWebUI, не увидев конца стрима, ждали
-	// или рвали сессию («символ конца стрима затесался/пропал»). Теперь
-	// завершение эмитится безусловно (идемпотентно, ровно один раз).
-	if streamCompleted && deferredDoneChunk {
-		emitTerminalDoneOnly()
-	}
-
-	// ==== Stream-truncation detection (2026-06-26) ====
-	// Если мы вышли из цикла for без streamCompleted (т.е. cppworker оборвал
-	// стрим до того, как прислал финальный [DONE] маркер), явно логируем это
-	// и эмитим клиенту финальный чанк с error/done:true, чтобы клиент
-	// (Cline/OpenWebUI/Roo Code) корректно отобразил сбой вместо "успешного
-	// ответа" с обрезанным content.
-	//
-	// Сценарии:
-	//   1. scanner.Err() != nil → broken pipe / context canceled / timeout
-	//   2. scanner.Err() == nil && streamCompleted == false → cppworker
-	//      закрыл TCP без [DONE] (редкий случай, обычно после ошибки модели).
-	//
-	// В обоих случаях клиент уже получил HTTP 200 + Content-Type, поэтому
-	// поменять HTTP-статус нельзя. Лучшее, что мы можем — дописать в стрим
-	// финальный маркер и закрыть соединение, чтобы клиент не висел.
-	// R384 (2026-11-01): признак «терминатор уже отправлен кадрами-причиной».
-	//
-	// ЖИВОЙ ДЕФЕКТ (стенд, сторож тишины): апстрим прислал заголовки и замолчал;
-	// сторож закрыл тело, abortFramesR296 отдал кадр-причину (upstream_stall) и
-	// терминатор `{"done":true,"done_reason":"error"}`, а затем исполнение
-	// доходило до блока «lastData == ""» в конце функции и писало ВТОРОЙ
-	// терминатор — `{"done":true,"done_reason":"stop"}`. Клиент видел два `done`:
-	// один с ошибкой, второй как успешное завершение.
-	terminalAlreadySent := false
-	if !streamCompleted {
-		scannerErr := scanner.Err()
-		// R259: КТО завершил стрим. Наш лимит строки и наши отмены — НЕ
-		// «upstream truncated»; клиенту и в лог уходит правдивая причина.
-		abortReason := streamAbortReasonR259(scannerErr, r.Context().Err())
-		// R298: если поток разорвал СТОРОЖ тишины, причина — не «ошибка чтения»
-		// (её мы сами и создали, закрыв тело), а именно зависание upstream.
-		// Проверяем ДО эвристики R271: сторож — наш факт, а не догадка.
-		stallEventR298, stalledR298 := stallWatch.Fired()
-		if stalledR298 {
-			abortReason = streamAbortUpstreamStall
-			logger.Get().Warnw("proxyRequestLlamaCpp: stream aborted by the stall watchdog (R298)",
-				"backend", backendID, "model", modelFromCtx,
-				"prefill", stallEventR298.prefill,
-				"stalled_sec", int(stallEventR298.stalled.Seconds()),
-				"original_path", originalPath,
-				"bytes_forwarded", bytesForwarded.Load(),
-				"elapsed_sec", time.Since(llamaStartTime).Seconds())
-		}
-		// R271 (2026-10-29): если незадолго до обрыва МЫ выгружали/перезагружали
-		// эту модель на этом бэкенде — виноват не upstream.
-		//
-		// Живой дефект: второй клиент запросил другое окно n_ctx, балансер
-		// перезагрузил модель, поток первого закрылся без маркера — и клиент
-		// получил «stream ended by upstream before completion», хотя воркер был
-		// жив. Теперь причина называется своим именем.
-		if streamAbortBlamesUpstream(abortReason) {
-			if kind, ok := p.recentDestructiveOpR271(backendID, modelFromCtx, 3*time.Minute); ok {
-				// R280: причина зависит от ВИДА операции (reload по чужому окну /
-				// AutoTune / unload) — таблица одна, в active_streams_r271.go.
-				abortReason = abortReasonForDestructiveOpR271(kind)
-				logger.Get().Warnw("proxyRequestLlamaCpp: stream ended because the balancer reloaded the model",
-					"reason", abortReason, "cause", kind,
-					"backend", backendID, "model", modelFromCtx,
-					"original_path", originalPath,
-					"bytes_forwarded", bytesForwarded.Load(),
-					"elapsed_sec", time.Since(llamaStartTime).Seconds())
-			}
-		}
-		logFields := []interface{}{
-			"reason", abortReason,
-			"backend", backendID, "model", modelFromCtx,
-			"original_path", originalPath,
-			"bytes_forwarded", bytesForwarded.Load(),
-			"elapsed_sec", time.Since(llamaStartTime).Seconds(),
-			"scanner_err", errString(scannerErr),
-			"first_forward_err", errString(firstForwardErr),
-			"last_forward_err", errString(lastForwardErr),
-		}
-		if abortReason == streamAbortOurLimit {
-			logFields = append(logFields, "line_limit_bytes", streamMaxLineBytes())
-			logger.Get().Warnw("proxyRequestLlamaCpp: SSE line exceeded balancer buffer (our_limit, not upstream)",
-				logFields...)
-		} else if abortReason == streamAbortClientCancel {
-			// Клиент ушёл: писать в его соединение бессмысленно.
-			logger.Get().Infow("proxyRequestLlamaCpp: stream ended by client (client_cancel)", logFields...)
-			return lastForwardErr
-		} else {
-			logger.Get().Warnw("proxyRequestLlamaCpp: stream ended before [DONE] marker",
-				logFields...)
-		}
-
-		// Эмитим финальный чанк, чтобы клиент точно завершил стрим.
-		// Пробуем дописать; если клиент уже отвалился (broken pipe) — игнорируем ошибку.
-		// R296 (2026-10-29): КОНТРАКТ ТЕРМИНАТОРА. Раньше причина обрыва и
-		// терминатор ехали ОДНИМ кадром (`finish_reason:"truncated"` + `error`).
-		// Клиент (Cline) видел `finish_reason` — то есть «ответ завершён» — и не
-		// успевал прочитать причину: выглядело как успешный, но пустой финал.
-		// Теперь сначала кадр-ПРИЧИНА (без finish_reason, то есть поток жив),
-		// затем ровно один терминатор. Кадры собирает abortFramesR296 (там же
-		// тестируются по отдельности).
-		for _, frame := range abortFramesR296(originalPath, modelFromCtx, abortReason) {
-			_, _ = w.Write(frame)
-		}
-		// R384: терминатор уже в этих кадрах — второй писать нельзя.
-		terminalAlreadySent = true
-		if originalPath == "/v1/chat/completions" {
-			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-		}
-		Flush(w)
-	}
-
-	if err := scanner.Err(); err != nil {
-		logger.Get().Errorw("proxyRequestLlamaCpp: scanner error", "error", err, "backend", backendID)
-	}
-
-	if p.nctxReload != nil {
-		p.nctxReload.ResetCycleCounter(backendID)
-	}
-
-	if lastData == "" && originalPath != "/v1/chat/completions" && !terminalAlreadySent {
-		done := buildDoneResponse(originalPath, modelFromCtx, 0)
-		_, errFwd := fmt.Fprintf(w, "%s\n", string(done))
-		if errFwd != nil {
-			return fmt.Errorf("write empty-done NDJSON: %v", errFwd)
-		}
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-	}
-
-	return nil
+	return st.finalizeStream()
 }
 
 // errString — безопасно возвращает string(err) даже если err == nil.
@@ -2916,4 +1267,1883 @@ func (p *Proxy) writeUpstreamErrorResponse(w http.ResponseWriter, r *http.Reques
 	errNDJSON := buildDoneResponse(originalPath, modelFromCtx, 0)
 	fmt.Fprintf(w, "%s\n", string(errNDJSON))
 	Flush(w)
+}
+
+// ============================================================================
+// R539 (R2 читаемости): состояние прохода, цикл чтения и финализация стрима.
+//
+// ДО этой правки proxyRequestLlamaCpp держал в одном теле подготовку, цикл
+// чтения NDJSON/SSE (966 строк) и финализацию (465). Теперь проход разложен по
+// стадиям, названным в плане читаемости (docs/plans/2026-11-19-readability-
+// refactor.md, §R2):
+//
+//	readUpstreamStream  — цикл: нативный NDJSON и SSE→NDJSON, разбор кадра;
+//	finalizeStream      — хвост: придержанный текст, авто-продолжение (R60.21),
+//	                      обязательный терминатор (R231), диагностика обрыва
+//	                      (R296/R298/R384), сброс счётчика n_ctx.
+//
+// Состояние — llamaCppStreamState. Это НЕ копия: горутины отмены, сторож тишины
+// и defer-ы читают те же значения, потому что владелец состояния один —
+// структура создаётся в proxyRequestLlamaCpp и передаётся по указателю.
+// Поведение перенесено дословно: порядок проверок, кадров, текстов логов и
+// заголовков прежний.
+// ============================================================================
+
+// llamaCppStreamState — состояние одного стрима llama.cpp.
+//
+// Поля-указатели только там, где значение обязано быть общим с вызывающей
+// функцией: имя модели (R422) уточняется в цикле, а `defer` AutoTune читает
+// его уже после возврата, поэтому оно живёт в переменной вызывающей функции.
+type llamaCppStreamState struct {
+	// Порядок полей — по размеру (fieldalignment): крупные и содержащие
+	// указатели первыми, чтобы сборщик мусора не сканировал хвост структуры.
+
+	// Окна статистики (R493-12a) и удержание разрезанных меток (R266.1).
+	statsWindowsNative statsWindowsR493
+	ndjsonHold         markerHold
+
+	// Моменты времени: старт прохода, приём запроса, отправка воркеру, первый
+	// дельта-чанк (любого вида), первый content-чанк и начало накопления буфера.
+	llamaStartTime     time.Time
+	requestStartTime   time.Time
+	upstreamSentTime   time.Time
+	firstDeltaTime     time.Time
+	firstContentTime   time.Time
+	contentBufferSince time.Time
+
+	// Тела запроса: клиентское и переведённое для воркера (нужны
+	// авто-продолжению R60.21 и подсчёту инструментов/лимита клиента).
+	bodyBuf        []byte
+	translatedBody []byte
+
+	// Строковое состояние прохода.
+	backendID               string
+	originalPath            string
+	fullURL                 string
+	upstreamRequestIDR360   string
+	lastData                string
+	accumulatedPlainContent string
+	upstreamDoneContent     string
+	upstreamErrorText       string
+	contentBuffer           string
+
+	// Поверхности ввода-вывода и ошибки записи клиенту (R60.58).
+	w               http.ResponseWriter
+	reqCtx          context.Context
+	sink            streamSinkR493
+	firstForwardErr error
+	lastForwardErr  error
+
+	// Запрос, ответ, аккумуляторы и сторож тишины этого стрима.
+	p              *Proxy
+	r              *http.Request
+	resp           *http.Response
+	scanner        *bufio.Scanner
+	stallWatch     *streamStallWatch
+	toolAccum      map[int]*accumulatedToolCall
+	toolSchemas    map[string]*toolParamSchema
+	toolAcc        *toolCallAccumulator
+	toolRepair     *toolRepairState
+	egressFilter   *reasoningEgressState
+	watcherStop    chan struct{}
+	modelFromCtx   *string
+	modelNameNow   func() string
+	modelCtxAtomic *atomic.Value
+	bytesForwarded atomic.Int64
+
+	// Счётчики (не содержат указателей).
+	workerLoadNsR493     int64
+	nativeReasoningChars int
+
+	// Флаги прохода.
+	isStreaming                bool
+	nativePath                 bool
+	streamCompleted            bool
+	upstreamHadFinishReason    bool
+	doneEmitted                bool
+	deferredDoneChunk          bool
+	terminalAlreadySent        bool
+	nativeModeDecided          bool
+	usageChunkSeen             bool
+	priorDoneEmitted           bool
+	userCancelledDoneChunkR354 bool
+	statsEmitted               bool
+	tokenUsageRecorded         bool
+	seenReasoning              bool
+	contentToolCallsProcessed  bool
+	contentBufferGaveUp        bool
+}
+
+// startUpstreamReaders готовит чтение тела ответа и обе горутины, которые это
+// чтение разблокируют: сторож отмены (R60.58) и сторож тишины (R298).
+// Обязан вызываться один раз, до readUpstreamStream.
+func (st *llamaCppStreamState) startUpstreamReaders() {
+	// R60.58: те же буфер и лимит строки, что и раньше.
+	st.scanner = bufio.NewScanner(st.resp.Body)
+	st.scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
+
+	// R493-12r (этап 6 «два мозга», флаг LB_STREAM_PIPE): единый сток стрима.
+	// nil при выключенном флаге — тогда цикл пишет напрямую, как раньше
+	// (историческое поведение и путь отката).
+	if streamPipeEnabledR493() {
+		st.sink = newStreamSinkR493(st.w)
+	}
+
+	// R292: состояние «подозрительного на tool-вызов» текста.
+	//   contentBufferSince — когда буфер начали копить (для grace-порога);
+	//   contentBufferGaveUp — мы уже решили, что это проза: больше не копим.
+	// Без второго флага следующая порция текста снова ушла бы в буфер, и клиент
+	// опять увидел бы «замер» — то есть лечение было бы одноразовым.
+	// (R539: обе величины и сам буфер — поля состояния, см. llamaCppStreamState.)
+
+	// R493-12a: окна для правки НАТИВНОГО done-кадра. Запрос воркеру уже ушёл
+	// (upstreamSentTime), значит «ожидание» для клиента — это отрезок до него:
+	// очередь, авто-загрузка модели и preflight. Раньше он не попадал никуда.
+	st.statsWindowsNative = statsWindowsR493{RequestStart: st.requestStartTime, UpstreamSent: st.upstreamSentTime}
+
+	// R60.58 watcher goroutine: разблокирует блокирующий scanner.Scan() при cancel/timeout.
+	//
+	// БЕЗ ЭТОГО (R60.58 bug): bufio.Scanner.Scan() — блокирующий вызов. Если upstream
+	// (cppworker) застрял на llama_decode/OOM/deadlock — balancer тоже застрянет на чтении.
+	// Select с default внутри loop БЕСПОЛЕЗЕН потому что мы застряли внутри Scan(),
+	// до select. Клиент получает бесконечный hang до тех пор пока upstream не вернётся
+	// сам (что может быть никогда при deadlock) или connection не умрёт по network timeout.
+	//
+	// РЕШЕНИЕ: отдельная горутина следит за ctx.Done() и закрывает resp.Body при
+	// cancel/timeout. Close прерывает блокирующий Read() в scanner → scanner.Scan()
+	// возвращает false → loop выходит → emit error chunk клиенту.
+	//
+	// Применяется ко всем путям: /v1/chat/completions (Cline), /api/chat (OpenWebUI),
+	// /api/generate (Ollama CLI).
+	st.watcherStop = make(chan struct{})
+	go func() {
+		select {
+		case <-st.r.Context().Done():
+			logger.Get().Infow("proxyRequestLlamaCpp: client cancelled, aborting stream",
+				"backend", st.backendID, "model", st.modelNameNow(),
+				"context_error", st.r.Context().Err(),
+				"bytes_forwarded", st.bytesForwarded.Load())
+			// R184: закрытие СВОЕГО чтения не останавливает воркер - он продолжает
+			// генерировать и держит единственный слот (живой замер: следующий клиент
+			// ждал 100 429 мс). Отмену надо ПРИСЛАТЬ: POST /api/cancel.
+			st.p.cancelUpstreamGeneration(st.backendID, st.modelNameNow(), st.upstreamRequestIDR360, "client_cancel")
+		case <-st.reqCtx.Done():
+			// R60.58: streamTimeout сработал ИЛИ cancel — в обоих случаях
+			// закрываем upstream чтобы разблокировать scanner.Scan().
+			// R184: таймаут тоже обязан освободить слот на воркере.
+			st.p.cancelUpstreamGeneration(st.backendID, st.modelNameNow(), st.upstreamRequestIDR360, "stream_timeout")
+			logger.Get().Warnw("proxyRequestLlamaCpp: streamTimeout fired, aborting stream",
+				"backend", st.backendID, "model", st.modelNameNow(),
+				"context_error", st.reqCtx.Err(),
+				"stream_timeout_sec", getEffectiveStreamTimeoutSec(st.p, st.modelNameNow(), st.isStreaming),
+				"bytes_forwarded", st.bytesForwarded.Load())
+		case <-st.watcherStop:
+			return
+		}
+		if st.resp.Body != nil {
+			_ = st.resp.Body.Close()
+		}
+	}()
+
+	// R298 (2026-10-29): СТОРОЖ ТИШИНЫ на блокирующем пути.
+	//
+	// ЖИВОЙ ДЕФЕКТ. Здесь сторож не существовал ВООБЩЕ: `scanner.Scan()` —
+	// блокирующий вызов, а на стенде стоит `LB_STREAMING_NEVER_TIMEOUT=1`, то
+	// есть ни deadline, ни idle-таймаута нет. Мёртвый-но-не-закрытый upstream
+	// (docker pause, зависший llama_decode) оставлял и балансер, и клиента ждать
+	// вечно; при этом hijack-путь (/v1) сторож имел — то есть два протокола вели
+	// себя по-разному, и Cline через /api/chat не получал ни кадра-причины, ни
+	// терминатора.
+	//
+	// Разблокировать `Scan()` можно только закрытием тела ответа, поэтому здесь
+	// сторож работает НЕ через канал, а через onStall: он закрывает resp.Body,
+	// чтение возвращается, и штатный post-loop ниже отдаёт кадры через
+	// abortFramesR296 — ровно тот же контракт терминатора, что и на других путях.
+	st.stallWatch = newStreamStallWatch(streamStallAbortTimeout(), streamFirstFrameAbortTimeout(), func(ev stallEvent) {
+		// Сначала разблокируем ЧТЕНИЕ (Close), и только потом отменяем генерацию:
+		// отмена — сетевой round-trip к воркеру, и если он завис (docker pause),
+		// ставить её перед Close означало бы держать клиента ещё дольше.
+		if st.resp.Body != nil {
+			_ = st.resp.Body.Close()
+		}
+		logger.Get().Warnw("proxyRequestLlamaCpp: upstream stalled — body closed to unblock scan (R298)",
+			"backend", st.backendID, "model", st.modelNameNow(),
+			"prefill", ev.prefill,
+			"stalled_sec", int(ev.stalled.Seconds()),
+			"original_path", st.originalPath,
+			"bytes_forwarded", st.bytesForwarded.Load())
+		// R184: молчащий воркер всё равно держит слот — отменяем генерацию,
+		// иначе следующий клиент получит «busy».
+		st.p.cancelUpstreamGeneration(st.backendID, st.modelNameNow(), st.upstreamRequestIDR360, "upstream_stall")
+	})
+	st.stallWatch.Start()
+}
+
+// readUpstreamStream — цикл чтения ответа воркера: нативный NDJSON идёт клиенту
+// как есть (R65d), OpenAI-SSE переводится в NDJSON (или проксируется как SSE).
+// Ошибку возвращает только запись клиенту; обрыв потока обрабатывается в
+// finalizeStream (кадры-причины R296).
+func (st *llamaCppStreamState) readUpstreamStream() error {
+	// Локальная ссылка на сканер: тело цикла остаётся буквально прежним
+	// (`for scanner.Scan()`, `scanner.Text()`), и сторож R298 узнаёт
+	// блокирующее чтение по имени сканера.
+	scanner := st.scanner
+	for scanner.Scan() {
+		// R298: данные пришли — отсчёт тишины сбрасывается.
+		st.stallWatch.Touch()
+		// Round 23 (2026-08-04): проверяем отмену клиента ПЕРЕД чтением следующего
+		// чанка: при отмене клиент уже не ждёт, и кадр-терминатор ему не нужен.
+		//
+		// R53.6 (2026-08-24): добавлен случай reqCtx.Done() — streamTimeout
+		// (per-model profile, default 600s): без него балансер зависает на
+		// генерации длинного контекста.
+		//
+		// R65c (2026-09-16): клиенту отдаётся truncated-кадр, чтобы парсер
+		// клиента (aiohttp) увидел терминатор до tear-down соединения.
+		if st.abortBeforeFrame() {
+			return nil
+		}
+
+		line := scanner.Text()
+
+		// R66c (2026-09-22): нативный passthrough валиден ТОЛЬКО если апстрим
+		// реально отвечает Ollama-NDJSON. Если cppworker ответил OpenAI-SSE
+		// (сборка без нативного пути, LB_OLLAMA_NATIVE_PATH=0 или путь был
+		// переписан апстримом), то сырые OpenAI-чанки уходили Ollama-клиенту
+		// КАК NDJSON: вместо message.content приходили choices/delta, а
+		// финального done:true не было вообще — клиент зависает либо считает
+		// ответ пустым ("Model returned empty response").
+		//
+		// Определяем по СТРОКЕ, а не по Content-Type: cppworker исторически
+		// отдаёт NDJSON и с неверным/отсутствующим заголовком, поэтому
+		// заголовку здесь доверять нельзя. Первая же строка с префиксом
+		// "data:" означает SSE — переключаемся на трансляцию SSE→NDJSON ниже.
+		st.decideNativeMode(line)
+
+		// ==== R65d (2026-09-20): нативный путь — Ollama NDJSON passthrough ====
+		//
+		// cppworker's нативные обработчики (/api/chat, /api/generate) отдают
+		// application/x-ndjson: одна JSON-строка на строку, БЕЗ префикса "data:".
+		// Формат уже тот, который ждёт Ollama-клиент, поэтому перевод не нужен —
+		// отдаём строку как есть (плюс '\n', он же был в исходной строке).
+		//
+		// Что здесь отслеживаем (для диагностики, не для преобразования):
+		//   - streamCompleted: встретили done:true → стрим завершён штатно,
+		//     downstream truncation-detection не должен срабатывать;
+		//   - accumulatedPlainContent: накапливаем message.content / response
+		//     для R60.21 auto-continue и для логов;
+		//   - usageChunkSeen: нативный done-чанк уже содержит eval_count /
+		//     total_duration, поэтому writeStreamingSSEDone не должен писать
+		//     второй done-чанк.
+		//
+		// ВАЖНО: keepalive-строки {"keepalive":true} проходят насквозь — это
+		// валидный NDJSON для Ollama-клиентов (см. handlers_chat.go:861).
+		if st.nativePath {
+			if err := st.handleNativeNDJSONLine(line); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			st.streamCompleted = true
+			// R60.55 (2026-09-13): DEFER writing the done-chunk until AFTER
+			// we check for truncation. Otherwise OpenWebUI receives done=true
+			// for the original truncated content, then sees ANOTHER done=true
+			// for the combined content (after auto-continue) → displays as
+			// duplicate response. We mark `deferredDoneChunk` and emit later.
+			st.deferredDoneChunk = true
+			break
+		}
+
+		st.lastData = data
+
+		var chunk map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			logger.Get().Debugw("proxyRequestLlamaCpp: skipping non-JSON SSE data",
+				"data", data, "error", err)
+			continue
+		}
+
+		if *st.modelFromCtx == "" {
+			if m, ok := chunk["model"].(string); ok && m != "" {
+				*st.modelFromCtx = m
+			}
+		}
+
+		// R493-12a: первый дельта-чанк ЛЮБОГО вида закрывает префилл. Reasoning
+		// считается так же, как content: время размышлений — это генерация, а не
+		// «оценка промпта» (их токены всегда входят в eval_count).
+		if st.firstDeltaTime.IsZero() && chunkHasStatsDeltaR493(chunk) {
+			st.firstDeltaTime = time.Now()
+		}
+
+		// R65d (2026-09-20): агрегируем статистику токенов со streaming-пути.
+		// cppworker присылает OpenAI usage-чанк ({prompt_tokens,
+		// completion_tokens}) при stream_options.include_usage.
+		st.recordTokenUsageFromUsageChunk(chunk)
+
+		// Для SSE→SSE passthrough (/v1/chat/completions) — проксируем как есть,
+		// дополнительно накапливая delta.content на случай если клиент захочет
+		// полный контент после [DONE].
+		if st.originalPath == "/v1/chat/completions" {
+			if err := st.forwardOpenAISSEPassthrough(data, chunk); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := st.translateSSEToNDJSON(data, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// abortBeforeFrame — отмена клиента или таймаут стрима между кадрами.
+// true — клиенту уже отдан терминатор, цикл обязан завершиться.
+//
+// Round 23 (2026-08-04): проверяем отмену клиента ПЕРЕД чтением следующего
+// чанка. Без этого streaming-прокси ждёт [DONE] от upstream (cppworker
+// генерирует токены, пока cancel не дойдёт через отдельный канал), что
+// приводит к зависанию при OpenWebUI cancel — клиент закрыл соединение, но
+// прокси продолжает тянуть токены с cppworker и тратить CPU/GPU.
+//
+// Применяется ко всем путям: /v1/chat/completions (Cline), /api/chat
+// (OpenWebUI), /api/generate (Ollama CLI). При срабатывании — закрываем
+// upstream body (cppworker прекратит генерацию после текущего token'а)
+// и выходим из loop.
+//
+// R53.6 (2026-08-24): добавлен case <-reqCtx.Done() — streamTimeout (per-model
+// profile, default 600s). Без этого case balancer зависает на генерации
+// длинного контекста (cppworker генерирует 0 токенов, балансер ждёт [DONE]).
+// При срабатывании reqCtx балансер сам отменяет cppworker раньше client timeout
+// → R53.5 writeStreamErrorChunk эмитит done:true chunk клиенту → клиент
+// получает "stream proxy error" вместо "Did not receive done" (TCP close).
+//
+// R60.58: select с default БОЛЬШЕ не нужен внутри loop — watcher goroutine
+// (см. startUpstreamReaders) закрывает resp.Body при cancel/timeout,
+// scanner.Scan() возвращает false, loop выходит естественно. Здесь оставлен
+// только для обратной совместимости и для early-detect cancel между чанками
+// (быстрее чем ждать Close).
+func (st *llamaCppStreamState) abortBeforeFrame() bool {
+	select {
+	case <-st.r.Context().Done():
+		if st.resp.Body != nil {
+			_ = st.resp.Body.Close()
+		}
+		// R65c (2026-09-16): client cancelled mid-stream — emit truncated
+		// done chunk so the client's chunked parser (aiohttp) sees terminator
+		// before connection tear-down. Without this, OpenWebUI gets
+		// TransferEncodingError "Not enough data to satisfy transfer length header".
+		st.streamCompleted = true
+		emitTruncatedChunk(st.w, st.originalPath, *st.modelFromCtx, time.Since(st.llamaStartTime), "client_cancel")
+		return true
+	case <-st.reqCtx.Done():
+		if st.resp.Body != nil {
+			_ = st.resp.Body.Close()
+		}
+		// R65c (2026-09-16): stream timeout — emit truncated done chunk and
+		// return nil so handleChat doesn't write ANOTHER error chunk on top.
+		// Pre-R65c: function returned error here, which caused handleChat's
+		// writeStreamErrorChunk to fail silently (data already buffered in
+		// Go's http.ResponseWriter but never flushed because connection was
+		// being torn down). Result: client sees chunked stream without done
+		// chunk + without terminator → TransferEncodingError в aiohttp/OpenWebUI.
+		st.streamCompleted = true
+		emitTruncatedChunk(st.w, st.originalPath, *st.modelFromCtx, time.Since(st.llamaStartTime), "timeout")
+		return true
+	default:
+		return false
+	}
+}
+
+// decideNativeMode — R66c: режим ответа определяется по ПЕРВОЙ содержательной
+// строке, а не по Content-Type: cppworker исторически отдаёт NDJSON и с
+// неверным/отсутствующим заголовком. Первая строка с префиксом "data:" означает
+// SSE — переключаемся на трансляцию SSE→NDJSON.
+func (st *llamaCppStreamState) decideNativeMode(line string) {
+	if !st.nativePath || st.nativeModeDecided {
+		return
+	}
+	st.nativeModeDecided = true
+	firstLine := strings.TrimSpace(line)
+	if strings.HasPrefix(firstLine, "data:") {
+		st.nativePath = false
+		logger.Get().Warnw("proxyRequestLlamaCpp: upstream answered with OpenAI SSE "+
+			"while request was routed as Ollama-native — switching to SSE→NDJSON translation",
+			"backend", st.backendID, "model", *st.modelFromCtx, "path", st.originalPath,
+			"content_type", st.resp.Header.Get("Content-Type"))
+	}
+}
+
+// handleNativeNDJSONLine — нативный passthrough (R65d): строка NDJSON уходит
+// клиенту как есть, но статистика, дубль в done-кадре (R91/R331), причина
+// отмены (R354), окна R493-12a и служебные метки (R266.1) правятся по дороге.
+func (st *llamaCppStreamState) handleNativeNDJSONLine(line string) error {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return nil
+	}
+	// Терпимость к SSE-фреймингу: нативный обработчик cppworker отдаёт
+	// «голый» NDJSON, но при смешанных версиях (или когда путь был
+	// переписан апстримом) строка может прийти как `data: {...}`.
+	// Снимаем префикс, чтобы разбор ниже работал единообразно.
+	if strings.HasPrefix(trimmed, "data:") {
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		if trimmed == "" || trimmed == "[DONE]" {
+			// [DONE] — терминатор SSE-стрима; в NDJSON-мире его нет,
+			// поэтому просто фиксируем завершение и не пересылаем
+			// клиенту невалидную для NDJSON строку.
+			if trimmed == "[DONE]" {
+				st.streamCompleted = true
+			}
+			return nil
+		}
+	}
+	// R91 (2026-10-09): текст, отданный ДЕЛЬТАМИ до этой строки. Нужен,
+	// чтобы снимать дубль в done-чанке только тогда, когда ответ уже уехал
+	// клиенту дельтами (см. stripNativeDoneContent).
+	streamedBeforeThisLine := st.accumulatedPlainContent
+	var nativeChunk map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &nativeChunk); err != nil {
+		// Не JSON (например, SSE-комментарий от старой версии
+		// cppworker) — отдаём как есть, клиент сам решит.
+		logger.Get().Debugw("proxyRequestLlamaCpp[native]: non-JSON NDJSON line passed through",
+			"backend", st.backendID, "line", trimmed)
+	} else {
+		if st.accumulateNativeChunk(nativeChunk) {
+			return nil
+		}
+	}
+	outLine := st.normalizeNativeDoneLine(trimmed, streamedBeforeThisLine)
+	n, errFwd := st.writeClientLine([]byte(outLine))
+	if errFwd != nil {
+		st.lastForwardErr = errFwd
+		if st.firstForwardErr == nil {
+			st.firstForwardErr = errFwd
+		}
+		return fmt.Errorf("write native NDJSON: %v", errFwd)
+	}
+	_ = n
+	// R66b (2026-09-22): отмечаем, что для нативного пути апстрим уже
+	// отдал хотя бы одну NDJSON-строку. Без этого lastData оставался ""
+	// (он заполняется только в SSE-ветке ниже), и финальный блок
+	//   if lastData == "" && originalPath != "/v1/chat/completions"
+	// в конце функции досылал клиенту ЛИШНИЙ синтетический done-чанк
+	// ({"done":true,"done_reason":"stop","message":{"content":""}}) уже
+	// ПОСЛЕ настоящего done от cppworker.
+	//
+	// Симптом на реальном клиенте: Cline CLI (ollama provider) получал
+	// два done-чанка — первый с tool_calls, второй пустой — и в итоге
+	// сообщал "Model returned empty response"; инструмент не вызывался.
+	// Ollama-клиенты на два done отвечают
+	// "Did not receive done or success response in stream".
+	//
+	// Флаш уже сделан writeClientLine (у стока — свой, у исторической
+	// ветки — тот же http.Flusher). Отдельный флаш здесь означал бы второй
+	// набор правил записи — ровно то, что этап 6 и убирает.
+	st.lastData = trimmed
+	return nil
+}
+
+// accumulateNativeChunk — разбор одного нативного NDJSON-кадра: имя модели,
+// граница префилла, накопленный текст, завершение хода и статистика токенов.
+// true — кадр запустил адресную перезагрузку по n_ctx (R83): поток завершён,
+// ответ клиенту уже отдан.
+func (st *llamaCppStreamState) accumulateNativeChunk(nativeChunk map[string]interface{}) bool {
+	if *st.modelFromCtx == "" {
+		if m, ok := nativeChunk["model"].(string); ok && m != "" {
+			*st.modelFromCtx = m
+			st.modelCtxAtomic.Store(m)
+		}
+	}
+	// R493-12a: первый дельта-чанк ЛЮБОГО вида (включая thinking) —
+	// граница префилла. Здесь же ловятся и native-чанки, у которых
+	// текст лежит в message.thinking, а не в message.content.
+	if st.firstDeltaTime.IsZero() && chunkHasStatsDeltaR493(nativeChunk) {
+		st.firstDeltaTime = time.Now()
+	}
+	// Накапливаем видимый пользователю текст.
+	//   /api/chat     → message.content (reasoning идёт в message.reasoning)
+	//   /api/generate → response
+	//
+	// R118.17 (2026-10-15): done-чанк cppworker несёт ПОЛНЫЙ текст,
+	// который уже ушёл дельтами (клиенту он не отдаётся — R91 снимает
+	// дубль в stripNativeDoneContent). Раньше он ПРИКЛЕИВАЛСЯ к
+	// накопленному, и детектор обрыва R60.21 получал текст в двух
+	// копиях: число ``` становилось чётным, последняя строка —
+	// «полной», и авто-продолжение не срабатывало, хотя клиент видел
+	// обрыв. Живой замер до правки: 147 символов дельт + столько же в
+	// done-чанке = 294 на входе детектора, truncate_reason="".
+	chunkIsDone, _ := nativeChunk["done"].(bool)
+	if msg, ok := nativeChunk["message"].(map[string]interface{}); ok {
+		// R321: считаем размышления по НАИБОЛЬШЕМУ из двух имён —
+		// cppworker отдаёт `thinking` (канон) и `reasoning` (legacy)
+		// ОДНИМ И ТЕМ ЖЕ текстом, и суммирование дало бы вдвое больше
+		// символов в пояснении клиенту.
+		thinkChars := 0
+		if t, ok := msg["thinking"].(string); ok {
+			thinkChars = len(t)
+		}
+		if r, ok := msg["reasoning"].(string); ok && len(r) > thinkChars {
+			thinkChars = len(r)
+		}
+		if thinkChars > 0 {
+			st.nativeReasoningChars += thinkChars
+		}
+		if c, ok := msg["content"].(string); ok && c != "" {
+			st.accumulatedPlainContent = appendNativeContent(st.accumulatedPlainContent, chunkIsDone, c)
+			if st.firstContentTime.IsZero() {
+				st.firstContentTime = time.Now()
+			}
+		}
+	}
+	if rsp, ok := nativeChunk["response"].(string); ok && rsp != "" {
+		st.accumulatedPlainContent = appendNativeContent(st.accumulatedPlainContent, chunkIsDone, rsp)
+		if st.firstContentTime.IsZero() {
+			st.firstContentTime = time.Now()
+		}
+	}
+	if done, ok := nativeChunk["done"].(bool); ok && done {
+		st.streamCompleted = true
+		st.usageChunkSeen = true
+		st.priorDoneEmitted = true
+		// H2 (2026-10-16): нативный done-чанк отдаётся как есть, поэтому
+		// статистика считается дошедшей только если cppworker реально
+		// положил её в чанк (eval_count/prompt_eval_count). Если полей
+		// нет — statsEmitted остаётся false, и поздний SSE usage-чанк
+		// не будет потерян.
+		if _, hasEval := nativeChunk["eval_count"]; hasEval {
+			st.statsEmitted = true
+		} else if _, hasPrompt := nativeChunk["prompt_eval_count"]; hasPrompt {
+			st.statsEmitted = true
+		}
+		st.upstreamHadFinishReason = true
+		if c, ok := nativeChunk["error"].(string); ok && c != "" {
+			// R354 (2026-10-31): отмена ПОЛЬЗОВАТЕЛЕМ (кнопка Stop) — не сбой
+			// воркера. Такой кадр не идёт в upstreamErrorText (по нему
+			// работают auto-continue и распознавание n_ctx) и не пишется как
+			// Warn: клиенту уйдёт нормальный терминатор с done_reason=cancelled.
+			if isUserCancelDoneChunkR354(c) {
+				st.userCancelledDoneChunkR354 = true
+				logger.Get().Infow("proxyRequestLlamaCpp[native]: генерация отменена клиентом (R354)",
+					"backend", st.backendID, "model", *st.modelFromCtx)
+			} else {
+				// R289: запоминаем текст ошибки — по нему отличим «контекст
+				// мал» от обрыва до того, как сработает auto-continue.
+				st.upstreamErrorText = c
+				logger.Get().Warnw("proxyRequestLlamaCpp[native]: upstream done-chunk carries error",
+					"backend", st.backendID, "model", *st.modelFromCtx, "error", c)
+
+				// R83 (2026-09-29): n_ctx-ошибка в done-чанке = устаревший кэш
+				// n_ctx в балансере. Запускаем тот же auto-reload, что и для
+				// HTTP 4xx ниже — иначе получается ДЕДЛОК.
+				//
+				// Живой сценарий (лог 2026-09-29): балансер держал в
+				// LastKnownNCtx 128000, а cppworker после рестарта поднял
+				// модель с 32768. Preflight видел «128000 >= required» и
+				// возвращал NoOp (reload не запускался), а cppworker на каждый
+				// запрос отвечал done-чанком «code 2: requested n_ctx=128000
+				// exceeds model's effective n_ctx=32768». Клиент (Cline)
+				// получал ошибку на каждом запросе, и так до следующего
+				// удачного reload.
+				//
+				// cppworker отдаёт это как HTTP 200 + error в финальном чанке,
+				// поэтому ветка `resp.StatusCode >= 400` ниже не срабатывала.
+				//
+				// ВАЖНО: ParseCppWorkerError намеренно возвращает nil для
+				// status < 400, поэтому распознаём n_ctx-ошибку по тексту
+				// самого сообщения («code 2» / «code 3» — те же коды, что
+				// bridge.ErrCodeNCtxNeedsReload / ErrCodePromptTooLong).
+				if st.p.nctxReload != nil && isNCtxDoneChunkError(c) {
+					reloadModel := *st.modelFromCtx
+					if reloadModel == "" {
+						reloadModel = st.backendID
+					}
+					logger.Get().Infow(i18n.T("balancer.llamacpp_transport.done_chunk_nctx_error_reload_info"),
+						"backend", st.backendID, "model", reloadModel, "error", c)
+					nctxErr := newNCtxErrorFromDoneChunk(c, st.backendID)
+					st.p.handleNCtxReload(st.r.Context(), st.w, st.r, st.backendID, reloadModel, nctxErr, st.bodyBuf)
+					return true
+				}
+			}
+		}
+		// R65d: агрегируем статистику токенов для /api/v1/stats/tokens.
+		// Нативный формат Ollama: prompt_eval_count / eval_count.
+		if !st.tokenUsageRecorded {
+			promptTokens := int64(intFromMap(nativeChunk, "prompt_eval_count"))
+			evalTokens := int64(intFromMap(nativeChunk, "eval_count"))
+			if promptTokens > 0 || evalTokens > 0 {
+				st.tokenUsageRecorded = true
+				st.p.recordTokenUsage(*st.modelFromCtx, promptTokens, evalTokens)
+			}
+		}
+	}
+	return false
+}
+
+// normalizeNativeDoneLine — что именно уйдёт клиенту в этой строке: снятие
+// дубля content в завершающем кадре (R91/R331), причина отмены (R354), окна
+// статистики R493-12a и вычищение разрезанных служебных меток (R266.1).
+func (st *llamaCppStreamState) normalizeNativeDoneLine(trimmed, streamedBeforeThisLine string) string {
+	// R83 §9.7 (2026-09-27): нормализуем финальный чанк ПЕРЕД отдачей
+	// клиенту. cppworker кладёт в done-чанк ПОЛНЫЙ текст ответа, хотя
+	// дельты его уже отдали (измерено 2.00×: столько же байт в дельтах
+	// и в done). Настоящая Ollama в done-чанке отдаёт `message.content:
+	// ""`, и OpenWebUI с ней работает — значит дубль ломает именно
+	// клиентов, конкатенирующих чанки. Оставляем все статы.
+	//
+	// R91 (2026-10-09): ТОЛЬКО если текст уже уехал дельтами. Раньше
+	// content вычищался безусловно, и апстрим, отдавший весь ответ ОДНИМ
+	// финальным чанком (mock/статический ответ/фолбэк cppworker, когда
+	// модель ушла в незакрытый reasoning и текст отдан в done-чанке),
+	// терял ответ целиком: клиент получал done:true с пустым content.
+	// Именно это ловили tests/llamacpp_proxy (TestChatStreaming,
+	// TestResponseNotMarkdownBold/streaming) и tests (TestProxyOllama_*).
+	//
+	// ВАЖНО: accumulatedPlainContent/upstreamDoneContent выше уже
+	// накопили полный текст (для R60.21 auto-continue) — здесь правится
+	// только то, что уходит по проводу.
+	//
+	// R331 (2026-10-30): ОДИН владелец content завершающего кадра.
+	//
+	// Раньше по проводу кадр правили ДВА независимых слоя подряд:
+	// stripNativeDoneContent (R91: снять дубль уже отданного текста) и
+	// nativeDoneHygieneR321 (R321: причина + пояснение, когда клиент не
+	// видел ничего). Каждый из них не знал о другом: strip мог очистить
+	// content, и тогда hygiene видела «пустой ответ» и вставляла пояснение
+	// поверх нормального завершения (регрессия R321, ловил оператор).
+	//
+	// Теперь решение одно: finalizeNativeDoneFrameR331. Внутри — тот же
+	// порядок (сначала снять дубль, потом решить про причину/пояснение), но
+	// состояние считается ОДИН раз, поэтому слои не могут разойтись.
+	outLine := trimmed
+	if st.userCancelledDoneChunkR354 {
+		// R354 (2026-10-31): ОДИН владелец кадра отмены. Правим ТОЛЬКО причину
+		// (done_reason=cancelled из реестра R328, без error): model/created_at/
+		// статистика остаются, клиент по ним закрывает ход и считает токены.
+		//
+		// Через finalizeNativeDoneFrameR331 такой кадр НЕ пускаем: тот видит
+		// пустой response и вставил бы пояснение «ответа нет» (регрессия R321),
+		// хотя клиент сам остановил генерацию.
+		if fixed, changed := normalizeCancelDoneChunkR354(trimmed); changed {
+			outLine = fixed
+		}
+	} else if st.originalPath == "/api/chat" || st.originalPath == "/api/generate" {
+		fixed, changed := finalizeNativeDoneFrameR331(trimmed, streamedBeforeThisLine,
+			st.nativeReasoningChars, nativeDoneContentStrippingEnabled())
+		if changed {
+			logger.Get().Infow("proxyRequestLlamaCpp[native]: done-кадр нормализован (R331)",
+				"backend", st.backendID, "model", *st.modelFromCtx,
+				"reasoning_chars", st.nativeReasoningChars,
+				"visible_streamed_chars", len(strings.TrimSpace(streamedBeforeThisLine)))
+			outLine = fixed
+		} else {
+			outLine = trimmed
+		}
+	} else {
+		outLine = trimmed
+	}
+	// R493-12a (2026-11-12): нативный done-кадр несёт статистику cppworker,
+	// и она не знает про очередь/авто-загрузку/preflight. Живой замер на
+	// стенде: клиент ждал 62 с (модель грузилась), а получил total_duration
+	// 2.15 с, load_duration 0 и вообще без tokens_per_second. Здесь
+	// добавляется то, что видит ТОЛЬКО балансер: load_duration и
+	// total = load + prompt + eval (см. applyStatsWindowsNativeR493).
+	if st.originalPath == "/api/chat" || st.originalPath == "/api/generate" {
+		if fixed, changed := applyStatsWindowsNativeR493(outLine, st.statsWindowsNative); changed {
+			outLine = fixed
+		}
+	}
+	// R266.1 (2026-10-28): на нативном пути cppworker уже отдаёт NDJSON,
+	// и балансер писал строку клиенту как есть — поэтому служебные метки
+	// шаблона (`<|assistant|>`, `</think>`) утекали в message.content
+	// ровно здесь. Чистим строку перед отправкой, придерживая хвост
+	// разрезанной метки (см. marker_hold_ndjson_r266_1.go).
+	if st.originalPath == "/api/chat" || st.originalPath == "/api/generate" {
+		outLine = filterNDJSONLineMarkers(outLine, &st.ndjsonHold)
+	}
+	return outLine
+}
+
+// writeClientLine — одна точка записи кадра в этом цикле (R493-12r).
+// Возвращает (байт_записано, ошибка). При выключенном флаге это ровно прежний
+// `fmt.Fprintf(w, "%s\n", line)` + `bytesForwarded.Add` + `Flush`.
+func (st *llamaCppStreamState) writeClientLine(line []byte) (int, error) {
+	if st.sink != nil {
+		// Счётчик — у стока (единственный источник правды о том, сколько
+		// байт ушло клиенту): сводка берёт РАЗНИЦУ, а не число из цикла,
+		// иначе два счётчика снова начнут расходиться.
+		before := st.sink.Written()
+		_, err := st.sink.WriteLine(line)
+		sent := int(st.sink.Written() - before)
+		st.bytesForwarded.Add(int64(sent))
+		return sent, err
+	}
+	n, err := fmt.Fprintf(st.w, "%s\n", string(line))
+	st.bytesForwarded.Add(int64(n))
+	if flusher, ok := st.w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return n, err
+}
+
+// flushBufferedText — отдать накопленный текст клиенту как обычный content
+// (R292). Один помощник на все причины (предел буфера и «это проза»), чтобы
+// ветки не разошлись в том, что клиент видит.
+func (st *llamaCppStreamState) flushBufferedText(text, reason string) error {
+	clean := strings.TrimSpace(stripQwenServiceMarkers(text))
+	if clean == "" {
+		return nil
+	}
+	chunk := map[string]interface{}{
+		"model":      *st.modelFromCtx,
+		"created_at": time.Now().UTC().Format(time.RFC3339),
+		"done":       false,
+		"message": map[string]interface{}{
+			"role":    "assistant",
+			"content": clean,
+		},
+	}
+	out, errMarshal := json.Marshal(chunk)
+	if errMarshal != nil {
+		return nil
+	}
+	n, errWrite := st.writeClientLine(out)
+	if errWrite != nil {
+		st.lastForwardErr = errWrite
+		if st.firstForwardErr == nil {
+			st.firstForwardErr = errWrite
+		}
+		return fmt.Errorf("write NDJSON (buffered text flush/%s): %v", reason, errWrite)
+	}
+	_ = n
+	st.accumulatedPlainContent += clean
+	logger.Get().Infow("proxyRequestLlamaCpp: buffered text flushed to client",
+		"backend", st.backendID, "model", *st.modelFromCtx,
+		"reason", reason, "chars", len(clean))
+	return nil
+}
+
+// recordTokenUsageFromUsageChunk — R65d: агрегируем статистику токенов со
+// streaming-пути (cppworker присылает OpenAI usage-чанк при
+// stream_options.include_usage).
+//
+// До R65d recordTokenUsage вызывался только из non-streaming путей,
+// поэтому /api/v1/stats/tokens был пуст для всего реального трафика.
+// cppworker присылает OpenAI usage-чанк ({prompt_tokens,
+// completion_tokens}) при stream_options.include_usage (по умолчанию
+// включено, handlers_openai.go:427-438). Флаг tokenUsageRecorded защищает от
+// двойного учёта одного запроса: на нативном пути статистика приходит в
+// done-чанке, в SSE — отдельным usage-чанком, и оба могут быть в одном стриме.
+func (st *llamaCppStreamState) recordTokenUsageFromUsageChunk(chunk map[string]interface{}) {
+	if st.tokenUsageRecorded {
+		return
+	}
+	if usage, ok := chunk["usage"].(map[string]interface{}); ok {
+		promptTokens := int64(intFromMap(usage, "prompt_tokens"))
+		completionTokens := int64(intFromMap(usage, "completion_tokens"))
+		if promptTokens > 0 || completionTokens > 0 {
+			st.tokenUsageRecorded = true
+			st.p.recordTokenUsage(*st.modelFromCtx, promptTokens, completionTokens)
+		}
+	}
+}
+
+// forwardOpenAISSEPassthrough — SSE→SSE passthrough для /v1/chat/completions:
+// кадр уходит клиенту как есть, но с вычищением служебных токенов (R231) и
+// приведением tool_calls к объявленной схеме (R186/R254).
+func (st *llamaCppStreamState) forwardOpenAISSEPassthrough(data string, chunk map[string]interface{}) error {
+	// Накапливаем plain content для /v1/chat/completions (на случай будущего использования).
+	if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if delta, ok := choice["delta"].(map[string]interface{}); ok {
+				if c, ok := delta["content"].(string); ok && c != "" {
+					st.accumulatedPlainContent += c
+				}
+			}
+		}
+	}
+	// SSE → SSE passthrough
+	//
+	// R231 (2026-10-24): ЗДЕСЬ БЫЛА ОШИБКА ВЫЗОВА ФИЛЬТРА, из-за которой
+	// он фактически не работал. filterOpenAIStreamingLine ожидает
+	// SSE-строку "data: {...}" и проверяет HasPrefix("data:"), а сюда
+	// передавался ГОЛЫЙ JSON (префикс уже срезан выше) — проверка не
+	// срабатывала, и служебные токены/маркеры размышлений уезжали клиенту.
+	// Второй дефект: возвращаемый bool означает «модифицирован», но
+	// трактовался как «shouldSkip» — чанк с вырезанным токеном просто
+	// выбрасывался (терялся текст ответа).
+	// Теперь: собираем SSE-строку, фильтруем, и если контент почищен —
+	// продолжаем обработку уже с очищенным JSON.
+	if filteredLine, modified := filterAssistantEgressForClient([]byte("data: "+data), st.egressFilter); modified {
+		cleaned := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(filteredLine)), "data:"))
+		if cleaned != "" {
+			data = cleaned
+		}
+	}
+	if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if delta, ok := choice["delta"].(map[string]interface{}); ok {
+				accumulateToolCallsFromDelta(delta, st.toolAccum)
+			}
+		}
+	}
+	if modified := extractToolCallsFromSSEContentWithSchema([]byte(data), st.toolSchemas, st.toolRepair); modified != nil {
+		n, errFwd := fmt.Fprintf(st.w, "data: %s\n\n", string(modified))
+		st.bytesForwarded.Add(int64(n))
+		if errFwd != nil {
+			st.lastForwardErr = errFwd
+			if st.firstForwardErr == nil {
+				st.firstForwardErr = errFwd
+			}
+			return fmt.Errorf("write modified SSE (tool calls): %v", errFwd)
+		}
+	} else if normalized := normalizeSSEToolCallChunks([]byte(data), st.toolSchemas, st.toolRepair); normalized != nil {
+		// R186: нативные вызовы от воркера тоже приводим к форме OpenAI и к
+		// объявленной схеме — валидатор клиента проверяет схему независимо
+		// от того, кто собрал вызов.
+		n, errFwd := fmt.Fprintf(st.w, "data: %s\n\n", string(normalized))
+		st.bytesForwarded.Add(int64(n))
+		if errFwd != nil {
+			st.lastForwardErr = errFwd
+			if st.firstForwardErr == nil {
+				st.firstForwardErr = errFwd
+			}
+			return fmt.Errorf("write normalized SSE (tool calls): %v", errFwd)
+		}
+	} else {
+		n, errFwd := fmt.Fprintf(st.w, "data: %s\n\n", data)
+		st.bytesForwarded.Add(int64(n))
+		if errFwd != nil {
+			st.lastForwardErr = errFwd
+			if st.firstForwardErr == nil {
+				st.firstForwardErr = errFwd
+			}
+			return fmt.Errorf("write SSE: %v", errFwd)
+		}
+	}
+	if flusher, ok := st.w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
+}
+
+// translateSSEToNDJSON — SSE→NDJSON для /api/chat и /api/generate: накопление
+// content, кросс-чанковое распознавание tool_calls, финальный кадр от воркера,
+// перевод кадра в Ollama-форму и запись клиенту.
+func (st *llamaCppStreamState) translateSSEToNDJSON(data string, chunk map[string]interface{}) error {
+	// ==== SSE → NDJSON: для /api/generate и /api/chat =====
+	var deltaContent string
+	if st.originalPath == "/api/chat" {
+		deltaContent = st.accumulateChatDelta(data, chunk)
+		newDelta, skip, errBuf := st.absorbToolCallBuffer(deltaContent)
+		if errBuf != nil {
+			return errBuf
+		}
+		deltaContent = newDelta
+		if skip {
+			return nil
+		}
+		// Накапливаем plain content (вне tool-call accumulation) для финального
+		// done-чанка — это спасает от пустого content если upstream прислал
+		// полный ответ только в done-чанке.
+		//
+		// НЕ накапливаем чанки с finish_reason: cppworker прислал финальный
+		// чанк с content=" llama.cpp!" + finish_reason="stop". Этот content
+		// уже проксируется через writeStreamingSSEDone ниже (агрегированный
+		// в upstreamDoneContent / accumulatedPlainContent). Без этого guard
+		// в финальный done-чанк попадал дубликат:
+		// "Hello from llama.cpp! llama.cpp!" (см. PF-6 fail 2026-06-27).
+		if deltaContent != "" && !st.contentToolCallsProcessed && !hasFinishReason(data) {
+			st.accumulatedPlainContent += deltaContent
+		}
+		st.absorbChatDoneChunk(data)
+	} else if st.originalPath == "/api/generate" {
+		st.accumulateGenerateDelta(data, chunk)
+	}
+	return st.translateAndWriteFrame(data)
+}
+
+// accumulateChatDelta — дельта /api/chat: фрагменты tool_calls, текст дельты,
+// время первого content-чанка и content финального кадра воркера (R60.22).
+func (st *llamaCppStreamState) accumulateChatDelta(data string, chunk map[string]interface{}) string {
+	var deltaContent string
+	if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if delta, ok := choice["delta"].(map[string]interface{}); ok {
+				accumulateToolCallsFromDelta(delta, st.toolAccum)
+				if c, ok := delta["content"].(string); ok {
+					deltaContent = c
+					// R60.22: capture time of first non-empty content
+					// chunk (TTFT) for accurate prompt_eval_duration.
+					if c != "" && st.firstContentTime.IsZero() {
+						st.firstContentTime = time.Now()
+					}
+				}
+			}
+		}
+	}
+
+	// Если чанк содержит finish_reason (done:true) — извлекаем content и
+	// done_reason из message, чтобы сохранить полный ответ cppworker'а.
+	if upstreamHasDone, msgMap, _ := extractUpstreamDoneChunk(data); upstreamHasDone {
+		if c, ok := msgMap["content"].(string); ok {
+			st.upstreamDoneContent = c
+			// R60.22: capture time of first non-empty content (TTFT).
+			// cppworker иногда посылает весь ответ в одном done-чанке
+			// (final chunk has both content and finish_reason). В этом
+			// случае firstContentTime отражает время получения первого
+			// значимого content, даже если он пришёл в done-чанке.
+			if c != "" && st.firstContentTime.IsZero() {
+				st.firstContentTime = time.Now()
+			}
+		}
+	}
+	return deltaContent
+}
+
+// absorbToolCallBuffer — кросс-чанковое накопление content для JSON tool calls
+// (Gemma-4/Qwen/Hermes выводят вызов обычным текстом, разбитым на чанки).
+//
+// Кросс-чанковое накопление content для детекции JSON tool calls.
+// Поддерживаемые триггеры накопления:
+//   - "[" — стандартный JSON-массив tool_calls
+//   - "<tool_call>" / "<|python_tag|>" — Hermes/Qwen/Llama-3 форматы
+//   - "{name" — начало одиночного JSON-объекта tool_call
+//   - contentBuffer не пуст — продолжаем накапливать уже начатый tool call
+//
+// Возвращает (новый deltaContent, skip, ошибка). skip=true — кадр уже
+// обработан этим блоком (накопление продолжается или текст отдан как проза),
+// писать его штатным переводом не нужно. Ошибка — только запись клиенту.
+func (st *llamaCppStreamState) absorbToolCallBuffer(deltaContent string) (string, bool, error) {
+	if deltaContent == "" || st.contentToolCallsProcessed {
+		return deltaContent, false, nil
+	}
+	// R266 (2026-10-28): служебные метки qwen3.8 (`<|tool|>`,
+	// `<|assistant|>`, `<|tool_call|>`, …) в видимом тексте.
+	//
+	// ЖИВОЙ ФАКТ (Cline, /api/chat, qwen3.8): в ответе приходило
+	// «… </think> <|tool|> tool_call_result(run_commands): [...] <|assistant|>
+	// The file has ~348 lines …». Триггеры накопления ниже знали только
+	// `[`, `<tool_call>`, `<|python_tag|>`, `[TOOL_CALLS]`, `{name`, поэтому
+	// чанк с меткой уходил в message.content как обычный текст.
+	//
+	// Метки вычищаем ДО разбора: после этого остаётся либо чистый текст,
+	// либо JSON вызова, который распознаётся штатным детектором.
+	deltaContent = stripQwenServiceMarkers(deltaContent)
+	trimmed := strings.TrimSpace(deltaContent)
+	startToolCallAccum := strings.HasPrefix(trimmed, "[") ||
+		strings.HasPrefix(trimmed, "<tool_call>") ||
+		strings.HasPrefix(trimmed, "<|python_tag|>") ||
+		strings.HasPrefix(trimmed, "[TOOL_CALLS]") ||
+		strings.HasPrefix(trimmed, "{name") ||
+		hasQwenServiceMarker(trimmed) ||
+		// Метка разрезана между чанками: `<|tool_` + `call|>`. Хвост
+		// придерживаем, иначе первая половина уедет клиенту текстом.
+		splitMarkerSuffixLen(trimmed) > 0
+
+	// R114c (2026-10-13): JSON-структура НАЧАЛАСЬ ПОСРЕДИ чанка
+	// (проза + вызов в одном чанке). Раньше такой чанк уходил
+	// клиенту целиком — в теле ответа оказывался обрывок вызова
+	// («…task complete. [{"id":"call_submit_and_exit",…»). Проза
+	// отдаётся сразу, а накопление начинается со скобки.
+	if !startToolCallAccum && st.contentBuffer == "" {
+		if pos, ok := jsonStructStartPos(deltaContent); ok && pos > 0 {
+			prose := deltaContent[:pos]
+			proseChunk := map[string]interface{}{
+				"model":      *st.modelFromCtx,
+				"created_at": time.Now().UTC().Format(time.RFC3339),
+				"done":       false,
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": prose,
+				},
+			}
+			outProse, _ := json.Marshal(proseChunk)
+			nProse, errProse := fmt.Fprintf(st.w, "%s\n", string(outProse))
+			st.bytesForwarded.Add(int64(nProse))
+			if errProse != nil {
+				if st.firstForwardErr == nil {
+					st.firstForwardErr = errProse
+				}
+				return deltaContent, false, fmt.Errorf("write NDJSON (prose before JSON struct): %v", errProse)
+			}
+			if flusher, ok := st.w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			st.accumulatedPlainContent += prose
+			if st.firstContentTime.IsZero() {
+				st.firstContentTime = time.Now()
+			}
+			deltaContent = deltaContent[pos:]
+			trimmed = strings.TrimSpace(deltaContent)
+			startToolCallAccum = true
+		}
+	}
+
+	if st.contentBufferGaveUp || (!startToolCallAccum && st.contentBuffer == "") {
+		return deltaContent, false, nil
+	}
+	st.contentBuffer += deltaContent
+	if st.contentBufferSince.IsZero() {
+		st.contentBufferSince = time.Now()
+	}
+
+	// Кросс-чанковая склейка может оставить "лишний" символ '}' перед
+	// закрывающим </tool_call> (когда JSON закрывается в одном чанке, а
+	// '}'</tool_call>' приходит в следующем). Схлопываем дубликат.
+	st.contentBuffer = collapseDuplicateClosingBrace(st.contentBuffer)
+
+	// Проверяем, не накопился ли полный JSON tool call
+	if detectedTC, remainingTC, found := detectAndExtractToolCallsFromContent(st.contentBuffer); found {
+		st.contentToolCallsProcessed = true
+		st.contentBuffer = ""
+		logger.Get().Infow("proxyRequestLlamaCpp: cross-chunk tool_calls detected in content",
+			"backend", st.backendID, "model", *st.modelFromCtx,
+			"tool_calls_count", len(detectedTC))
+
+		cleanRemaining := stripServiceTokens(remainingTC)
+		cleanRemaining = cleanContentAfterToolCallExtraction(cleanRemaining)
+
+		msgMap := map[string]interface{}{
+			"role":       "assistant",
+			"content":    cleanRemaining,
+			"tool_calls": detectedTC,
+		}
+		ollamaChunk := map[string]interface{}{
+			"model":      *st.modelFromCtx,
+			"created_at": time.Now().UTC().Format(time.RFC3339),
+			"done":       false,
+			"message":    msgMap,
+		}
+		out, _ := json.Marshal(ollamaChunk)
+		n, errFwd := fmt.Fprintf(st.w, "%s\n", string(out))
+		st.bytesForwarded.Add(int64(n))
+		if errFwd != nil {
+			st.lastForwardErr = errFwd
+			if st.firstForwardErr == nil {
+				st.firstForwardErr = errFwd
+			}
+			return deltaContent, false, fmt.Errorf("write NDJSON (cross-chunk tool calls): %v", errFwd)
+		}
+		if flusher, ok := st.w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return deltaContent, true, nil
+	}
+
+	// Если JSON массив закрыт (найден ']' на правильной глубине),
+	// но tool call не обнаружен — это не tool call JSON.
+	// Сбрасываем буфер и даём чанку пройти через нормальный translate.
+	if endPos := findMatchingClosingBracket(st.contentBuffer, 0); endPos >= 0 {
+		st.contentBuffer = ""
+		st.contentBufferSince = time.Time{}
+		return deltaContent, false, nil
+	}
+	if len(st.contentBuffer) > toolCallBufferLimit() {
+		// R266: раньше здесь буфер ВЫБРАСЫВАЛСЯ (жёсткие 4096 байт),
+		// и вызов инструмента, который пишет файл на сотни строк,
+		// терялся, а его обрывок с метками уезжал клиенту как текст.
+		// Теперь текст не теряем: отдаём очищенным от служебных меток
+		// как обычный content и продолжаем стрим.
+		overflow := st.contentBuffer
+		st.contentBuffer = ""
+		st.contentBufferSince = time.Time{}
+		logger.Get().Warnw("proxyRequestLlamaCpp: tool-call buffer limit reached, text flushed",
+			"backend", st.backendID, "model", *st.modelFromCtx,
+			"limit_bytes", toolCallBufferLimit(), "flushed_chars", len(overflow))
+		if errFlush := st.flushBufferedText(overflow, "buffer_limit"); errFlush != nil {
+			return deltaContent, false, errFlush
+		}
+		return deltaContent, true, nil
+	}
+	if shouldFlushToolBufferAsProseR292(st.contentBuffer, st.contentBufferSince) {
+		// R292: текст лишь НАЧАЛСЯ как JSON/маркер, но признаков
+		// вызова в нём нет (ни "name":, ни <|tool|>, …) и он уже
+		// пересидел grace/объём. Это проза — отдаём клиенту и
+		// прекращаем накопление до конца стрима.
+		//
+		// ЖИВОЙ СИМПТОМ, который это лечит: ответ начинался на `[`
+		// (маркдаун-список/массив в тексте), детектор держал его в
+		// буфере до 64 КиБ, и клиент видел «план вместе с
+		// размышлениями» одним куском в конце, а не потоком.
+		prose := st.contentBuffer
+		st.contentBuffer = ""
+		st.contentBufferSince = time.Time{}
+		st.contentBufferGaveUp = true
+		logger.Get().Infow("proxyRequestLlamaCpp: buffered text is prose, streaming it",
+			"backend", st.backendID, "model", *st.modelFromCtx,
+			"chars", len(prose), "grace_ms", toolCallProseGrace().Milliseconds())
+		if errFlush := st.flushBufferedText(prose, "prose_not_toolcall"); errFlush != nil {
+			return deltaContent, false, errFlush
+		}
+		return deltaContent, true, nil
+	}
+	// Всё ещё накапливаем — пропускаем этот чанк
+	return deltaContent, true, nil
+}
+
+// absorbChatDoneChunk — финальный кадр cppworker на пути /api/chat: ПОЛНЫЙ
+// content приходит в message.content, и tool call может прийти ЦЕЛИКОМ здесь.
+func (st *llamaCppStreamState) absorbChatDoneChunk(data string) {
+	// Финальный чанк cppworker (с finish_reason) присылает ПОЛНЫЙ content
+	// в message.content — используем его как upstreamDoneContent. Это
+	// перезаписывает накопленный accumulatedPlainContent чтобы избежать
+	// дубликата ("Hello from llama.cpp!" + "Hello from llama.cpp!").
+	if upstreamHasDone, msgMap, _ := extractUpstreamDoneChunk(data); upstreamHasDone {
+		if c, ok := msgMap["content"].(string); ok && c != "" {
+			st.upstreamDoneContent = c
+		}
+		// R83-фикс (2026-10-01): tool call может прийти ЦЕЛИКОМ в
+		// финальном (done) чанке — ровно так делает cppworker на
+		// пути /api/chat с tools: он буферизует ответ и отдаёт его
+		// одним сообщением с finish_reason.
+		//
+		// Живой дефект (Cline → балансер → /api/chat): модель
+		// выдала JSON-массив tool_calls, cppworker вернул его в
+		// message.content последнего чанка, а балансер этот content
+		// «вырезал» (он ждал tool call в deltaContent, где его не
+		// было) и клиент получал пустой ответ:
+		//   "model produced an empty response (inference succeeded
+		//    but output is empty)" ← сообщение Cline.
+		// Прямой запрос в cppworker при этом отдавал корректный
+		// JSON, а OpenAI-путь (/v1/chat/completions) — корректный
+		// tool_calls. Ломался только Ollama-путь.
+		//
+		// Теперь, как и для дельт, пытаемся извлечь tool calls из
+		// финального content и, если получилось, отдаём их штатным
+		// механизмом (writeStreamingSSEDone с toolAccum). Если не
+		// получилось — content остаётся как есть и доезжает до
+		// клиента: потерять ответ модели нельзя.
+		if !st.contentToolCallsProcessed && st.upstreamDoneContent != "" {
+			if detectedTC, remainingTC, found := detectAndExtractToolCallsFromContent(st.upstreamDoneContent); found && len(detectedTC) > 0 {
+				// Кладём в тот же аккумулятор, что и дельты
+				// (toolAccum — map[index]*accumulatedToolCall),
+				// чтобы финальный NDJSON отдал их штатно.
+				for i, raw := range detectedTC {
+					tcm, ok := raw.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					entry := &accumulatedToolCall{index: i, function: map[string]interface{}{}}
+					if id, ok := tcm["id"].(string); ok {
+						entry.id = id
+					}
+					if fn, ok := tcm["function"].(map[string]interface{}); ok {
+						entry.function = fn
+					}
+					st.toolAccum[i] = entry
+				}
+				st.contentToolCallsProcessed = true
+				st.upstreamDoneContent = cleanContentAfterToolCallExtraction(stripServiceTokens(remainingTC))
+				logger.Get().Infow(i18n.T("balancer.llamacpp_transport.tool_calls_extracted_info"),
+					"backend", st.backendID, "model", *st.modelFromCtx,
+					"tool_calls_count", len(detectedTC),
+					"remaining_content_len", len(st.upstreamDoneContent))
+			}
+		}
+	}
+}
+
+// accumulateGenerateDelta — дельта /api/generate: текст кадра и content
+// финального кадра (без дубликата " llama.cpp!").
+func (st *llamaCppStreamState) accumulateGenerateDelta(data string, chunk map[string]interface{}) {
+	// Для /api/generate content лежит в chunk["choices"][0].text или в done_chunk.response
+	if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if t, ok := choice["text"].(string); ok && t != "" {
+				// НЕ накапливаем чанки с finish_reason (аналогично /api/chat):
+				// cppworker в финальном чанке шлёт ПОЛНЫЙ content=" llama.cpp!",
+				// а accumulatedPlainContent уже содержит "Hello from". Без guard
+				// финальный done-чанк получал дубликат ("Hello from llama.cpp! llama.cpp!").
+				if !hasFinishReason(data) {
+					st.accumulatedPlainContent += t
+				}
+			}
+		}
+	}
+	// Финальный чанк cppworker с finish_reason: используем accumulatedPlainContent
+	// (без дубликата " llama.cpp!") как upstreamDoneContent. Если cppworker
+	// прислал в финальном чанке text=" llama.cpp!" И finish_reason="stop",
+	// мы уже НЕ добавили его в accumulatedPlainContent (см. guard выше),
+	// поэтому накопленный контент = "Hello from". Дописываем " llama.cpp!"
+	// из финального чанка для полноты ответа.
+	if hasFinishReason(data) {
+		if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]interface{}); ok {
+				if t, ok := choice["text"].(string); ok && t != "" {
+					st.upstreamDoneContent = st.accumulatedPlainContent + t
+				}
+			}
+		}
+		if st.upstreamDoneContent == "" {
+			st.upstreamDoneContent = st.accumulatedPlainContent
+		}
+	}
+}
+
+// translateAndWriteFrame — общий хвост NDJSON-путей: завершение по
+// finish_reason/tool_calls, вычищение меток (R266.1), единый переводщик с
+// четырьмя окнами статистики (R493-12a) и запись кадра клиенту.
+func (st *llamaCppStreamState) translateAndWriteFrame(data string) error {
+	// Подавляем перевод только если tool_calls уже были обработаны
+	// (cross-chunk или delta) — для них writeStreamingSSEDone формирует
+	// финальный NDJSON с правильным message.tool_calls.
+	//
+	// Для чанков с finish_reason НЕ делаем continue — translateOpenAISSEDataToOllama
+	// сам корректно сформирует финальный NDJSON с done:true, done_reason:stop
+	// и content из текста чанка. Это и есть требуемая passthrough-семантика
+	// для streaming: каждый upstream чанк → отдельный NDJSON чанк клиенту,
+	// включая финальный с done:true.
+	//
+	// PF-6 fix (2026-06-27): cppworker НЕ отправляет [DONE] маркер в
+	// streaming-режиме — он закрывает TCP сразу после чанка с finish_reason.
+	// Чтобы избежать ложного "truncation" alert, помечаем streamCompleted
+	// при первом чанке с finish_reason.
+	if st.contentToolCallsProcessed || len(st.toolAccum) > 0 {
+		// tool_calls уже были обработаны выше — writeStreamingSSEDone возьмёт
+		// их из toolAccum и отправит финальный NDJSON с tool_calls.
+		// upstreamHadFinishReason=false: даже если cppworker прислал finish_reason
+		// в этом же чанке, tool_calls должны быть эмитированы (предыдущая ветка
+		// кода обработала cross-chunk tool calls в отдельном NDJSON-чанке).
+		if !st.streamCompleted {
+			st.streamCompleted = true
+			errFwd := writeStreamingSSEDone(st.w, st.originalPath, *st.modelFromCtx, st.toolAccum,
+				st.accumulatedPlainContent, st.upstreamDoneContent, false, st.usageChunkSeen)
+			if errFwd != nil {
+				logger.Get().Warnw("proxyRequestLlamaCpp: writeStreamingSSEDone on tool_calls error",
+					"backend", st.backendID, "error", errFwd)
+				st.lastForwardErr = errFwd
+				if st.firstForwardErr == nil {
+					st.firstForwardErr = errFwd
+				}
+			}
+			// R65d (2026-09-20): помечаем canonical done как отправленный.
+			//
+			// БЕЗ ЭТОГО: writeStreamingSSEDone уже отдал клиенту done:true
+			// (с tool_calls), но priorDoneEmitted/usageChunkSeen оставались
+			// false. Далее cppworker присылает свой wrapper-чанк
+			// (finish_reason без content) и usage-чанк — и
+			// translateUsageChunkToOllama, не видя priorDoneEmitted,
+			// эмитил ВТОРОЙ done:true. Ollama-клиенты (Cline, ollama npm)
+			// на два done-чанка отвечают
+			// "Did not receive done or success response in stream".
+			//
+			// H2 (2026-10-16): writeStreamingSSEDone НЕ пишет статистику,
+			// поэтому statsEmitted здесь СОЗНАТЕЛЬНО не выставляется —
+			// поздний usage-чанк должен дойти до клиента строкой с
+			// done:false (иначе eval_count/prompt_eval_count теряются).
+			st.usageChunkSeen = true
+			st.priorDoneEmitted = true
+			Flush(st.w)
+		}
+		return nil
+	}
+	if hasFinishReason(data) && !st.streamCompleted {
+		// cppworker закрывает TCP после этого чанка — отмечаем что стрим
+		// завершён нормально, чтобы ниже не сработал stream-truncation detection.
+		st.streamCompleted = true
+		// PF-6 (2026-06-27) + dedup streaming fix (2026-06-30):
+		// translateOpenAISSEDataToOllama сам формирует финальный NDJSON с done:true
+		// и content из финального чанка. Если writeStreamingSSEDone тоже запишет
+		// финальный done-чанк (например, через [DONE] маркер от SSE upstream)
+		// клиент увидит ДУБЛИКАТ done-чанка с тем же content. Чтобы этого избежать
+		// передаём флаг upstreamSentFinishReason — writeStreamingSSEDone пропустит
+		// финальный NDJSON/SSE если upstream уже отправил finish_reason и нет tool_calls.
+		st.upstreamHadFinishReason = true
+	}
+	// R60.49 (2026-09-12): передаём accumulatedPlainContent в translator —
+	// при получении usage-чанка message.content/response теперь заполняется
+	// накопленным content (а не ""), чтобы OpenWebUI показывал полный ответ.
+	//
+	// R60.55 (2026-09-13): передаём priorDoneEmitted — если предыдущий
+	// чанк уже эмитил done:true (например finish_reason+content safety-net
+	// от R51.3), usage чанк не должен эмитить второй done:true.
+	//
+	// H2 (2026-10-16): передаём и statsEmitted — usage-чанк подавляется
+	// только если статистика УЖЕ ушла; иначе она отдаётся строкой с
+	// done:false (см. translateOpenAISSEDataToOllamaWithFlags).
+	// R118.20 (2026-10-15): фрагменты tool-call'ов копим и отдаём ОДИН раз
+	// целиком — в Ollama-форме частичных аргументов не бывает (аудит C5).
+	// R266.1 (2026-10-28): вычищаем служебные метки шаблона из ВИДИМОГО
+	// content ДО перевода в NDJSON и до любых веток (обычный текст, чанк с
+	// finish_reason, чанк после распознанного tool call). Клиенту уходит
+	// результат перевода из этих данных, поэтому чистить надо данные, а не
+	// локальную переменную: иначе часть веток остаётся без фильтра — именно
+	// так `<|assistant|>` утёк после того, как tool call уже был распознан.
+	if st.originalPath == "/api/chat" {
+		data = filterSSEDeltaContentMarkers(data, &st.ndjsonHold)
+	}
+
+	if filtered, ok := st.toolAcc.filterToolCallDelta(data); !ok {
+		return nil
+	} else {
+		data = filtered
+	}
+	// R493-12a: окна передаём четырьмя моментами — иначе в «время промпта»
+	// снова попали бы очередь и загрузка, а размышления выпали бы из
+	// «времени генерации» (см. stats_windows_r493.go).
+	statsWindows := statsWindowsForTransportR493(st.requestStartTime, st.upstreamSentTime, st.firstDeltaTime, st.firstContentTime, time.Now())
+	// R493-12a: загрузку модели знает воркер (она внутри запроса) — берём
+	// её из заголовка ответа, иначе 40+ секунд не попадут никуда.
+	statsWindows.WorkerLoad = st.workerLoadNsR493
+	ollamaChunk := translateOpenAISSEDataToOllamaWindowsR493(st.originalPath, []byte(data), *st.modelFromCtx, &st.seenReasoning, statsWindows, st.accumulatedPlainContent, &st.priorDoneEmitted, &st.statsEmitted)
+	if len(ollamaChunk) == 0 {
+		return nil
+	}
+	// Round 53.1 (2026-08-24): detect usage chunk for writeStreamingSSEDone fallback logic.
+	// translateOpenAISSEDataToOllama уже эмитил canonical done:true с полными статами
+	// из usage чанка — writeStreamingSSEDone на [DONE] должен skip чтобы избежать
+	// double-done. Способ детекта: usage чанк всегда имеет eval_count + done:true
+	// (translateUsageChunkToOllama эмитит prompt_eval_count и eval_count).
+	// Не-usage чанки с done:true (safety net для length/content_filter в одном
+	// чанке с content) тоже считаем — но это OK, writeStreamingSSEDone skip безопасен.
+	//
+	// R60.55: трекаем priorDoneEmitted для ВСЕХ done:true чанков (не только
+	// usage).
+	//
+	// H2 (2026-10-16): статистика и done:true учитываются РАЗДЕЛЬНО.
+	//   - usageChunkSeen/priorDoneEmitted — по полю done (даже для stats-only
+	//     строки с done:false priorDoneEmitted не меняется: сам факт того,
+	//     что done:true уже ушёл, зафиксирован предыдущим чанком);
+	//   - statsEmitted — по наличию eval_count/prompt_eval_count, независимо
+	//     от done. Именно это гасит повторные usage-чанки, а не priorDoneEmitted.
+	var ollamaParsed map[string]interface{}
+	if err := json.Unmarshal(ollamaChunk[:len(ollamaChunk)-1], &ollamaParsed); err == nil {
+		if done, _ := ollamaParsed["done"].(bool); done {
+			// Любой done:true chunk = canonical done (translator эмитил).
+			// writeStreamingSSEDone должен skip.
+			st.usageChunkSeen = true
+			st.priorDoneEmitted = true
+		}
+		if _, ok := ollamaParsed["eval_count"]; ok {
+			// H2: статистика уехала клиенту (в done:true чанке или в
+			// stats-only строке с done:false) — второй раз не отдаём.
+			st.statsEmitted = true
+		} else if _, ok := ollamaParsed["prompt_eval_count"]; ok {
+			st.statsEmitted = true
+		}
+	}
+	n, errFwd := st.w.Write(ollamaChunk)
+	st.bytesForwarded.Add(int64(n))
+	if errFwd != nil {
+		st.lastForwardErr = errFwd
+		if st.firstForwardErr == nil {
+			st.firstForwardErr = errFwd
+		}
+		return fmt.Errorf("write NDJSON: %v", errFwd)
+	}
+
+	if flusher, ok := st.w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
+}
+
+// finalizeStream — хвост стрима после цикла: придержанный текст (R266.1/R279),
+// авто-продолжение обрыва (R60.21/R187), гарантированный терминатор (R231),
+// диагностика обрыва (R296/R298/R384), лог ошибки сканера, сброс счётчика
+// n_ctx и пустой done-кадр для Ollama-путей без единого кадра.
+func (st *llamaCppStreamState) finalizeStream() error {
+	st.flushHeldTail()
+	if err := st.maybeAutoContinue(); err != nil {
+		return err
+	}
+
+	// R231 (2026-10-24): ЗАВЕРШАЮЩИЙ ЧАНК ОБЯЗАН БЫТЬ ОТДАН ВСЕГДА.
+	//
+	// Живой дефект: emitDeferredDone вызывался ТОЛЬКО внутри ветки
+	// `if streamCompleted && IsAutoContinueOnTruncationEnabled() && content != ""`.
+	// При выключенном авто-продолжении (дефолт — env не задан) маркер `[DONE]`
+	// от cppworker НЕ пересылался клиенту и синтетический done не эмитился:
+	// поток завершался молча. Cline/OpenWebUI, не увидев конца стрима, ждали
+	// или рвали сессию («символ конца стрима затесался/пропал»). Теперь
+	// завершение эмитится безусловно (идемпотентно, ровно один раз).
+	if st.streamCompleted && st.deferredDoneChunk {
+		st.emitTerminalDoneOnly()
+	}
+
+	if err := st.reportPrematureEnd(); err != nil {
+		return err
+	}
+
+	if err := st.scanner.Err(); err != nil {
+		logger.Get().Errorw("proxyRequestLlamaCpp: scanner error", "error", err, "backend", st.backendID)
+	}
+
+	if st.p.nctxReload != nil {
+		st.p.nctxReload.ResetCycleCounter(st.backendID)
+	}
+
+	if st.lastData == "" && st.originalPath != "/v1/chat/completions" && !st.terminalAlreadySent {
+		done := buildDoneResponse(st.originalPath, *st.modelFromCtx, 0)
+		_, errFwd := fmt.Fprintf(st.w, "%s\n", string(done))
+		if errFwd != nil {
+			return fmt.Errorf("write empty-done NDJSON: %v", errFwd)
+		}
+		if flusher, ok := st.w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+
+	return nil
+}
+
+// flushHeldTail — R266.1/R279: придержанный хвост служебных меток, который
+// оказался обычным текстом, обязан уйти клиенту, а не в накопитель.
+//
+// R266.1 (2026-10-28): отдаём придержанный хвост, если он оказался обычным
+// текстом. Без этого ответ, закончившийся на `<` (начало метки, которая так и
+// не пришла), терял бы последние байты — тот же класс дефекта, что чинили в
+// R261 на другом пути.
+//
+// R279 (2026-10-28): ЭТОТ ХВОСТ ОБЯЗАН УЙТИ КЛИЕНТУ, А НЕ В НАКОПИТЕЛЬ.
+//
+// ЖИВОЙ ДЕФЕКТ: здесь стояло `accumulatedPlainContent += held` — то есть
+// придержанные байты попадали в статистику и в детектор автопродолжения, а в
+// поток НЕ уходили вовсе. Если хвостом оказывался обычный текст финального
+// блока (а удержание держит любой суффикс, похожий на начало метки, включая
+// просто «<» или «[» из кода), клиент этот текст не получал никогда.
+// Теперь хвост пишется отдельным NDJSON-чанком (done:false) до терминального
+// чанка: порядок «content → done» сохраняется, второй done клиент не получает.
+func (st *llamaCppStreamState) flushHeldTail() {
+	if st.originalPath != "/api/chat" && st.originalPath != "/api/generate" {
+		return
+	}
+	held := st.ndjsonHold.Flush()
+	if held == "" {
+		return
+	}
+	if tail := heldTailChunk(st.originalPath, *st.modelFromCtx, held); tail != nil {
+		n, errTail := fmt.Fprintf(st.w, "%s\n", tail)
+		st.bytesForwarded.Add(int64(n))
+		if errTail != nil {
+			if st.firstForwardErr == nil {
+				st.firstForwardErr = errTail
+			}
+			st.lastForwardErr = errTail
+		} else {
+			if flusher, ok := st.w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			logger.Get().Infow("proxyRequestLlamaCpp[native]: emitted held tail to client (R279)",
+				"backend", st.backendID, "path", st.originalPath, "held_len", len(held))
+		}
+	}
+	// В накопитель тоже добавляем: он отражает то, что клиент уже видел,
+	// и по нему работают детектор обрыва и автопродолжение.
+	st.accumulatedPlainContent += held
+}
+
+// emitDeferredDone — отдать отложенный done-чанк (обычный успешный конец).
+// R231: вызывается из нескольких веток (агентский ход, авто-продолжение,
+// happy-path), поэтому идемпотентен: клиент обязан получить РОВНО ОДИН
+// завершающий чанк/[DONE].
+func (st *llamaCppStreamState) emitDeferredDone() {
+	if st.doneEmitted {
+		return
+	}
+	st.doneEmitted = true
+	errFwd := writeStreamingSSEDone(st.w, st.originalPath, *st.modelFromCtx, st.toolAccum,
+		st.accumulatedPlainContent, st.upstreamDoneContent, st.upstreamHadFinishReason, st.usageChunkSeen)
+	if errFwd != nil {
+		logger.Get().Warnw("proxyRequestLlamaCpp: deferred writeStreamingSSEDone error",
+			"backend", st.backendID, "error", errFwd)
+		st.lastForwardErr = errFwd
+		if st.firstForwardErr == nil {
+			st.firstForwardErr = errFwd
+		}
+	}
+	if st.originalPath != "/v1/chat/completions" {
+		Flush(st.w)
+	}
+}
+
+// emitTerminalDoneOnly — R231: завершающий чанк БЕЗ повторного content.
+//
+// Нужен там, где дельты уже отданы клиенту, а отложенный done не был эмитчен
+// (например, авто-продолжение подавлено как перегенерация). Повтор текста в
+// done-чанке — это дубль у клиентов, склеивающих все чанки (живой флейк:
+// исходный ответ приходил дважды). Настоящая Ollama в done-чанке отдаёт
+// message.content="" — повторяем её контракт; tool_calls сохраняем.
+func (st *llamaCppStreamState) emitTerminalDoneOnly() {
+	if st.doneEmitted {
+		return
+	}
+	// R51.3/R53.1: на NDJSON-путях usage-чанк уже отдал canonical done:true
+	// (translateUsageChunkToOllama) — второй done клиент получит как дубль.
+	if st.usageChunkSeen && st.originalPath != "/v1/chat/completions" {
+		st.doneEmitted = true
+		return
+	}
+	st.doneEmitted = true
+	// R377 (2026-11-01): кадр собирает единственный владелец. Пустой content —
+	// осознанное решение этого места: дельты клиенту уже отданы, повтор текста
+	// в терминальном кадре даёт дубль у клиентов, склеивающих чанки.
+	//
+	// ДО R377 кадр собирался здесь руками и расходился с хелпером в трёх
+	// местах: tool_calls уходили строкой аргументов (нарушение R295 — Ollama
+	// ждёт объект), /api/generate получал поле message вместо response,
+	// done_reason ставился "stop" даже без отданного текста.
+	if errFwd := writeTerminalFrameR377(st.w, terminalFrameR377{
+		path:      st.originalPath,
+		model:     *st.modelFromCtx,
+		toolCalls: st.toolAccum,
+	}); errFwd != nil {
+		logger.Get().Warnw("proxyRequestLlamaCpp: terminal frame write error",
+			"backend", st.backendID, "path", st.originalPath, "error", errFwd)
+		st.lastForwardErr = errFwd
+		if st.firstForwardErr == nil {
+			st.firstForwardErr = errFwd
+		}
+	}
+	Flush(st.w)
+}
+
+// maybeAutoContinue — R60.21: доработка обрыва. Только там, где терминатор
+// УДЕРЖАН (R322): после уже отданного клиенту завершения писать в поток нельзя.
+//
+// ==== R60.21 Auto-Continue on Truncation (2026-09-08) ====
+// After the main streaming loop ends cleanly (streamCompleted=true),
+// check if the accumulated content looks truncated. If so AND
+// LB_AUTO_CONTINUE_ON_TRUNCATION=1, send a "continue" request to
+// upstream and emit the continuation to client.
+//
+// Default: OFF (opt-in). See docs/api/env-vars.ru.md.
+// For Qwen3-Instruct-2507-q4km which has a tendency to emit
+// ChatML-EOS <|im_end|> mid-code (R60.20), this auto-recovers
+// from unclosed code blocks and mid-line cutoffs.
+//
+// R60.34 (2026-09-10): guard against spurious fire on empty / failed
+// responses. Previous behavior:
+//   - TruncateReason("") → "empty" → fire R60.21
+//   - empty content (e.g. n_ctx overflow, model error) was treated
+//     as "truncated, continue!" → garbage request to upstream
+//   - R60.33 async-load 503: handleChat returned 503, but
+//     proxyRequestLlamaCpp also fired R60.21 in background → cascade
+//     of unload+reload cycles
+//
+// Fix: skip R60.21 when:
+//  1. accumulatedPlainContent is empty
+//  2. streamCompleted but no chunks were received
+//  3. upstream errored (any non-empty err in errMsg)
+//  4. n_predict/finish_reason is missing or "length" was not the cause
+func (st *llamaCppStreamState) maybeAutoContinue() error {
+	// R187 (2026-10-20): АГЕНТСКИЙ ХОД НЕ ПРОДОЛЖЕН БЫТЬ ПРОДЛЁН.
+	//
+	// ЖИВОЙ РАЗБОР (Cline + Qwen3.8). В клиенте видно так: модель «завершает»
+	// ответ (клиент показывает completed), затем появляются размышления, затем
+	// поток встаёт и сессия не закрывается. Причина — здесь: эвристика «ответ
+	// выглядит усечённым» (незакрытый блок кода, обрыв строки) срабатывала на
+	// НОРМАЛЬНОМ конце агентского хода, и балансер:
+	//   1) уже отдал клиенту finish_reason (клиент показал completed);
+	//   2) тянул ВТОРОЙ запрос генерации (на 27B-модели — десятки секунд);
+	//   3) дописывал продолжение ПОСЛЕ finish (клиенты его игнорируют) либо
+	//      подавлял его по политике smart — и [DONE] приходил с большой
+	//      задержкой или не приходил вовсе.
+	// Агентский ход завершается ТЕМ, ЧЕМ ЗАВЕРШИЛСЯ: текстом, вызовом
+	// инструмента или лимитом, который поставил сам клиент. Продолжать за
+	// клиента нельзя: он ведёт диалог сам, а ходы модели в агентской сессии
+	// почти всегда кончаются «незакрытой» строкой (это вызов инструмента, а не
+	// обрыв) — то есть ложное срабатывание здесь штатное, а не исключение.
+	agentTurn := !AutoContinueAllowedForTurn(countClientTools(st.bodyBuf) > 0, len(st.toolAccum))
+
+	// R322 (2026-10-30, найдено аудитом маршрутов): после уже отданного клиенту
+	// терминатора писать в поток НЕЛЬЗЯ.
+	//
+	// ЖИВОЙ ДЕФЕКТ. На нативном пути терминальный кадр воркера (`done:true`)
+	// уходит клиенту как есть (passthrough), а блок авто-продолжения ниже всё
+	// равно дорабатывал ответ: `EmitContinuationNDJSON` печатает ещё один
+	// content-кадр и СВОЙ `done:true` — то есть после завершения хода в потоке
+	// появлялся второй терминатор. Клиенты (Cline, OpenWebUI) такой поток
+	// считают битым: часть закрывает ход на первом `done`, часть — на втором, и
+	// «ответ не завершён» выглядит как незавершённая задача (жалоба про
+	// COMPLETE), а часть сообщений теряется.
+	//
+	// Авто-продолжение имеет смысл только там, где терминальный кадр УДЕРЖАН
+	// (deferredDoneChunk): тогда клиент ещё не получил завершения и продолжение
+	// чинит обрыв. Если терминатор уже ушёл — доработка запрещена.
+	if !(st.streamCompleted && IsAutoContinueOnTruncationEnabled() && st.accumulatedPlainContent != "" && !st.priorDoneEmitted) {
+		return nil
+	}
+	finalContent := st.accumulatedPlainContent
+	if st.upstreamDoneContent != "" {
+		// If cppworker sent full content in the done chunk (not chunked),
+		// use that as the source of truth.
+		finalContent = st.upstreamDoneContent
+	}
+	if agentTurn {
+		// Агентский ход: продолжаем только если клиент НЕ ограничил ответ и
+		// модель не вызвала инструмент. Здесь ничего не доделываем.
+		recordAutoContinueSuppressed()
+		logger.Get().Infow(i18n.T("balancer.llamacpp_transport.auto_continue_agent_turn_skipped_info"),
+			"backend", st.backendID, "model", *st.modelFromCtx,
+			"api_path", st.originalPath,
+			"tools_in_request", countClientTools(st.bodyBuf) > 0,
+			"tool_calls_in_response", len(st.toolAccum),
+			"content_chars", len(finalContent))
+		if st.deferredDoneChunk {
+			st.emitDeferredDone()
+		}
+		return nil
+	}
+	// R174 (2026-10-18, найдено сценариями клиентов): КЛИЕНТ САМ ОГРАНИЧИЛ
+	// ОТВЕТ — продолжать нельзя.
+	//
+	// Живой замер матрицы клиентов: `num_predict: 6` на стриминговом
+	// Ollama-пути → балансер считал обрыв «усечением» и слал второй запрос, воркер
+	// видел промпт на 45 токенов больше прямого вызова, клиент получал ответ
+	// длиннее запрошенного и платил за двойной промпт. Агентные клиенты (Cline,
+	// deepseek harness, hermes) ставят max_tokens на КАЖДЫЙ запрос.
+	if capped, capField := ClientOutputCapped(st.bodyBuf); capped {
+		recordAutoContinueSuppressed()
+		logger.Get().Infow(i18n.T("balancer.llamacpp_transport.auto_continue_client_capped_info"),
+			"backend", st.backendID, "model", *st.modelFromCtx,
+			"api_path", st.originalPath, "cap_field", capField,
+			"content_chars", len(finalContent))
+		return nil
+	}
+	if blockedCtx, ctxErrText := autoContinueBlockedByContext(st.upstreamErrorText, st.upstreamDoneContent, finalContent); blockedCtx {
+		// R289 (2026-10-29): это НЕ обрыв, а отказ по размеру контекста.
+		// Живой дефект: при окне 4096 и промпте 3791 апстрим отвечал 413
+		// `prompt too long`, эвристика видела «незакрытую строку» и
+		// запускала продолжение — второй запрос тоже получал 413, а клиент
+		// так и не узнал настоящую причину.
+		recordAutoContinueSuppressed()
+		windowTokens := st.p.loadedPerSeqNCtx(st.backendID, *st.modelFromCtx)
+		writeContextTooSmallNotice(st.w, st.originalPath, *st.modelFromCtx,
+			st.p.calibratedEstimateOnly(st.bodyBuf, st.originalPath), windowTokens)
+		logger.Get().Infow("auto-continue suppressed: context overflow is not a truncation (R289)",
+			"backend", st.backendID, "model", *st.modelFromCtx,
+			"api_path", st.originalPath, "upstream_error", ctxErrText)
+		if st.deferredDoneChunk {
+			st.emitTerminalDoneOnly()
+		}
+		return nil
+	}
+	if reason := TruncateReason(finalContent); reason != "" {
+		return st.continueTruncatedResponse(finalContent, reason)
+	}
+	if st.deferredDoneChunk && st.streamCompleted {
+		// R60.55 (2026-09-13): no truncation OR auto-continue didn't fire
+		// (e.g., continuation was suppressed as regen). Emit the deferred
+		// done-chunk now with accumulated content. This is the standard
+		// happy-path case where the model completed normally.
+		st.emitDeferredDone()
+	}
+	return nil
+}
+
+// continueTruncatedResponse — R60.21: запросить продолжение у воркера и отдать
+// клиенту ОДИН связный ответ (без двух done-кадров).
+func (st *llamaCppStreamState) continueTruncatedResponse(finalContent, reason string) error {
+	logger.Get().Infow("proxyRequestLlamaCpp: R60.21 detected truncation, auto-continuing",
+		"backend", st.backendID, "model", *st.modelFromCtx,
+		"api_path", st.originalPath,
+		"reason", reason,
+		"content_chars", len(finalContent))
+	// R60.25: use env-configured timeout (default 10 min, was
+	// hardcoded 60s which timed out on long code generation).
+	// The 60s default was the failure mode for "model emits
+	// unclosed code block, auto-continue triggers, but the
+	// continue request itself hits the same time limit and
+	// times out before the model finishes the continuation".
+	autoContTimeout := GetAutoContinueTimeout()
+	continuation, contEval, contErr := PerformAutoContinue(
+		st.fullURL, st.translatedBody, finalContent, reason,
+		&http.Client{Timeout: autoContTimeout}, autoContTimeout)
+	if contErr != nil || continuation == "" {
+		recordAutoContinueFailed()
+		logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 auto-continue failed (emitting truncated as-is)",
+			"backend", st.backendID, "model", *st.modelFromCtx,
+			"reason", reason, "error", contErr,
+			"url", st.fullURL)
+		return nil
+	}
+	// R83 (2026-09-25, D3): политика != smart ОТКЛЮЧАЕТ подавление
+	// перегенерации, то есть при `always` дубли ответа гарантированы.
+	// Раньше это было видно только по отсутствию строки «suppressing
+	// duplicate» в логе — теперь есть явное предупреждение и счётчик,
+	// который уходит в /api/v1/metrics (см. auto_continue_stats.go).
+	if policy := GetAutoContinueChatPolicy(); policy != "smart" {
+		recordAutoContinuePolicyDisabled()
+		logger.Get().Warnw(i18n.T("balancer.llamacpp_transport.regeneration_suppression_disabled_warn"),
+			"backend", st.backendID, "model", *st.modelFromCtx,
+			"api_path", st.originalPath, "policy", policy,
+			"hint", i18n.T("balancer.llamacpp_transport.regeneration_suppression_hint"))
+	}
+	// R60.55 (2026-09-13): if "smart" chat-policy and continuation
+	// looks like a regeneration (model restarted with greeting),
+	// SUPPRESS the continuation. Sending it would create a duplicate
+	// response in OpenWebUI.
+	if GetAutoContinueChatPolicy() == "smart" && IsContinuationARegeneration(finalContent, continuation) {
+		recordAutoContinueSuppressed()
+		logger.Get().Warnw("proxyRequestLlamaCpp: R60.55 continuation looks like regeneration (chat model antipattern); suppressing duplicate",
+			"backend", st.backendID, "model", *st.modelFromCtx,
+			"api_path", st.originalPath,
+			"policy", "smart",
+			"original_chars", len(finalContent),
+			"continuation_chars", len(continuation))
+		// Don't emit continuation. Client already received done-chunk
+		// with truncated original content. Set flag to skip downstream
+		// truncation alert (we did our best).
+		st.streamCompleted = true
+		return nil
+	}
+	recordAutoContinueEmitted()
+	logger.Get().Infow("proxyRequestLlamaCpp: R60.21 auto-continue succeeded",
+		"backend", st.backendID, "model", *st.modelFromCtx,
+		"api_path", st.originalPath,
+		"continuation_chars", len(continuation),
+		"cont_eval", contEval)
+	// Emit continuation as a single final done-chunk with
+	// combined content. This is the safest approach — the client
+	// gets one coherent response (no double done-chunks).
+	var flusher http.Flusher
+	if f, ok := st.w.(http.Flusher); ok {
+		flusher = f
+	}
+	totalEval := 0
+	if contEval > 0 {
+		totalEval = contEval
+	}
+	emitErr := EmitContinuationNDJSON(
+		st.w, st.originalPath, *st.modelFromCtx,
+		finalContent, continuation, totalEval, flusher)
+	if emitErr != nil {
+		logger.Get().Warnw("proxyRequestLlamaCpp: R60.21 emit continuation error",
+			"backend", st.backendID, "error", emitErr)
+	}
+	// Mark stream as completed so downstream truncation
+	// detection doesn't fire.
+	st.streamCompleted = true
+	// R231: если continuation реально отдана, терминальный чанк
+	// уже ушёл клиенту (combined content + done). Отложенный
+	// done больше не нужен — иначе в конце сработает
+	// безусловная эмиссия и клиент получит ДУБЛЬ исходного
+	// текста (живой флейк TestAutoContinue_Regeneration...).
+	if emitErr == nil {
+		st.deferredDoneChunk = false
+	}
+	return nil
+}
+
+// reportPrematureEnd — R384: диагностика и кадры-причины, когда поток кончился
+// до терминального маркера. Возвращает ошибку только в одном случае — клиент
+// ушёл сам (`client_cancel`): писать в его соединение бессмысленно.
+//
+// ==== Stream-truncation detection (2026-06-26) ====
+// Если мы вышли из цикла for без streamCompleted (т.е. cppworker оборвал
+// стрим до того, как прислал финальный [DONE] маркер), явно логируем это
+// и эмитим клиенту финальный чанк с error/done:true, чтобы клиент
+// (Cline/OpenWebUI/Roo Code) корректно отобразил сбой вместо "успешного
+// ответа" с обрезанным content.
+//
+// R384 (2026-11-01): признак «терминатор уже отправлен кадрами-причиной».
+//
+// ЖИВОЙ ДЕФЕКТ (стенд, сторож тишины): апстрим прислал заголовки и замолчал;
+// сторож закрыл тело, abortFramesR296 отдал кадр-причину (upstream_stall) и
+// терминатор `{"done":true,"done_reason":"error"}`, а затем исполнение
+// доходило до блока «lastData == ""» в конце функции и писало ВТОРОЙ
+// терминатор — `{"done":true,"done_reason":"stop"}`. Клиент видел два `done`:
+// один с ошибкой, второй как успешное завершение.
+func (st *llamaCppStreamState) reportPrematureEnd() error {
+	if st.streamCompleted {
+		return nil
+	}
+	// ==== Stream-truncation detection (2026-06-26) ====
+	// Сценарии:
+	//   1. scanner.Err() != nil → broken pipe / context canceled / timeout
+	//   2. scanner.Err() == nil && streamCompleted == false → cppworker
+	//      закрыл TCP без [DONE] (редкий случай, обычно после ошибки модели).
+	//
+	// В обоих случаях клиент уже получил HTTP 200 + Content-Type, поэтому
+	// поменять HTTP-статус нельзя. Лучшее, что мы можем — дописать в стрим
+	// финальный маркер и закрыть соединение, чтобы клиент не висел.
+	scannerErr := st.scanner.Err()
+	// R259: КТО завершил стрим. Наш лимит строки и наши отмены — НЕ
+	// «upstream truncated»; клиенту и в лог уходит правдивая причина.
+	abortReason := streamAbortReasonR259(scannerErr, st.r.Context().Err())
+	// R298: если поток разорвал СТОРОЖ тишины, причина — не «ошибка чтения»
+	// (её мы сами и создали, закрыв тело), а именно зависание upstream.
+	// Проверяем ДО эвристики R271: сторож — наш факт, а не догадка.
+	stallEventR298, stalledR298 := st.stallWatch.Fired()
+	if stalledR298 {
+		abortReason = streamAbortUpstreamStall
+		logger.Get().Warnw("proxyRequestLlamaCpp: stream aborted by the stall watchdog (R298)",
+			"backend", st.backendID, "model", *st.modelFromCtx,
+			"prefill", stallEventR298.prefill,
+			"stalled_sec", int(stallEventR298.stalled.Seconds()),
+			"original_path", st.originalPath,
+			"bytes_forwarded", st.bytesForwarded.Load(),
+			"elapsed_sec", time.Since(st.llamaStartTime).Seconds())
+	}
+	// R271 (2026-10-29): если незадолго до обрыва МЫ выгружали/перезагружали
+	// эту модель на этом бэкенде — виноват не upstream.
+	//
+	// Живой дефект: второй клиент запросил другое окно n_ctx, балансер
+	// перезагрузил модель, поток первого закрылся без маркера — и клиент
+	// получил «stream ended by upstream before completion», хотя воркер был
+	// жив. Теперь причина называется своим именем.
+	if streamAbortBlamesUpstream(abortReason) {
+		if kind, ok := st.p.recentDestructiveOpR271(st.backendID, *st.modelFromCtx, 3*time.Minute); ok {
+			// R280: причина зависит от ВИДА операции (reload по чужому окну /
+			// AutoTune / unload) — таблица одна, в active_streams_r271.go.
+			abortReason = abortReasonForDestructiveOpR271(kind)
+			logger.Get().Warnw("proxyRequestLlamaCpp: stream ended because the balancer reloaded the model",
+				"reason", abortReason, "cause", kind,
+				"backend", st.backendID, "model", *st.modelFromCtx,
+				"original_path", st.originalPath,
+				"bytes_forwarded", st.bytesForwarded.Load(),
+				"elapsed_sec", time.Since(st.llamaStartTime).Seconds())
+		}
+	}
+	logFields := []interface{}{
+		"reason", abortReason,
+		"backend", st.backendID, "model", *st.modelFromCtx,
+		"original_path", st.originalPath,
+		"bytes_forwarded", st.bytesForwarded.Load(),
+		"elapsed_sec", time.Since(st.llamaStartTime).Seconds(),
+		"scanner_err", errString(scannerErr),
+		"first_forward_err", errString(st.firstForwardErr),
+		"last_forward_err", errString(st.lastForwardErr),
+	}
+	if abortReason == streamAbortOurLimit {
+		logFields = append(logFields, "line_limit_bytes", streamMaxLineBytes())
+		logger.Get().Warnw("proxyRequestLlamaCpp: SSE line exceeded balancer buffer (our_limit, not upstream)",
+			logFields...)
+	} else if abortReason == streamAbortClientCancel {
+		// Клиент ушёл: писать в его соединение бессмысленно.
+		logger.Get().Infow("proxyRequestLlamaCpp: stream ended by client (client_cancel)", logFields...)
+		return st.lastForwardErr
+	} else {
+		logger.Get().Warnw("proxyRequestLlamaCpp: stream ended before [DONE] marker",
+			logFields...)
+	}
+
+	// Эмитим финальный чанк, чтобы клиент точно завершил стрим.
+	// Пробуем дописать; если клиент уже отвалился (broken pipe) — игнорируем ошибку.
+	// R296 (2026-10-29): КОНТРАКТ ТЕРМИНАТОРА. Раньше причина обрыва и
+	// терминатор ехали ОДНИМ кадром (`finish_reason:"truncated"` + `error`).
+	// Клиент (Cline) видел `finish_reason` — то есть «ответ завершён» — и не
+	// успевал прочитать причину: выглядело как успешный, но пустой финал.
+	// Теперь сначала кадр-ПРИЧИНА (без finish_reason, то есть поток жив),
+	// затем ровно один терминатор. Кадры собирает abortFramesR296 (там же
+	// тестируются по отдельности).
+	for _, frame := range abortFramesR296(st.originalPath, *st.modelFromCtx, abortReason) {
+		_, _ = st.w.Write(frame)
+	}
+	// R384: терминатор уже в этих кадрах — второй писать нельзя.
+	st.terminalAlreadySent = true
+	if st.originalPath == "/v1/chat/completions" {
+		_, _ = fmt.Fprintf(st.w, "data: [DONE]\n\n")
+	}
+	Flush(st.w)
+	return nil
 }

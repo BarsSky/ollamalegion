@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // kv_formula_single_source_r498_test.go — R498 (2026-11-19), аудит N-3/N-4.
 //
@@ -58,10 +58,10 @@ func TestR498_AdaptiveLoaderHasNoOwnKVFormula(t *testing.T) {
 }
 
 // TestR498_NoFourthKVFormulaInBalancer — четвёртая формула KV (N-5) удалена: в
-// autotune_budget_r230.go квантованные типы считаются по memfit 34/32 и 18/32,
+// autotune_budget.go квантованные типы считаются по memfit 34/32 и 18/32,
 // а не «f16/2» и «f16/4».
 func TestR498_NoFourthKVFormulaInBalancer(t *testing.T) {
-	const path = "../../internal/balancer/autotune_budget_r230.go"
+	const path = "../../internal/balancer/autotune_budget.go"
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("не читается %s: %v", path, err)

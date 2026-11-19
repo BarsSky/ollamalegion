@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"bytes"
@@ -16,7 +16,7 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// rpc_layout_node_r133.go — R133 (2026-10-16): донор поднимает свой узел
+// rpc_layout_node.go — R133 (2026-10-16): донор поднимает свой узел
 // раскладки ПО ПРИКАЗУ БАЛАНСЕРА.
 //
 // ЧЕГО НЕ ХВАТАЛО. Роли бэкендов (main/donor/standalone) и сборка списка доноров

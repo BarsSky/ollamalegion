@@ -1,4 +1,4 @@
-// autotune_defer_r283.go — R283 (2026-10-29): AutoTune не путает «сейчас занято»
+﻿// autotune_defer.go — R283 (2026-10-29): AutoTune не путает «сейчас занято»
 // с «сломалось» и не долбится в воркер каждые 70 секунд.
 //
 // ЖИВОЙ ФАКТ (стенд r282, живой лог за 20 минут). AutoTune срабатывал ≥4 раз
@@ -210,7 +210,7 @@ func (p *Proxy) finalizeAutoTuneReload(backendID, modelName string, plan *AutoTu
 			p.autoTuneTracker.ClearAutoTuneDefer(backendID, modelName)
 		}
 		// R416 (2026-11-03): запоминаем применённый KV — гистерезис против
-		// пинг-понга q4_0 ↔ q8_0/f16 (см. autotune_kv_guard_r416.go).
+		// пинг-понга q4_0 ↔ q8_0/f16 (см. autotune_kv_guard.go).
 		if plan != nil && plan.KVCacheType != "" {
 			recordAutoTuneKVAppliedR416(backendID, modelName, plan.KVCacheType)
 		}

@@ -1,4 +1,4 @@
-// autotune_kv_mode_r419.go — R419 (2026-11-03): AutoTune больше НЕ меняет
+﻿// autotune_kv_mode.go — R419 (2026-11-03): AutoTune больше НЕ меняет
 // KV-cache автоматически по свободной VRAM.
 //
 // ПОЧЕМУ. Анализ AutoTune строит «оптимальный» тип KV-cache из СВОБОДНОЙ VRAM в

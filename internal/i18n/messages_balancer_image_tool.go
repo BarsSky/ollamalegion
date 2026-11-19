@@ -1,4 +1,4 @@
-package i18n
+﻿package i18n
 
 // messages_balancer — R234 (2026-10-24): сообщения балансера, батч r234
 // (диагностика инструмента генерации картинок и раскладки RPC).
@@ -163,7 +163,7 @@ var messagesBalancer = map[string]map[Lang]string{
 		EN: "the engine returned no image",
 	},
 
-	// === rpc_link_measure_r118.go: замер канала до узлов раскладки ======
+	// === rpc_link_measure.go: замер канала до узлов раскладки ======
 	"balancer.rpc_link.unknown_address": {
 		RU: "backend %s: неизвестен адрес cppworker",
 		EN: "backend %s: cppworker address is unknown",
@@ -355,7 +355,7 @@ var messagesBalancer = map[string]map[Lang]string{
 		EN: "EnsureRPCLayout: the layout is disabled (self-contained mode)",
 	},
 
-	// === rpc_layout_node_r133.go: узел раскладки (rpc-server) ===========
+	// === rpc_layout_node.go: узел раскладки (rpc-server) ===========
 	// R315 (2026-10-30): приказ о раскладке недоступному бэкенду не отправляется.
 	"balancer.rpc_layout.backend_offline": {
 		RU: "бэкенд не в сети: приказ о раскладке не отправляется (узел вернётся — гард применит состав сам)",

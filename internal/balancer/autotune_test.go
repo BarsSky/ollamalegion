@@ -1,4 +1,4 @@
-// autotune_test.go — Round 54.1 (2026-08-24): unit tests for AutoTune analysis.
+﻿// autotune_test.go — Round 54.1 (2026-08-24): unit tests for AutoTune analysis.
 
 package balancer
 
@@ -422,7 +422,7 @@ func TestTriggerAutoTuneReload_CircuitCoolDown_PublishesEvent(t *testing.T) {
 	// R444 (2026-11-05): этот тест проверяет поведение CIRCUIT BREAKER'а, то есть
 	// ветку ПРИМЕНЕНИЯ плана. По умолчанию AutoTune теперь recommend-only и до
 	// применения не доходит (возвращает SkippedReason раньше — так и задумано,
-	// см. autotune_apply_mode_r444.go), поэтому здесь явно включаем auto.
+	// см. autotune_apply_mode.go), поэтому здесь явно включаем auto.
 	t.Setenv("LB_AUTOTUNE_APPLY", AutoTuneApplyModeAuto)
 
 	// Arrange: прокси с AutoTune enabled и подоптимальной моделью в метриках.

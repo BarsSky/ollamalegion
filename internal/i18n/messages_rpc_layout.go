@@ -23,7 +23,7 @@
 // анализа (reason/suggestion/issues у AutoTune и placement-fit) — это не логи и не
 // ошибки, а содержимое промпта/данные отчёта; их язык задаётся не каталогом.
 var messagesBalancer3 = map[string]map[Lang]string{
-	// === rpc_layout_failure_r118.go: отказ раскладки при загрузке =======
+	// === rpc_layout_failure.go: отказ раскладки при загрузке =======
 	"balancer.rpc_layout_failure.disable_failed_warn": {
 		RU: "DisableRPCLayoutFor: не удалось выключить раскладку",
 		EN: "DisableRPCLayoutFor: failed to disable the layout",

@@ -1,4 +1,4 @@
-// autotune.go — Round 54.1 (2026-08-24): autonomous balancer.
+﻿// autotune.go — Round 54.1 (2026-08-24): autonomous balancer.
 //
 // Цель: привести балансер к автономному режиму, который:
 //   1. Детектит sub-optimal состояние бэкенда (loaded model с плохими params)
@@ -231,7 +231,7 @@ func computeOptimalKVCacheTypeWithWorkload(p *ModelProfileInfo, workload Workloa
 // computeOptimalNumGPULayers — Round 54.1 + R230: optimal num_gpu_layers.
 //
 // R230: рекомендация обязана быть физически исполнимой. Бюджет — reload-бюджет
-// (free + usage модели, см. autotune_budget_r230.go), из него вычитаются
+// (free + usage модели, см. autotune_budget.go), из него вычитаются
 // резерв на activations и KV cache для загруженного n_ctx. Раньше freeVRAM
 // приезжал в МБ как байты (≈0 GB) и на любой модели выдавалось -2.
 //
@@ -976,7 +976,7 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 	// R416 (2026-11-03): KV-cache не переключается туда-обратно и не спорит с
 	// профилем модели. Без этого q8_0 → q4_0 → q8_0 … перезагружали модель на
 	// каждом запросе (~80 c unload+load), и клиент видел «медленную модель».
-	// См. autotune_kv_guard_r416.go.
+	// См. autotune_kv_guard.go.
 	recommendedKV := plan.KVCacheType
 	if dropped := guardAutoTuneKVPlanR416(p, backendID, modelName, plan); dropped != "" {
 		logger.Get().Warnw("autotune: kv-cache change suppressed (R416)",
@@ -1002,7 +1002,7 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 	// Живой дефект: агентский цикл Cline платил 43–67 с за unload+load перед
 	// каждым ходом, потому что план строился по сиюминутной свободной VRAM
 	// («освободилось → поднять слои»). Рекомендация при этом остаётся: её видно в
-	// панели и можно применить вручную. См. autotune_apply_mode_r444.go.
+	// панели и можно применить вручную. См. autotune_apply_mode.go.
 	if !autoTuneApplyAutomaticR444() {
 		res.SkippedReason = "R444: AutoTune is recommend-only (LB_AUTOTUNE_APPLY=recommend); " +
 			"apply the recommendation manually (model card / POST /api/v1/admin/autotune/{id}/apply)"
@@ -1102,7 +1102,7 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 		// Решения (breaker, событие, backoff, лог) принимает один обработчик:
 		// раньше «воркер занят» попадал в ветку «failed» и писал ERROR с
 		// растущим cool-down'ом, хотя перезагрузку просто нельзя было делать
-		// сейчас. См. autotune_defer_r283.go.
+		// сейчас. См. autotune_defer.go.
 		p.finalizeAutoTuneReload(backendID, modelName, plan, circuit, err)
 	}()
 

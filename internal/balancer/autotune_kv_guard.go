@@ -1,4 +1,4 @@
-// autotune_kv_guard_r416.go — R416 (2026-11-03): AutoTune не переключает
+﻿// autotune_kv_guard.go — R416 (2026-11-03): AutoTune не переключает
 // KV-cache туда-обратно и не спорит с профилем модели.
 //
 // ЖИВОЙ ДЕФЕКТ (стенд, Qwen3.8-9B, первый же запрос после загрузки). Лог
@@ -72,7 +72,7 @@ func guardAutoTuneKVPlanR416(p *Proxy, backendID, model string, plan *AutoTuneRe
 	}
 	// R419 (2026-11-03): смена KV — выбор КАЧЕСТВА, а не только памяти. По
 	// умолчанию (LB_AUTOTUNE_KV_MODE=recommend) AutoTune её только рекомендует и
-	// НЕ перезагружает модель. См. autotune_kv_mode_r419.go.
+	// НЕ перезагружает модель. См. autotune_kv_mode.go.
 	if !autoTuneKVAutomaticR419() {
 		plan.KVCacheType = ""
 		return "automatic KV-cache changes are disabled (LB_AUTOTUNE_KV_MODE=" +

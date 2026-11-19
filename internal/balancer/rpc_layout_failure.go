@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 )
 
-// rpc_layout_failure_r118.go — R118.3 (2026-10-14): неудачная загрузка с
+// rpc_layout_failure.go — R118.3 (2026-10-14): неудачная загрузка с
 // раскладкой не должна оставлять оператора без модели и без объяснения.
 //
 // ЗАЧЕМ ОТДЕЛЬНЫЙ СЛОЙ ПОСЛЕ ГАРДА. rpc_layout_guard.go проверяет узлы ДО

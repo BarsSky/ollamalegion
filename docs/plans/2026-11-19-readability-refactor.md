@@ -506,3 +506,5 @@ ctx_ceiling_cluster.go (кластерный потолок). Счётчик: с
 **R5 — продолжение (R605, 0.7.409).** Тема «стриминг ответа» в internal/balancer — 10 файлов stream_*. Счётчик: собственный 195 → 185, structure_report.ps1 186 → 176. Остаток: internal/balancer (128) и cmd/cppworker (57).
 
 **R5 — продолжение (R606, 0.7.410).** Две темы по 7 файлов: «раскладка» (placement_*) и «модель на бэкенде» (model_*) — двумя коммитами. Счётчик: собственный 185 → 171, structure_report.ps1 176 → 167. Остаток: internal/balancer (114) и cmd/cppworker (57).
+
+**R5 — продолжение (R607, 0.7.411).** Темы «автотюн» (utotune_*) и «раскладка по RPC» (pc_* в internal/balancer) — по 5 файлов. Счётчик: собственный 171 → 161, structure_report.ps1 167 → 157. Остаток: internal/balancer (104) и cmd/cppworker (57).

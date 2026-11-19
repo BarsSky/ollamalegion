@@ -1405,7 +1405,7 @@ func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID
 	}
 
 	// R118.2/R118.3: гард раскладки и локальный повтор после её отказа живут в
-	// обёртке executeLlamaCppLoad (rpc_layout_failure_r118.go) — здесь остаётся
+	// обёртке executeLlamaCppLoad (rpc_layout_failure.go) — здесь остаётся
 	// только сама загрузка.
 
 	// R66d (2026-09-23): профиль модели — источник параметров загрузки, если

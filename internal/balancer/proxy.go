@@ -137,7 +137,7 @@ type Proxy struct {
 	llamaCppMetricsPoller *llamaCppMetricsPoller
 
 	// R118.15: канал закрытия петли замеров пропускной способности до узлов
-	// раскладки (rpc_link_measure_r118.go). nil — замеры не запускались.
+	// раскладки (rpc_link_measure.go). nil — замеры не запускались.
 	linkMeasureStop chan struct{}
 
 	// R72 (P0): placement policy — решение о размещении модели.
@@ -168,7 +168,7 @@ type Proxy struct {
 	rpcProbeCachedBy map[string]rpcProbeCacheEntry
 
 	// R133 (2026-10-16): управление СОБСТВЕННЫМ узлом раскладки бэкенда-донора
-	// (rpc_layout_node_r133.go). rpcNodeServed — помним, что узел подняли МЫ
+	// (rpc_layout_node.go). rpcNodeServed — помним, что узел подняли МЫ
 	// (роль donor), чтобы при смене роли погасить именно своё решение, а не
 	// ручной тумблер оператора; rpcNodeReason — почему узел не в том состоянии,
 	// которого требует роль (для API/WebUI); rpcNodeReachable — последняя
@@ -186,7 +186,7 @@ type Proxy struct {
 	rpcNodeOrderState map[string]string
 
 	// R118.15 (2026-10-14): замеры канала до узлов раскладки, сделанные САМИМ
-	// балансером (rpc_link_measure_r118.go): backendID → последний замер.
+	// балансером (rpc_link_measure.go): backendID → последний замер.
 	// Раньше значение приходило только из .env оператора (LB_RPC_LINK_MBPS) и
 	// молча устаревало. Под p.mu; нулевое значение пригодно к работе.
 	rpcLinkMeasured map[string]rpcLinkMeasurement

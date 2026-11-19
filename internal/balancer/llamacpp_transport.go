@@ -92,18 +92,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		return nil
 	}
 
-	llamacppPath := originalPath
-	if !nativePath {
-		llamacppPath = translatePathForLlamaCpp(originalPath)
-	}
-	isStreaming := isStreamingFromBody(originalPath, bodyBuf)
-
-	translatedBody := bodyBuf
-	if !nativePath {
-		if tb, err := translateOllamaBodyToOpenAI(originalPath, bodyBuf); err == nil {
-			translatedBody = tb
-		}
-	}
+	// R533 (R2 читаемости): путь и тело для cppworker — одной функцией.
+	llamacppPath, isStreaming, translatedBody := makeUpstreamPathAndBody(originalPath, nativePath, bodyBuf)
 
 	// F.0.4 (2026-06-28): session F — диагностика EOF.
 	// Запоминаем startTime для расчёта duration_ms при ошибках upstream.
@@ -2830,4 +2820,26 @@ func (p *Proxy) refuseUnsupportedFamilyAndLog(w http.ResponseWriter, originalPat
 	}
 	p.logModelFamily(originalPath, modelFromCtx, hasTools)
 	return false
+}
+
+// makeUpstreamPathAndBody — путь для cppworker, признак стрима и тело запроса
+// (R533, R2 читаемости: вынесено из proxyRequestLlamaCpp дословно).
+//
+// Нативный Ollama-путь отдаётся как есть (R65d: транслятор терял options.*/
+// keep_alive/format/think/images), не-нативный переводится в OpenAI-формат;
+// при ошибке перевода отправляется исходное тело, как и раньше.
+func makeUpstreamPathAndBody(originalPath string, nativePath bool, bodyBuf []byte) (llamacppPath string, isStreaming bool, translatedBody []byte) {
+	llamacppPath = originalPath
+	if !nativePath {
+		llamacppPath = translatePathForLlamaCpp(originalPath)
+	}
+	isStreaming = isStreamingFromBody(originalPath, bodyBuf)
+
+	translatedBody = bodyBuf
+	if !nativePath {
+		if tb, err := translateOllamaBodyToOpenAI(originalPath, bodyBuf); err == nil {
+			translatedBody = tb
+		}
+	}
+	return llamacppPath, isStreaming, translatedBody
 }

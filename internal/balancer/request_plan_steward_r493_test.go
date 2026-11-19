@@ -41,7 +41,7 @@ var requestDecisionAllowlistR493 = map[string]int{
 	"proxy_request.go":               1,
 	// Модуль плана — последнее место, где прямой разбор ещё допустим
 	// (fallback для внутренних вызовов без разобранного тела).
-	"request_plan_r493.go":           1,
+	"request_plan.go":           1,
 }
 
 func TestR493_RequestDecisionsOnlyInPlan(t *testing.T) {

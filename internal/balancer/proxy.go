@@ -385,7 +385,7 @@ type Proxy struct {
 	// нему нельзя понять, идёт ли стрим на конкретном бэкенде. Из-за этого
 	// перезагрузка модели по запросу ВТОРОГО клиента выгружала модель под
 	// активным стримом первого, и тот обрывался с «stream ended by upstream
-	// before completion». См. active_streams_r271.go.
+	// before completion». См. active_streams.go.
 	streamsR271 activeStreamsR271
 
 	// Семафор для ограничения одновременных warmup (загрузка моделей в VRAM).

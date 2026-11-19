@@ -1,6 +1,6 @@
-package balancer
+﻿package balancer
 
-// tool_args_fragment_r254.go — R254 (2026-10-28): НЕ ремонтировать незакрытый
+// tool_args_fragment.go — R254 (2026-10-28): НЕ ремонтировать незакрытый
 // фрагмент аргументов инструмента.
 //
 // ЖИВОЙ ДЕФЕКТ (Cline, длинная серия tool-call'ов). На /v1 каждый SSE-чанк с

@@ -510,3 +510,5 @@ ctx_ceiling_cluster.go (кластерный потолок). Счётчик: с
 **R5 — продолжение (R607, 0.7.411).** Темы «автотюн» (utotune_*) и «раскладка по RPC» (pc_* в internal/balancer) — по 5 файлов. Счётчик: собственный 171 → 161, structure_report.ps1 167 → 157. Остаток: internal/balancer (104) и cmd/cppworker (57).
 
 **R5 — продолжение (R608, 0.7.412).** Темы «бэкенд» (5), «отмена запроса» (4), «сессия» (4) в internal/balancer. Счётчик: собственный 161 → 148, structure_report.ps1 157 → 145. Остаток: internal/balancer (91, мелкими кластерами по 2–4 файла) и cmd/cppworker (57).
+
+**R5 — продолжение (R609, 0.7.413).** Темы «аргументы инструментов» (5) и «запрос/активные потоки» (5) в internal/balancer; два ctive_streams различены как ctive_streams.go и ctive_streams_registry.go. Счётчик: собственный 148 → 138, structure_report.ps1 145 → 135. Остаток: internal/balancer (81) и cmd/cppworker (57).

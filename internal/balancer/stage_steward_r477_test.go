@@ -1,4 +1,4 @@
-// stage_steward_r477_test.go — T5 из плана «два мозга» (refactoring-plan.ru.md):
+﻿// stage_steward_r477_test.go — T5 из плана «два мозга» (refactoring-plan.ru.md):
 // предохранитель ДО рефакторинга, чтобы правки путей не теряли диагностику.
 //
 // ЗАЧЕМ. R477 добавил стадии (select_backend/admission/preflight/upstream/stream/
@@ -15,7 +15,7 @@
 //     client_write — их обязана ставить хотя бы одна точка SetStageR477;
 //   - терминальная: done. Её НЕ ставят через SetStageR477 — по R479 она
 //     вычисляется при печати трассы (stage_final = done, если ход дошёл до конца
-//     без обрыва, request_trace_r476.go).
+//     без обрыва, request_trace.go).
 //
 // Тест статический (по исходникам), поэтому не зависит от того, какой путь
 // обслужил запрос, и не флакает.
@@ -188,12 +188,12 @@ func TestR477_TerminalStageIsComputed(t *testing.T) {
 		}
 	}
 
-	src, err := os.ReadFile("request_trace_r476.go")
+	src, err := os.ReadFile("request_trace.go")
 	if err != nil {
-		t.Fatalf("не прочитать request_trace_r476.go: %v", err)
+		t.Fatalf("не прочитать request_trace.go: %v", err)
 	}
 	if !strings.Contains(string(src), "stageFinal = stageDoneR477") {
-		t.Error("в request_trace_r476.go нет вычисления stage_final = stageDoneR477 — " +
+		t.Error("в request_trace.go нет вычисления stage_final = stageDoneR477 — " +
 			"успешный ход снова будет неотличим от оборванного")
 	}
 }

@@ -151,7 +151,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// R271 (2026-10-29): учитываем стрим по бэкенду и модели. Именно этого учёта
 	// не хватало, когда перезагрузка модели по запросу ВТОРОГО клиента выгружала
 	// модель под активным стримом первого — тот получал EOF без терминального
-	// маркера и «stream ended by upstream before completion» (active_streams_r271.go).
+	// маркера и «stream ended by upstream before completion» (active_streams.go).
 	endClientStream := beginClientStreamR271(p, backendID, c.modelFromCtx)
 	defer endClientStream()
 
@@ -2777,7 +2777,7 @@ func (st *llamaCppStreamState) reportPrematureEnd() error {
 	if streamAbortBlamesUpstream(abortReason) {
 		if kind, ok := st.p.recentDestructiveOpR271(st.backendID, *st.modelFromCtx, 3*time.Minute); ok {
 			// R280: причина зависит от ВИДА операции (reload по чужому окну /
-			// AutoTune / unload) — таблица одна, в active_streams_r271.go.
+			// AutoTune / unload) — таблица одна, в active_streams.go.
 			abortReason = abortReasonForDestructiveOpR271(kind)
 			logger.Get().Warnw("proxyRequestLlamaCpp: stream ended because the balancer reloaded the model",
 				"reason", abortReason, "cause", kind,

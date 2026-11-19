@@ -117,7 +117,7 @@ func TestR219_LegacySSERegistersActiveStream(t *testing.T) {
 // /v1-пути (hijack и legacy) обязаны регистрировать стрим ДО цикла записи.
 //
 // R271 (2026-10-29): учёт стрима переехал в общий помощник
-// beginClientStreamR271 (active_streams_r271.go) — он же ведёт счётчики по
+// beginClientStreamR271 (active_streams.go) — он же ведёт счётчики по
 // бэкенду/модели, чтобы перезагрузка модели по чужому запросу не рвала этот
 // стрим. Тест проверяет не имя переменной в файле, а то, что путь вызывает
 // помощник, а помощник реально ведёт глобальный счётчик (иначе Shutdown снова
@@ -157,17 +157,17 @@ func TestR219_StreamAccountingWiredInBothPaths(t *testing.T) {
 	}
 
 	// Сам учёт для graceful shutdown обязан остаться внутри помощника.
-	helperRaw, err := os.ReadFile("active_streams_r271.go")
+	helperRaw, err := os.ReadFile("active_streams.go")
 	if err != nil {
-		t.Fatalf("не читается active_streams_r271.go: %v", err)
+		t.Fatalf("не читается active_streams.go: %v", err)
 	}
 	helper := string(helperRaw)
 	addIdx := strings.Index(helper, "p.activeStreams.Add(1)")
 	if addIdx < 0 {
-		t.Fatal("active_streams_r271.go: потерян p.activeStreams.Add(1) — Shutdown перестанет ждать стримы")
+		t.Fatal("active_streams.go: потерян p.activeStreams.Add(1) — Shutdown перестанет ждать стримы")
 	}
 	doneIdx := strings.Index(helper, "p.activeStreams.Done")
 	if doneIdx < 0 || doneIdx < addIdx {
-		t.Fatal("active_streams_r271.go: нет снятия счётчика (Done) после Add(1)")
+		t.Fatal("active_streams.go: нет снятия счётчика (Done) после Add(1)")
 	}
 }

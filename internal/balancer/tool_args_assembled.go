@@ -1,4 +1,4 @@
-// tool_args_assembled_r249.go — R249 (2026-10-28): ремонт аргументов на
+﻿// tool_args_assembled.go — R249 (2026-10-28): ремонт аргументов на
 // СОБРАННОМ (auto-stream → non-stream) ответе балансера.
 //
 // ЗАЧЕМ. Стриминговый путь прогоняет аргументы через repairToolArguments, а

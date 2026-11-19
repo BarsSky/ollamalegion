@@ -1,6 +1,6 @@
-package balancer
+﻿package balancer
 
-// active_streams_r281.go — R281 (2026-10-29): операторский reload из WebUI/API
+// active_streams_registry.go — R281 (2026-10-29): операторский reload из WebUI/API
 // подчиняется тому же правилу «не рвать чужой стрим», что и авто-перезагрузка
 // (R271/R280).
 //
@@ -10,7 +10,7 @@ package balancer
 // «вторые пути», которые потом обходили общий механизм (учёт стримов, фильтр
 // меток, границы SSE).
 //
-// Здесь только обёртки; сам учёт живёт в active_streams_r271.go.
+// Здесь только обёртки; сам учёт живёт в active_streams.go.
 
 import "context"
 

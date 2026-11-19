@@ -313,12 +313,49 @@ foreach ($svc in $Services) {
                 # compose отдаёт переменным окружения приоритет над .env, а запись
                 # тега в .env идёт ПОСЛЕ сборки — иначе образ собрался бы со старым
                 # тегом, и `up -d` не пересоздал бы контейнер.
+                #
+                # R591 (2026-11-19): ИДЕНТИЧНОСТЬ ТОЖЕ ЧЕРЕЗ ОКРУЖЕНИЕ.
+                #
+                # ЖИВОЙ ОТКАЗ (выпуск r261119-r590). Здесь выставлялся только
+                # IMAGE_WORKER_TAG, а compose берёт остальную идентичность из
+                # окружения процесса (`args: GIT_COMMIT: ${GIT_COMMIT:-}` и т.д. в
+                # deployments/docker-compose.stack.yml). Переменных не было → в
+                # образе не оказалось меток `ru.ollamalegion.git.commit` и `created`,
+                # и страховка R493/15b отказалась писать манифест:
+                #   «R493/15b: манифест выпуска неполный — записи нет.
+                #    - imageworker: нет commit в OCI-метках образа …»
+                # То есть образ собирался, а выпуск не фиксировался: «что раскатано»
+                # оставалось неизвестным. Остальные сервисы от этого не страдали —
+                # они получают идентичность флагами `docker build @idArgs`.
+                #
+                # Значения берём из того же $identity (Get-BuildIdentity), что и
+                # $idArgs, — одно число, один источник. Прежние значения окружения
+                # сохраняются и возвращаются в finally: иначе подменённый
+                # BUILD_AUTHOR/GIT_COMMIT утёк бы в последующие сборки этого запуска.
+                $identityEnvNames = @('IMAGE_WORKER_TAG', 'GIT_COMMIT', 'GIT_COMMIT_FULL',
+                                      'GIT_COMMIT_DATE', 'BUILD_DATE', 'BUILD_AUTHOR')
+                $identityEnvPrev = @{}
+                foreach ($n in $identityEnvNames) {
+                    $identityEnvPrev[$n] = [Environment]::GetEnvironmentVariable($n)
+                }
                 Push-Location $envDir
                 try {
                     $env:IMAGE_WORKER_TAG = $s.ImageTag
+                    $env:GIT_COMMIT = $identity.GitCommit
+                    $env:GIT_COMMIT_FULL = $identity.GitCommitFull
+                    $env:GIT_COMMIT_DATE = $identity.GitCommitDate
+                    $env:BUILD_DATE = $identity.BuildDate
+                    $env:BUILD_AUTHOR = $identity.Author
                     & $dockerBin compose -f $ComposeFile --profile $ComposeProfile build imageworker
                 } finally {
-                    Remove-Item Env:IMAGE_WORKER_TAG -ErrorAction SilentlyContinue
+                    foreach ($n in $identityEnvNames) {
+                        $prevValue = $identityEnvPrev[$n]
+                        if ($null -eq $prevValue) {
+                            Remove-Item "Env:$n" -ErrorAction SilentlyContinue
+                        } else {
+                            Set-Item "Env:$n" $prevValue
+                        }
+                    }
                     Pop-Location
                 }
             }
@@ -400,9 +437,23 @@ if (-not $NoDeploy) {
 # раньше последнего коммита) и отказывается писать неполный манифест.
 $builtServices = @{}
 $manifestImages = @()
+# R591 (2026-11-19): репозитории образов, собранных В ЭТОМ запуске.
+#
+# ЗАЧЕМ. Прошлый манифест (r261119-r542) записал образ imageworker под именем
+# сервиса `sdworker` (внутри образа живёт бинарь sdworker, SERVICE=sdworker). В
+# этом выпуске compose-сервис называется `imageworker`, поэтому перенос «тех
+# сервисов, которых не было в запуске» не узнавал его по имени и добавлял ВТОРУЮ
+# запись про тот же образ: `imageworker=r261119-r590` рядом с `sdworker=72ec210a`.
+# Манифест начинал утверждать, что на стенде два разных image-worker'а.
+# Поэтому сверяем ещё и репозиторий образа: если образ того же репозитория уже
+# собран в этом запуске, запись из прошлого манифеста — устаревшая копия.
+$builtImageRepos = @{}
 foreach ($r in $results) {
     $builtServices[[string]$r.service] = $true
     $manifestImages += $r
+    $refText = [string]$r.image
+    $repoPart = ($refText -split ':')[0]
+    if ($repoPart) { $builtImageRepos[$repoPart] = $true }
 }
 if (Test-Path $manifestPath) {
     try {
@@ -410,6 +461,11 @@ if (Test-Path $manifestPath) {
         foreach ($img in @($prevManifest.images)) {
             if (-not $img -or -not $img.service) { continue }
             if ($builtServices.ContainsKey([string]$img.service)) { continue }
+            $prevRepo = ([string]$img.image -split ':')[0]
+            if ($prevRepo -and $builtImageRepos.ContainsKey($prevRepo)) {
+                Write-Host ("[manifest] запись прошлого манифеста '{0}' ({1}) пропущена: образ этого репозитория собран в этом выпуске" -f $img.service, $img.image) -ForegroundColor DarkGray
+                continue
+            }
             $manifestImages += [pscustomobject]@{
                 service  = [string]$img.service
                 variable = [string]$img.variable

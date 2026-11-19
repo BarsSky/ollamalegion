@@ -168,13 +168,6 @@ window.I18N_RU = {
   // Models
   "models.title": "Модели",
   "models.loaded": "Загруженные модели",
-  "models.size": "Размер",
-  "models.family": "Семейство",
-  "models.quantization": "Квантизация",
-  "models.context_length": "Длина контекста",
-  "models.vram_required": "Требуется VRAM",
-  "models.ram_required": "Требуется RAM",
-  "models.on_backends": "На бэкендах",
   "models.no_models": "Нет загруженных моделей",
   "models.memory_title": "Использование памяти",
 
@@ -1241,9 +1234,6 @@ window.I18N_RU = {
   "renderers.common_in": "через",
 
   // ===== Model details in grid (NEW) =====
-  "models.format": "Формат",
-  "models.parameter_size": "Параметры",
-  "models.digest": "Digest",
 
   // Filter & Sort (Models tab gaps)
   "models.filter_all": "Все",
@@ -1273,12 +1263,6 @@ window.I18N_RU = {
   "models.cancel_op": "Отменить",
   "models.cancel_requested": "Отмена…",
   "models.auto_refresh_on": "Авто-обновление",
-  "models.operation_pull": "Pull",
-  "models.operation_load": "Загрузка",
-  "models.operation_unload": "Выгрузка",
-  "models.operation_delete": "Удаление",
-  "models.operation_create": "Создание",
-  "models.operation_copy": "Копирование",
 
   // ===== Модальное окно деталей модели (Q3 W4 — Session 19) =====
   "models.details.title": "Детали модели",
@@ -1977,18 +1961,12 @@ window.I18N_RU = {
   // GGUF, отказ в действии), чтобы оператор видел одну и ту же причину.
   "models.donor_load_blocked": "Донор не поднимает свои копии моделей: его VRAM отдана мастеру через rpc-server. Снимите роль донора, если модель нужна на этом узле.",
   "models.delete": "Удалить",
-  "models.delete_op": "Удалить",
-  "models.delete_hint": "Удалить модель с бэкенда",
   "models.confirm_delete": "Удалить модель",
   "models.pull": "Скачать",
-  "models.pull_hint": "Скачать модель из реестра",
-  "models.push": "Загрузить",
-  "models.push_hint": "Загрузить модель в реестр",
   "models.status": "Статус",
   "models.operation": "Операция",
   "models.started": "Запущена",
   "models.operations_active": "Активные операции",
-  "models.operation_queued": "Операция в очереди",
   "models.operation_running": "Операция выполняется...",
   "models.operation_success": "Операция выполнена успешно",
   "models.operation_error": "Ошибка операции",

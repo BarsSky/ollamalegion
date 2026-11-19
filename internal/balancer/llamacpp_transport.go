@@ -566,20 +566,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// R360 (2026-10-31): id генерации на воркере. По нему адресная отмена
 	// (cancelUpstreamGeneration): без него отмена по модели гасит ВСЕ генерации этой
 	// модели на узле, включая чужие (аудит abort, A5).
-	upstreamRequestIDR360 := resp.Header.Get("X-Request-Id")
-	// R493-12a: сколько воркер отдал на загрузку модели в ЭТОМ запросе.
-	//
-	// Зачем из заголовка: на OpenAI-поверхности, которой балансер и разговаривает
-	// с воркером (apiStyle=openai-compatible), в теле ответа нет полей
-	// длительностей вообще. Живой замер: клиент ждал 44 с (ленивая загрузка), а
-	// total_duration в кадре был 2.55 с. Заголовок несёт эти секунды, и балансер
-	// переносит их в load_duration, не выдумывая чисел.
-	workerLoadNsR493 := int64(0)
-	if v := strings.TrimSpace(resp.Header.Get("X-Cppworker-Load-Duration-Ms")); v != "" {
-		if ms, convErr := strconv.ParseInt(v, 10, 64); convErr == nil && ms > 0 {
-			workerLoadNsR493 = ms * int64(time.Millisecond)
-		}
-	}
+	// R535 (R2 читаемости): id генерации и время загрузки — из заголовков.
+	upstreamRequestIDR360, workerLoadNsR493 := upstreamIdentityFromHeaders(resp)
 	// R332.3 (2026-10-30, поймано живой матрицей): нативный стрим обязан
 	// объявлять, КТО обслужил запрос.
 	//
@@ -2850,4 +2838,18 @@ func buildUpstreamURLAndBody(targetURL, llamacppPath, originalPath, backendID st
 		}
 	}
 	return fullURL, body
+}
+
+// upstreamIdentityFromHeaders — id генерации воркера (R360: по нему адресная
+// отмена, иначе гасятся все генерации модели на узле) и время загрузки модели
+// из заголовка (R493-12a: в теле ответа OpenAI-поверхности этих секунд нет).
+// R535, R2 читаемости: вынесено из proxyRequestLlamaCpp дословно.
+func upstreamIdentityFromHeaders(resp *http.Response) (requestID string, loadNs int64) {
+	requestID = resp.Header.Get("X-Request-Id")
+	if v := strings.TrimSpace(resp.Header.Get("X-Cppworker-Load-Duration-Ms")); v != "" {
+		if ms, convErr := strconv.ParseInt(v, 10, 64); convErr == nil && ms > 0 {
+			loadNs = ms * int64(time.Millisecond)
+		}
+	}
+	return requestID, loadNs
 }

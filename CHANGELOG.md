@@ -20,8 +20,14 @@
 Проверки: `gofmt`/`go build`/`go vet` чисто, `go test ./internal/balancer/` —
 зелёный, `-race` — зелёный, `go vet` не находит недостижимого кода.
 
-**Образ пересобран** (код `internal/balancer` изменился): `balancer:r261119-r542`,
-стенд перезалит, теги и манифест обновлены.
+**Образ пересобран и раскатан.** Код `internal/balancer` изменился, поэтому
+выпуск: `ollama-legion/balancer:r261119-r542` (коммит `2cf29fd7`, алиас
+`latest`), контейнер `ol-stack-balancer` пересоздан и здоров, `/app/identity.json`
+= `r261119-r542 (2cf29fd7)`; `BALANCER_TAG` в `.env`/`.env.example` и манифест
+(тег выпуска `r261119-r542`, `gitCommit` `2cf29fd7`) обновлены; сверка
+`check-image-tags.ps1 -ComposeFile docker-compose.stack.yml -EnvFile .env.example`
+— OK по всем пяти образам; живые проверки `stand_check_consistency.ps1` — все
+PASS.
 ## [0.7.344 - R541: R2 читаемости — не-потоковый путь (907) разобран по стадиям, 2026-11-18]
 
 Продолжение R2 на второй транспорт (`internal/balancer/llamacpp_transport_nonstream.go`,

@@ -1,4 +1,4 @@
-// queue_headers_r493.go — R493/долг P2-13: заголовки очереди в ОДНОМ месте.
+﻿// queue_headers.go — R493/долг P2-13: заголовки очереди в ОДНОМ месте.
 //
 // ЗАЧЕМ. Клиентские заголовки очереди (`X-Queue-Wait-Ms`, `X-Queue-Position`,
 // `X-Queue-Wait-Max-Sec`, `X-Queue-Wait-Reason`, `Retry-After`) выставлялись

@@ -1431,7 +1431,7 @@ func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID
 	// ValidateProfile допускает 0).
 	// R119 (2026-10-15, пункт 4): происхождение параметров считается ПО ХОДУ
 	// применения слоёв (сравнением снимков), поэтому не может разойтись с тем,
-	// что реально уехало в cppworker. См. load_provenance_r119.go.
+	// что реально уехало в cppworker. См. load_provenance.go.
 	provenance := newLoadProvenanceBuilder(&req)
 	if prof, ok := mm.profileForLoad(req.ModelName); ok {
 		provenance.observe(LoadSourceProfile, func() { applyProfileLoadParams(&req, prof) })

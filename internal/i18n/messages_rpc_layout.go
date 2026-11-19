@@ -384,7 +384,7 @@ var messagesBalancer3 = map[string]map[Lang]string{
 		EN: "image GPU lock held too long — forced release (exclusiveLockTimeoutSec fuse)",
 	},
 
-	// === load_fit_r188.go: отказ «не влезает в память» ==================
+	// === load_fit.go: отказ «не влезает в память» ==================
 	"balancer.load_fit.fits_debug": {
 		RU: "load fit check: модель влезает",
 		EN: "load fit check: the model fits",

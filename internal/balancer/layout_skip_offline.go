@@ -1,6 +1,6 @@
-package balancer
+﻿package balancer
 
-// layout_skip_offline_r315.go — R315 (2026-10-30): недоступному бэкенду приказ о
+// layout_skip_offline.go — R315 (2026-10-30): недоступному бэкенду приказ о
 // раскладке не отправляется.
 //
 // ЖИВОЙ ФАКТ. Донор выключен, запись бэкенда это знает (`ollama_unavailable`), а

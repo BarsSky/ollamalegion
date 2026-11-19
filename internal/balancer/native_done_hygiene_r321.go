@@ -1,4 +1,4 @@
-// native_done_hygiene_r321.go — R321 (2026-10-30): контрактное завершение
+﻿// native_done_hygiene_r321.go — R321 (2026-10-30): контрактное завершение
 // нативного NDJSON-стрима (/api/chat, /api/generate).
 //
 // ЖИВАЯ ЖАЛОБА (Cline через балансер). Поток обрывается «прямо посреди
@@ -60,7 +60,7 @@ func nativeDoneHygieneR321(line string, reasoningChars, visibleStreamedChars int
 	// R328 (2026-10-30): причина обязана быть контрактным значением для Ollama.
 	// Наш внутренний "truncated" (обрыв по НАШЕМУ таймауту/лимиту, R297) для
 	// клиента означает «ответ не дописан» — это "length"; пустое значение — "stop".
-	// Реестр — done_reason_registry_r328.go; здесь единственная точка, где кадр
+	// Реестр — done_reason_registry.go; здесь единственная точка, где кадр
 	// воркера уходит клиенту без изменений, поэтому нормализация живёт тут.
 	rawReason, _ := chunk["done_reason"].(string)
 	reason, reasonChanged := normalizeDoneReasonForSurface("ollama", rawReason)

@@ -8,9 +8,9 @@
 // история R477/R480 показывает, чем это кончается: два пути, «одинаковый»
 // контракт и расхождение, которое замечают клиенты, а не мы.
 //
-// Теперь имена объявлены один раз (queue_headers_r493.go), оба пути зовут общие
+// Теперь имена объявлены один раз (queue_headers.go), оба пути зовут общие
 // сеттеры, и это проверяется статически:
-//  1. ни один продакшен-файл, кроме queue_headers_r493.go, не содержит этих
+//  1. ни один продакшен-файл, кроме queue_headers.go, не содержит этих
 //     литералов (имена не могут разъехаться по значению);
 //  2. handler-путь и generic-путь ВЫЗЫВАЮТ общие сеттеры (иначе кто-то снова
 //     начнёт ставить заголовки руками);
@@ -28,7 +28,7 @@ import (
 )
 
 // queueHeaderLiteralsT4 — имена X-Queue-*, которые нельзя писать литералами мимо
-// queue_headers_r493.go.
+// queue_headers.go.
 //
 // ПОЧЕМУ БЕЗ Retry-After. Первая версия правила требовала и его — и упала на
 // шести файлах (llamacpp_transport_nonstream, preflight_helper, proxy,
@@ -55,7 +55,7 @@ func TestT4_HeaderNamesLiveInOneFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("не прочитать каталог пакета: %v", err)
 	}
-	const allowed = "queue_headers_r493.go"
+	const allowed = "queue_headers.go"
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {

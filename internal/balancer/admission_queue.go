@@ -1,4 +1,4 @@
-// admission_queue.go — R67b (2026-09-23): очередь допуска (admission) для
+﻿// admission_queue.go — R67b (2026-09-23): очередь допуска (admission) для
 // inference-запросов llama.cpp вместо немедленного 503.
 //
 // ЖАЛОБА (R67, дословно): «проблема на стороне балансера, он резко отбивает
@@ -852,7 +852,7 @@ func (lr *LlamaCppRouter) acquireInferenceAdmission(
 		if lease.Waited > 0 {
 			// Заголовки ещё не отправлены — клиент увидит, что запрос стоял в
 			// очереди, и на /api/chat, и на /v1/chat/completions. Имена и порядок
-			// — в queue_headers_r493.go (один источник для обоих путей).
+			// — в queue_headers.go (один источник для обоих путей).
 			setQueueWaitHeadersR493(w, lease.Waited, position)
 			logger.Get().Infow("admission: slot granted after waiting",
 				"backend", backendID, "model", model, "session", session,

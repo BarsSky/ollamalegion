@@ -327,7 +327,7 @@ func writeAdmitUnavailableR493(w http.ResponseWriter, model string, out admitOut
 // Теперь канонические `X-Queue-*` ставятся общей функцией (как на generic-пути),
 // а прежние имена оставлены АЛИАСАМИ: их читают уже написанные клиенты, и убрать
 // их молча — значит отобрать данные у тех, кто их использует. Оба набора объявлены
-// в queue_headers_r493.go, литералов мимо него не остаётся.
+// в queue_headers.go, литералов мимо него не остаётся.
 func writeBackendUnavailableR403(w http.ResponseWriter, model string, waited time.Duration, position int, queued bool) {
 	if w == nil {
 		return

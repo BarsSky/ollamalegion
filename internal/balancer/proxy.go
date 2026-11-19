@@ -214,7 +214,7 @@ type Proxy struct {
 	modelArchUnsupported map[string]modelArchUnsupported
 	// R119 (2026-10-15, пункт 4): происхождение параметров загрузки модели —
 	// какой слой дал каждое значение (request / profile / default_profile /
-	// backend). Считается при загрузке (load_provenance_r119.go) и отдаётся API,
+	// backend). Считается при загрузке (load_provenance.go) и отдаётся API,
 	// чтобы оператор видел источник рядом со значением. Ключ — backendID|model.
 	loadProvenance map[string]loadProvenanceRecord
 
@@ -1696,7 +1696,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			releaseLease = unifiedRelease
 			waited, position = unifiedWaited, unifiedPosition
 			// Те же заголовки, что на handler-пути — через общий сеттер
-			// (queue_headers_r493.go): клиент видит ожидание одинаково на обеих
+			// (queue_headers.go): клиент видит ожидание одинаково на обеих
 			// поверхностях.
 			setQueueWaitHeadersR493(w, waited, position)
 			if sessionID != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {

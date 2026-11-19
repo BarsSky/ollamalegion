@@ -428,7 +428,7 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 			ReasoningEnabled *bool `json:"reasoning_enabled,reasoningEnabled"`
 			// R383 (2026-11-01): раскладка не применилась при загрузке. Воркер
 			// отдаёт эти поля с R176, но поллер их не декодировал — балансер не
-			// мог ни показать оператору причину, ни лечить (layout_heal_r383.go).
+			// мог ни показать оператору причину, ни лечить (layout_heal.go).
 			LayoutDegraded       bool   `json:"layout_degraded,layoutDegraded,omitempty"`
 			LayoutDegradedReason string `json:"layout_degraded_reason,layoutDegradedReason,omitempty"`
 			// R118.16 (2026-10-14): точная раскладка слоёв из лога llama.cpp

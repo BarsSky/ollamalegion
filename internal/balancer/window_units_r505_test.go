@@ -120,11 +120,9 @@ func TestR505_PreflightHelperUsesWindowCacheR327(t *testing.T) {
 // Проверка по исходнику: DoReload требует настоящего HTTP-загрузчика, а свойство
 // здесь текстовое — «суммарное значение не пишется в поле без пересчёта».
 func TestR505_DoReloadWritesPerSlotCache(t *testing.T) {
-	src, err := os.ReadFile("nctx_reload.go")
-	if err != nil {
-		t.Fatalf("чтение nctx_reload.go: %v", err)
-	}
-	text := string(src)
+	// R634: координатор перезагрузки разложен на семь файлов — читаем весь слой
+	// (см. nctx_coordinator_sources_r634_test.go), иначе сторож краснел бы на переносе.
+	text := readNCtxCoordinatorSourcesR634(t)
 	idx := strings.Index(text, "c.SetLastKnownNCtx(backendID,")
 	if idx < 0 {
 		t.Fatal("не найден вызов SetLastKnownNCtx в nctx_reload.go")

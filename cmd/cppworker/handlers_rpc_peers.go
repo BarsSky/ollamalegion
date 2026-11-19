@@ -1,4 +1,4 @@
-// handlers_rpc_peers_r125.go — R125 (2026-10-16, пункт 3 разбора стенда).
+﻿// handlers_rpc_peers.go — R125 (2026-10-16, пункт 3 разбора стенда).
 //
 //	GET /api/v1/cppworker/rpc-peers
 //	  → {"servers":[{addr,reachable,latencyMs,error}],"reachable":N,"total":M,"checkedAt":...}

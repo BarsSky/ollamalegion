@@ -1,4 +1,4 @@
-// handlers_link_bench_r129.go — R129 (2026-10-16, пункт 3 разбора стенда).
+﻿// handlers_link_bench.go — R129 (2026-10-16, пункт 3 разбора стенда).
 //
 //	POST /api/v1/cppworker/link-bench — ПРИЁМНИК замера: читает тело и отбрасывает
 //	     его, отвечает {"bytes":N,"durationMs":M,"mbps":X}.

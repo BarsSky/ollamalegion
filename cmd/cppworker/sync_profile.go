@@ -1,4 +1,4 @@
-// sync_profile.go — Pull-based per-model profile sync from balancer.
+﻿// sync_profile.go — Pull-based per-model profile sync from balancer.
 //
 // Why this exists (2026-08-06):
 //
@@ -216,7 +216,7 @@ func lazyLoadProfileFor(modelName string) *types.LlamaCppModelProfile {
 // applyProfileOnLoad — вызывается из handleLoadModel / handleLoadWithParams /
 // handleReloadModel и из ленивой загрузки. Legacy-путь (/api/models/load)
 // подключён в R364: до этого он профиль не применял вовсе, хотя комментарий в
-// lazyload.go утверждал обратное (см. load_profile_seed_r364.go).
+// lazyload.go утверждал обратное (см. load_profile_seed.go).
 // Возвращает профиль для модели (nil если нет) и merged с effective defaults.
 //
 // mergePolicy (Round 26, 2026-08-06):

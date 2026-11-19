@@ -169,7 +169,7 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// конфиге контейнера — ctx 65536 вместо 32768, KV q8_0 вместо q4_0,
 	// reasoning выключен — и выдал 2.9 tok/s против 25.9 у инстанса, поднятого
 	// балансером. Приоритет тот же, что у балансера:
-	// явный запрос > профиль модели > конфиг/env (см. load_profile_seed_r364.go).
+	// явный запрос > профиль модели > конфиг/env (см. load_profile_seed.go).
 	profile := readProfileForLoadR364(modelName, modelPath)
 	if profile != nil && profile.Profile.Disabled {
 		// Профиль помечает модель сломанной (например, upstream GGML_ASSERT):
@@ -237,7 +237,7 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	//
 	// R364: если запрос молчит — берём значение профиля, а не только глобальный
 	// конфиг. Иначе прямой вызов поднимал модель с reasoning=false при профиле
-	// «включить» (живой замер, см. шапку load_profile_seed_r364.go).
+	// «включить» (живой замер, см. шапку load_profile_seed.go).
 	switch {
 	case req.EnableReasoning != nil:
 		opts.EnableReasoning = req.EnableReasoning
@@ -768,7 +768,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 			// R366 (2026-10-31): flash attention из профиля — отдельным правилом.
 			// Прежняя строка внутри помощника отдавала false → -1 (auto, то есть
 			// «включить по усмотрению llama.cpp») и при дефолте контейнера -1 не
-			// применялась вовсе. Подробности — profile_flash_attn_r366.go.
+			// применялась вовсе. Подробности — profile_flash_attn.go.
 			if fa := profileFlashAttnToLoad(req.FlashAttnType, prof.FlashAttn, opts.FlashAttnType); fa != opts.FlashAttnType {
 				logger.Get().Infow("handleLoadWithParams: flashAttnType from model profile (R366)",
 					"name", modelName, "flashAttnType", fa, "was", opts.FlashAttnType)

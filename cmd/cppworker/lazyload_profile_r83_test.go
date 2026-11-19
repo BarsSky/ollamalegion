@@ -1,4 +1,4 @@
-//go:build llama_stub
+﻿//go:build llama_stub
 
 // lazyload_profile_r83_test.go — R83/v52 (2026-10-01): ленивая загрузка cppworker
 // обязана применять профиль модели, иначе прямой запрос (WebUI, диагностика,
@@ -75,7 +75,7 @@ func TestR83v52_LazyLoadKeepsExplicitPlan(t *testing.T) {
 		// R367: в реальном плане это поле всегда заполнено значением флага/env
 		// (дефолт -1 = auto). Ноль здесь означает «flash attention выключен», и
 		// вместе с квантованным KV это противоречие, которое теперь отвергается
-		// ДО загрузки (flash_attn_kv_guard_r367.go). Тест — про приоритет
+		// ДО загрузки (flash_attn_kv_guard.go). Тест — про приоритет
 		// профиля, а не про flash attention, поэтому ставим реальный дефолт.
 		FlashAttnType: -1,
 	}

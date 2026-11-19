@@ -1,4 +1,4 @@
-// lazyload.go — Lazy model loading, loading progress response, and auto-load on startup.
+﻿// lazyload.go — Lazy model loading, loading progress response, and auto-load on startup.
 package main
 
 import (
@@ -731,7 +731,7 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 		// (/api/models/load) профиль применяет, но тот его не применял, и прямой
 		// вызов поднимал модель с чужим окном и чужим KV (замер: ctx 65536 вместо
 		// 32768, q8_0 вместо q4_0, 2.9 tok/s против 25.9; см.
-		// load_profile_seed_r364.go).
+		// load_profile_seed.go).
 		//
 		// Профиль только ДОПОЛНЯЕТ: applyProfileToLoadRequest заполняет поля,
 		// которые остались пустыми/нулевыми, поэтому окно от клиента
@@ -855,7 +855,7 @@ func applySyncedProfileToLazyLoadOpts(modelName string, opts *cppbackend.LoadMod
 	// (CPPWORKER_FLASH_ATTN_TYPE) выше по коду, поэтому request=nil, а дефолтом
 	// остаётся то, что пришло из env. Профиль обязан перебивать env — иначе
 	// галочка «выключить flash attention» в WebUI не действует на ленивую
-	// загрузку (см. profile_flash_attn_r366.go).
+	// загрузку (см. profile_flash_attn.go).
 	if fa := profileFlashAttnToLoad(nil, prof.FlashAttn, opts.FlashAttnType); fa != opts.FlashAttnType {
 		logger.Get().Infow("lazyload: flashAttnType from model profile (R366)",
 			"model", modelName, "flashAttnType", fa, "was", opts.FlashAttnType)

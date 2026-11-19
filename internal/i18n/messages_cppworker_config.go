@@ -247,7 +247,7 @@ var messagesMisc = map[string]map[Lang]string{
 		EN: "AutoTuneNCtx: KV computed conservatively (no KV metadata) — the n_ctx recommendation may be below what is actually possible",
 	},
 
-	// === cmd/cppworker/handlers_link_bench_r129.go ======================
+	// === cmd/cppworker/handlers_link_bench.go ======================
 	"cppworker.handlers_link_bench_r129.usage": {
 		RU: "POST тело произвольного размера; воркер читает и отбрасывает его, " +
 			"возвращая bytes/durationMs/mbps",
@@ -269,7 +269,7 @@ var messagesMisc = map[string]map[Lang]string{
 		EN: "the body was not read: %s",
 	},
 
-	// === cmd/cppworker/handlers_rpc_peers_r125.go =======================
+	// === cmd/cppworker/handlers_rpc_peers.go =======================
 	"cppworker.handlers_rpc_peers_r125.note": {
 		RU: "проверяется доступность узла (TCP) и задержка соединения; " +
 			"пропускная способность — только по запросу ?bench=1 (поле linkSpeed)",
@@ -277,7 +277,7 @@ var messagesMisc = map[string]map[Lang]string{
 			"throughput only on request ?bench=1 (the linkSpeed field)",
 	},
 
-	// === cmd/cppworker/handlers_rpc_server_log_r172.go ==================
+	// === cmd/cppworker/handlers_rpc_server_log.go ==================
 	"cppworker.handlers_rpc_server_log_r172.not_configured": {
 		RU: "узел раскладки в этом процессе не настроен (CPPWORKER_RPC_SERVER_ENABLED)",
 		EN: "the layout node is not configured in this process (CPPWORKER_RPC_SERVER_ENABLED)",

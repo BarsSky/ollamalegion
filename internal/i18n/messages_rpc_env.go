@@ -1,4 +1,4 @@
-package i18n
+﻿package i18n
 
 // R234: сообщения компонентов cmd/* и tools/*.
 //
@@ -12,7 +12,7 @@ package i18n
 // repo, HF, file). Набор fmt-глаголов в ru и en одинаков — это проверяет
 // TestCatalogVerbParity.
 var messagesCmdR234 = map[string]map[Lang]string{
-	// === cppworker: разбор CPPWORKER_RPC_SERVERS (rpc_env_r101.go) =====
+	// === cppworker: разбор CPPWORKER_RPC_SERVERS (rpc_env.go) =====
 	"cppworker.rpc_env.empty_list": {
 		RU: "пустой список",
 		EN: "empty list",

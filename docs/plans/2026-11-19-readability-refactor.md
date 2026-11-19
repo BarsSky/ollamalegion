@@ -526,3 +526,5 @@ ctx_ceiling_cluster.go (кластерный потолок). Счётчик: с
 **R5 — продолжение (R615, 0.7.419).** Темы «визуальные входы» (3) и «Gemma/шаблон чата» (3) в cmd/cppworker. Счётчик: собственный 99 → 93, structure_report.ps1 100 → 94. Остаток: internal/balancer (49) и cmd/cppworker (44).
 
 **R5 — продолжение (R616, 0.7.420).** Темы «загрузка и бюджет вывода» (5) и «диагностика и дампы» (5) в cmd/cppworker. Счётчик: собственный 93 → 83, structure_report.ps1 94 → 84. Остаток: internal/balancer (49) и cmd/cppworker (34).
+
+**R5 — продолжение (R617, 0.7.421).** Темы «профили и флаги загрузки» (6) и «RPC-режим, пиры, сеть» (6) в cmd/cppworker. Счётчик: собственный 83 → 71, structure_report.ps1 84 → 72. Остаток: internal/balancer (49) и cmd/cppworker (22).

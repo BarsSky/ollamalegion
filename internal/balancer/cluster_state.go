@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"fmt"
@@ -57,6 +57,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 	// карточка бэкенда показывала причину и подсказку, а не только проценты.
 	// Взяты из того же трекера, что публикует /api/metrics (один источник).
 	bottleneckByIdR571 := p.bottleneckSnapshotR495()
+	throughputByIdR598 := p.throughputSnapshotR598()
 
 		backendState.mu.Lock()
 		status := backendState.Backend.Status
@@ -115,6 +116,10 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			DisabledSince:  disabledSinceRFC3339(backendConfig.DisabledAt),
 		BottleneckKind:   string(bottleneckByIdR571[id].Kind),
 		BottleneckAdvice: bottleneckByIdR571[id].Advice,
+		// R598 (R495 S2b): средние скорости — данные, не решение.
+		PrefillTpsEma:     throughputByIdR598[id].PrefillTPS,
+		DecodeTpsEma:      throughputByIdR598[id].DecodeTPS,
+		ThroughputSamples: throughputByIdR598[id].DecodeCount,
 	}
 
 		// R-Image (2026-10-02): image-бэкенд обязан быть виден в Monitor/WebUI

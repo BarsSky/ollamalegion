@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"bufio"
@@ -39,6 +39,11 @@ type Proxy struct {
 	// R495 S2 (2026-11-18): классификатор «во что уперлась карта» (shadow).
 	bottleneckMuR495  sync.Mutex
 	bottleneckTracker *bottleneckTrackerR495
+
+	// R598 (R495 S2b, 2026-11-19): EMA скорости префилла/декода — второй источник
+	// для классификатора. Только данные: решения по нему не принимаются.
+	throughputMuR598 sync.Mutex
+	throughputEMA    *throughputEMAR598
 
 	config   *types.LoadBalancerConfig
 	backends map[string]*BackendState

@@ -9,6 +9,12 @@ type BackendMetrics struct {
 	// Строки, а не balancer-структура: pkg/types не может импортировать балансер.
 	BottleneckKind   string `json:"bottleneckKind,omitempty"`
 	BottleneckAdvice string `json:"bottleneckAdvice,omitempty"`
+	// R598 (R495 S2b): EMA скорости префилла/декода по завершённым запросам —
+	// второй источник для классификатора. Только данные, решения по ним не
+	// принимаются (решение владельца: сначала «тень»). Ноль = не измерено.
+	PrefillTpsEma     float64 `json:"prefillTpsEma,omitempty"`
+	DecodeTpsEma      float64 `json:"decodeTpsEma,omitempty"`
+	ThroughputSamples int64   `json:"throughputSamples,omitempty"`
 	ID        string        `json:"id"`
 	Timestamp time.Time     `json:"timestamp"`
 	Status    BackendStatus `json:"status"`

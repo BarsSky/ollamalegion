@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"bufio"
@@ -1554,6 +1554,16 @@ func (st *llamaCppStreamState) accumulateNativeChunk(nativeChunk map[string]inte
 				// адаптивные тиры как на рабочие. Здесь есть всё, что нужно для
 				// замера: число сгенерированных токенов и время старта стрима.
 				st.p.recordGenerationSample(*st.modelFromCtx, evalTokens, st.llamaStartTime, st.firstDeltaTime)
+				// R598 (R495 S2b): те же токены и те же окна — источник средней
+				// скорости префилла/декода. Конец окна здесь: done-чанк уже пришёл.
+				wThroughput := st.statsWindowsNative
+				if wThroughput.End.IsZero() {
+					wThroughput.End = time.Now()
+				}
+				if wThroughput.RequestStart.IsZero() {
+					wThroughput.RequestStart = st.llamaStartTime
+				}
+				st.p.recordThroughputSampleR598(st.backendID, promptTokens, evalTokens, wThroughput)
 			}
 		}
 	}

@@ -52,6 +52,12 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 	state.TotalRequests = atomic.LoadInt64(&p.totalRequests)
 
 	for id, backendState := range backendsCopy {
+
+	// R571 (R495 S4): вердикты «во что упёрлась карта» — в снапшот кластера, чтобы
+	// карточка бэкенда показывала причину и подсказку, а не только проценты.
+	// Взяты из того же трекера, что публикует /api/metrics (один источник).
+	bottleneckByIdR571 := p.bottleneckSnapshotR495()
+
 		backendState.mu.Lock()
 		status := backendState.Backend.Status
 		hasAgent := backendState.Backend.HasAgent
@@ -107,7 +113,9 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			Disabled:       backendConfig.Disabled,
 			DisabledReason: backendConfig.DisabledReason,
 			DisabledSince:  disabledSinceRFC3339(backendConfig.DisabledAt),
-		}
+		BottleneckKind:   string(bottleneckByIdR571[id].Kind),
+		BottleneckAdvice: bottleneckByIdR571[id].Advice,
+	}
 
 		// R-Image (2026-10-02): image-бэкенд обязан быть виден в Monitor/WebUI
 		// со своим ПОРТОМ и МОДЕЛЯМИ. У текстовых бэкендов это Ollama/LlamaCpp-

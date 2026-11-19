@@ -4,6 +4,11 @@ import "time"
 
 // BackendMetrics - метрики бэкенда в реальном времени
 type BackendMetrics struct {
+	// R571 (R495 S4): вердикт «во что упёрлась карта» и подсказка «что делать» в
+	// снапшоте кластера — карточка бэкенда показывает причину, а не голые проценты.
+	// Строки, а не balancer-структура: pkg/types не может импортировать балансер.
+	BottleneckKind   string `json:"bottleneckKind,omitempty"`
+	BottleneckAdvice string `json:"bottleneckAdvice,omitempty"`
 	ID        string        `json:"id"`
 	Timestamp time.Time     `json:"timestamp"`
 	Status    BackendStatus `json:"status"`

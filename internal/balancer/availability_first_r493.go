@@ -214,14 +214,70 @@ func (p *Proxy) modelLoadedSomewhereR493(model string, allowedTypes []types.Back
 	return false
 }
 
+// modelHasOnDiskSomewhereR493 — R552 (F8): лежит ли файл модели на диске ХОТЯ БЫ
+// одного узла, который вообще рассматривается для этой заявки.
+//
+// ЧТО ЗНАЕТ КАТАЛОГ. Список файлов модели на узле приходит из воркера (R93) и
+// обновляется фоном (R514); `presence` возвращает (has, known, files, dirError).
+// «Известно и есть» — единственный факт, на который здесь можно опираться. Пока
+// каталог не опрошен (`known=false`) или его чтение падало (`dirError != ""`),
+// функция отвечает «нет»: догадка «наверное, файл там есть» ломала бы обычное
+// распределение ровно так, как это было в регрессе R493.
+func (p *Proxy) modelHasOnDiskSomewhereR493(model string, allowedTypes []types.BackendType) bool {
+	if p == nil || model == "" || p.modelCatalog == nil {
+		return false
+	}
+	p.mu.RLock()
+	ids := make([]string, 0, len(p.backends))
+	for id, state := range p.backends {
+		if state == nil || state.Backend == nil {
+			continue
+		}
+		if isDisabledBackendState(state) || p.cannotHostModelR304(id) {
+			continue
+		}
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	p.mu.RUnlock()
+	for _, id := range ids {
+		has, known, _, dirErr, _ := p.backendCatalogPresenceR493(id, model)
+		if known && dirErr == "" && has {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Proxy) pickLoadableFreeBackendR493(model string, allowedTypes []types.BackendType) string {
 	if p == nil {
 		return ""
 	}
-	// См. modelLoadedSomewhereR493: «загрузка вместо очереди» применима только
-	// тогда, когда прогретая копия где-то есть и занята. Иначе распределение
-	// заявок остаётся за обычным алгоритмом.
-	if !p.modelLoadedSomewhereR493(model, allowedTypes) {
+	// R552 (F8 плана 2026-11-19-webui-and-balancer-fixes, §2.8): «загрузка вместо
+	// очереди» доступна не только когда прогретая копия где-то ЕСТЬ и занята, но и
+	// когда моделей в VRAM нет вовсе, а ФАЙЛ МОДЕЛИ лежит на диске узла.
+	//
+	// ЖИВАЯ ЖАЛОБА: «балансер не грузит модель на свободный узел, а ждёт». Разбор:
+	// гейт ниже требовал `modelLoadedSomewhereR493`, то есть прогретой копии в
+	// кластере. Стенд после рестарта/выгрузки: в VRAM никого, файл на диске есть,
+	// свободный узел есть — а балансер не начинал загрузку и ставил клиента в
+	// очередь ждать копию, которой никто не создаст.
+	//
+	// Почему нельзя было просто снять гейт: тогда этап 3b «уводил» бы заявки при
+	// ЛЮБОМ запросе (живой регресс R493: два узла без метрик, round-robin перестал
+	// действовать). Поэтому условие расширено ровно на факт «файл есть на диске»,
+	// который видит каталог (R93/R514), а не на догадку. Если каталог не опрошен —
+	// поведение прежнее.
+	if !p.modelLoadedSomewhereR493(model, allowedTypes) && !p.modelHasOnDiskSomewhereR493(model, allowedTypes) {
+		if logger.Get() != nil {
+			// Debug, а не Info: функция зовётся на каждом шаге ожидания (живой
+			// прогон R493 — до 4 строк в секунду). Оператору адресована строка
+			// `why_queued`, которая называет эту же причину однократно.
+			logger.Get().Debugw("R552: «загрузка на свободный узел» не применима — модели нет ни в VRAM, ни в каталоге диска",
+				"model", model, "reason", "no_warm_copy_and_no_catalog_file")
+		}
 		return ""
 	}
 	sizeBytes := p.getModelSizeBytes(model)

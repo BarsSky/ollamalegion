@@ -34,7 +34,7 @@ function check(name, fn) {
 
 // Порог зафиксирован на R574. УМЕНЬШАТЬ после разбора; увеличивать нельзя.
 // R576: порог снижен 398 -> 367 после удаления 31 проверенного мёртвого ключа wizard.*.
-const MAX_UNUSED_R575 = 148;
+const MAX_UNUSED_R575 = 91;
 
 const script = path.join(__dirname, '..', '..', 'scripts', 'i18n_dead_keys.js');
 const out = execFileSync(process.execPath, [script, '--json'], { encoding: 'utf8' });

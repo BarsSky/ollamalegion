@@ -281,15 +281,8 @@ window.I18N_RU = {
 
   // Settings
   "settings.title": "Настройки",
-  "settings.max_parallel": "Максимальное число параллельных запросов",
-  "settings.session_timeout": "Таймаут сессии (сек)",
-  "settings.health_interval": "Интервал проверки здоровья (сек)",
-  "settings.queue_max_size": "Максимальный размер очереди",
   // R544 (F10/W6): «settings.api_token» удалён — поля в UI нет, токен задаётся
   // сервером (API_TOKEN → WEBUI_CONFIG). Ключ жил только для пустого input.
-  "settings.enable_auth": "Включить аутентификацию",
-  "settings.enable_rate_limit": "Включить ограничение запросов",
-  "settings.rate_limit_rps": "Лимит запросов/сек",
   "settings.save": "Сохранить настройки",
   "settings.reset": "Сбросить",
   "settings.reset_confirm": "Сбросить все настройки к заводским значениям? Это действие нельзя отменить.",
@@ -397,49 +390,13 @@ window.I18N_RU = {
   "help.monitor_legend_desc": "Обозначения цветов и элементов на мониторе",
 
   // ===== RPC / Model Distribution (RU) =====
-  "settings.rpc_distribution_title": "RPC / Model Distribution",
-  "settings.model_replication_title": "Model Replication (Вариант A)",
-  "settings.model_replication_desc": "Репликация модели на N бэкендов. Управление группами моделей, минимальное/максимальное количество экземпляров.",
-  "settings.model_replication_min": "Min Instances",
-  "settings.model_replication_max": "Max Instances",
-  "settings.model_replication_idle_unload": "Idle Unload After",
-  "settings.rpc_coordinator_title": "External RPC Coordinator (Вариант B)",
-  "settings.rpc_coordinator_desc": "Внешний микросервис ModelCoordinator для распределённого инференса. HTTP/gRPC координатор с worker'ами на бэкендах.",
-  "settings.rpc_coordinator_url": "Coordinator URL",
-  "settings.rpc_coordinator_port": "Worker Port",
-  "settings.rpc_coordinator_protocol": "Protocol",
-  "settings.rpc_coordinator_timeout": "Timeout",
-  "settings.rpc_coordinator_retries": "Max Retries",
-  "settings.virtual_models_title": "Virtual Model Router (Вариант C)",
-  "settings.virtual_models_desc": "Pipeline parallelism через срезы модели. Виртуальные модели с последовательной/параллельной координацией срезов.",
-  "settings.virtual_models_coord_mode": "Coordination Mode",
-  "settings.virtual_models_mode_sequential": "Sequential",
-  "settings.virtual_models_mode_parallel": "Parallel",
-  "settings.virtual_models_mode_tree": "Tree",
-  "settings.virtual_models_timeout": "Timeout (ms)",
-  "settings.dist_inference_title": "Distributed Inference (Вариант D)",
-  "settings.dist_inference_desc": "Кастомный бэкенд с CGo/gRPC. Распределённый inference через worker'ы с указанием диапазона слоёв.",
-  "settings.dist_inference_grpc_port": "gRPC Port",
 
   // ===== Operating Modes (NEW) =====
   "settings.mode.standard": "Стандартный балансировщик",
-  "settings.mode.standard_desc": "Балансировка. Раскладка слоёв (RPC) задаётся ролями бэкендов на странице «Мониторинг»",
-  "settings.layout_hint_title": "🧩 Раскладка слоёв (RPC) настраивается на странице «Мониторинг»",
-  "settings.layout_hint_desc": "В панели «Раскладка слоёв (RPC)» укажите главный бэкенд (мастер) и отметьте доноров (узлы), затем «Применить раскладку». Главному балансер сам пришлёт адреса живых rpc-server'ов: недоступный узел отключается автоматически и модель грузится локально, а вернувшийся включается сам. Ту же роль можно задать селектором в строке бэкенда.",
-  "settings.layout_hint_open": "Открыть «Мониторинг»",
-  "settings.mode.standard_long": "Классический режим балансировки — распределение запросов между бэкендами без использования RPC-координации. Подходит для большинства сценариев.",
   "settings.mode.replication": "Model Replication (A)",
-  "settings.mode.replication_desc": "Репликация моделей на N бэкендов",
-  "settings.mode.replication_long": "Автоматическая репликация моделей на несколько бэкендов для обеспечения отказоустойчивости и балансировки нагрузки.",
   "settings.mode.rpc_coordinator": "External RPC Coordinator (B)",
-  "settings.mode.rpc_coordinator_desc": "Внешний RPC-координатор",
-  "settings.mode.rpc_coordinator_long": "Внешний микросервис ModelCoordinator для распределённого инференса через HTTP/gRPC.",
   "settings.mode.virtual_router": "Virtual Model Router (C)",
-  "settings.mode.virtual_router_desc": "Маршрутизация через виртуальные модели",
-  "settings.mode.virtual_router_long": "Pipeline parallelism через срезы модели с последовательной, параллельной или древовидной координацией.",
   "settings.mode.distributed": "Distributed Inference (D)",
-  "settings.mode.distributed_desc": "Распределённый инференс",
-  "settings.mode.distributed_long": "Кастомный бэкенд с CGo/gRPC для распределённого инференса через worker'ы.",
   "settings.mode.confirm_change": "Изменение режима работы может повлиять на активные соединения. Продолжить?",
 
   // ===== Setup Wizard (NEW) =====
@@ -509,7 +466,6 @@ window.I18N_RU = {
   "settings.log_language.failed": "Не удалось сохранить язык логов: %s",
   "settings.log_language.readonly": "Только администратор может менять язык логов",
   "settings.log_language.current": "Сейчас: %s",
-"settings.section.mode": "Режим работы",
   "settings.section.users": "Пользователи",
   "settings.users.name": "Имя",
   "settings.users.role": "Роль",
@@ -525,7 +481,6 @@ window.I18N_RU = {
   "settings.users.delete_failed": "Не удалось удалить: {error}",
   "settings.users.save_failed": "Не удалось сохранить: {error}",
   "settings.users.load_failed": "Не удалось получить список: {error}",
-  "settings.users.loading": "Загрузка...",
   "settings.users.login_required": "Нужен вход администратора.",
   "settings.users.admin_required": "Требуются права администратора.",
   "settings.users.name_required": "Укажите имя пользователя.",
@@ -622,7 +577,6 @@ window.I18N_RU = {
   // сервер их не отдавал). Вместо полей — одна строка факта: параметры задаются
   // в конфиге агента на узле.
   "settings.agent.managed_note": "Параметры агентов задаются в их конфиге на узле (COLLECT_INTERVAL / HEARTBEAT_INTERVAL / MAX_CONCURRENT) — балансер их не хранит и не меняет.",
-  "settings.agent.timeout": "Таймаут агента (сек)",
 
   // Monitor
   "monitor.sparkline.empty": "Метрики ещё собираются…",
@@ -1568,8 +1522,6 @@ window.I18N_RU = {
   "gguf.show_less_files": "Свернуть список",
 
   // ===== Per-Model Profiles (Шаг 5 cppworker-preflight-nctx-session) =====
-  "settings.profiles.title": "Per-Model Profiles (n_ctx override)",
-  "settings.profiles.desc": "Per-model profile переопределяет contextLength для конкретной GGUF-модели. Применяется в 3-tier резолвере между body и per-backend default. Используйте это для моделей с большим окном (gemma-4 — до 256K) или для ускорения малых моделей коротким окном.",
   "settings.profiles.empty": "Нет настроенных профилей. Создайте первый, чтобы переопределить n_ctx для конкретной модели.",
   "settings.profiles.add": "Добавить профиль…",
   "settings.profiles.edit": "Редактировать профиль",
@@ -1655,18 +1607,9 @@ window.I18N_RU = {
   "settings.profiles.kv_cache_type": "Квантизация KV-cache",
   "settings.profiles.kv_cache_type_help": "Тип квантизации KV-cache. q8_0 экономит ~50% VRAM с минимальной потерей качества. q4_0 экономит ~75%, но заметная потеря на длинных контекстах. '' = default (F16).",
   "settings.profiles.notes_help": "Свободное описание (назначение, особенности производительности).",
-  "settings.profiles.timeouts_section": "Per-model таймауты (сек, 0 = глобальные)",
-  "settings.profiles.streaming_timeout": "Общий таймаут streaming",
-  "settings.profiles.streaming_idle_timeout": "Таймаут простоя streaming",
-  "settings.profiles.request_timeout": "Таймаут non-streaming запроса",
-  "settings.profiles.first_byte_timeout": "Таймаут первого байта",
-  "settings.profiles.timeout_help": "0 = auto (3-tier resolver: per-model profile → stats из истории → heuristic по размеру GGUF → global config). После 1-й успешной генерации автоподстройка включится и заменит heuristic. > 0 переопределяет только для этой модели.",
-  "settings.profiles.reasoning_mode": "Reasoning mode (×3 таймаут для thinking моделей)",
-  "settings.profiles.reasoning_mode_help": "Включите для моделей с reasoning (gemma-4, Qwen3-Instruct с thinking): эвристический таймаут автоматически умножается на 3 (например, 900s → 2700s). Не трогайте поля ниже — они заполнятся автоматически. Можно потом переопределить вручную.",
   "settings.profiles.invalid_n_ctx": "n_ctx должен быть в [256, 262144]",
   "settings.profiles.advanced_toggle_show": "Показать расширенные",
   "settings.profiles.advanced_toggle_hide": "Скрыть расширенные",
-  "settings.profiles.refresh": "Обновить",
 
   // ===== gguf Settings tab — backend options (per-backend cppworker) =====
   "gguf.backend_options_title": "Параметры загрузки бэкенда (этот cppworker)",

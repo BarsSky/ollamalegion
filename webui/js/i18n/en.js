@@ -294,15 +294,8 @@ window.I18N_EN = {
 
   // Settings
   "settings.title": "Settings",
-  "settings.max_parallel": "Max Parallel Requests",
-  "settings.session_timeout": "Session Timeout (sec)",
-  "settings.health_interval": "Health Check Interval (sec)",
-  "settings.queue_max_size": "Max Queue Size",
   // R544 (F10/W6): "settings.api_token" removed — the field is gone; the token is
   // provided by the server (API_TOKEN → WEBUI_CONFIG).
-  "settings.enable_auth": "Enable Authentication",
-  "settings.enable_rate_limit": "Enable Rate Limiting",
-  "settings.rate_limit_rps": "Rate Limit (req/sec)",
   "settings.save": "Save Settings",
   "settings.reset": "Reset",
   "settings.reset_confirm": "Reset all settings to factory defaults? This action cannot be undone.",
@@ -405,29 +398,6 @@ window.I18N_EN = {
   "help.monitor_legend_desc": "Color codes and element descriptions on the monitor",
 
   // ===== RPC / Model Distribution (EN) =====
-  "settings.rpc_distribution_title": "RPC / Model Distribution",
-  "settings.model_replication_title": "Model Replication (Variant A)",
-  "settings.model_replication_desc": "Replicate models across N backends. Model group management with min/max instance count.",
-  "settings.model_replication_min": "Min Instances",
-  "settings.model_replication_max": "Max Instances",
-  "settings.model_replication_idle_unload": "Idle Unload After",
-  "settings.rpc_coordinator_title": "External RPC Coordinator (Variant B)",
-  "settings.rpc_coordinator_desc": "External ModelCoordinator microservice for distributed inference. HTTP/gRPC coordinator with workers on backends.",
-  "settings.rpc_coordinator_url": "Coordinator URL",
-  "settings.rpc_coordinator_port": "Worker Port",
-  "settings.rpc_coordinator_protocol": "Protocol",
-  "settings.rpc_coordinator_timeout": "Timeout",
-  "settings.rpc_coordinator_retries": "Max Retries",
-  "settings.virtual_models_title": "Virtual Model Router (Variant C)",
-  "settings.virtual_models_desc": "Pipeline parallelism via model slices. Virtual models with sequential/parallel slice coordination.",
-  "settings.virtual_models_coord_mode": "Coordination Mode",
-  "settings.virtual_models_mode_sequential": "Sequential",
-  "settings.virtual_models_mode_parallel": "Parallel",
-  "settings.virtual_models_mode_tree": "Tree",
-  "settings.virtual_models_timeout": "Timeout (ms)",
-  "settings.dist_inference_title": "Distributed Inference (Variant D)",
-  "settings.dist_inference_desc": "Custom backend with CGo/gRPC. Distributed inference through workers with layer range assignments.",
-  "settings.dist_inference_grpc_port": "gRPC Port",
 
   // Monitor
   "monitor.sparkline.empty": "Metrics are still being collected…",
@@ -1117,23 +1087,10 @@ window.I18N_EN = {
 
   // ===== Operating Modes (NEW) =====
   "settings.mode.standard": "Standard Balancer",
-  "settings.mode.standard_desc": "Balancing. Layer sharding (RPC) is configured with backend roles on the Monitor page",
-  "settings.layout_hint_title": "🧩 Layer sharding (RPC) is configured on the Monitor page",
-  "settings.layout_hint_desc": "In the \"Layer sharding (RPC)\" panel pick the master backend and tick the donors (nodes), then \"Apply sharding\". The balancer sends the master the addresses of reachable rpc-servers: an unreachable node is disabled automatically and the model loads locally, a node that comes back is re-enabled by itself. The same role can be set with the selector in the backend row.",
-  "settings.layout_hint_open": "Open Monitor",
-  "settings.mode.standard_long": "Classic balancing mode — distributes requests among backends without RPC coordination. Suitable for most scenarios.",
   "settings.mode.replication": "Model Replication (A)",
-  "settings.mode.replication_desc": "Replicate models across N backends",
-  "settings.mode.replication_long": "Automatic model replication across multiple backends for fault tolerance and load balancing.",
   "settings.mode.rpc_coordinator": "External RPC Coordinator (B)",
-  "settings.mode.rpc_coordinator_desc": "External RPC coordinator",
-  "settings.mode.rpc_coordinator_long": "External ModelCoordinator microservice for distributed inference via HTTP/gRPC.",
   "settings.mode.virtual_router": "Virtual Model Router (C)",
-  "settings.mode.virtual_router_desc": "Routing through virtual models",
-  "settings.mode.virtual_router_long": "Pipeline parallelism via model slices with sequential, parallel or tree coordination.",
   "settings.mode.distributed": "Distributed Inference (D)",
-  "settings.mode.distributed_desc": "Distributed inference",
-  "settings.mode.distributed_long": "Custom backend with CGo/gRPC for distributed inference through workers.",
   "settings.mode.confirm_change": "Changing the operating mode may affect active connections. Continue?",
 
   // ===== Setup Wizard (NEW) =====
@@ -1203,7 +1160,6 @@ window.I18N_EN = {
   "settings.log_language.failed": "Failed to save the log language: %s",
   "settings.log_language.readonly": "Only an administrator can change the log language",
   "settings.log_language.current": "Current: %s",
-"settings.section.mode": "Operating Mode",
   "settings.section.users": "Users",
   "settings.users.name": "Name",
   "settings.users.role": "Role",
@@ -1219,7 +1175,6 @@ window.I18N_EN = {
   "settings.users.delete_failed": "Could not delete: {error}",
   "settings.users.save_failed": "Could not save: {error}",
   "settings.users.load_failed": "Could not load the list: {error}",
-  "settings.users.loading": "Loading...",
   "settings.users.login_required": "Administrator sign-in required.",
   "settings.users.admin_required": "Administrator rights required.",
   "settings.users.name_required": "Enter a user name.",
@@ -1310,7 +1265,6 @@ window.I18N_EN = {
   // R544 (F10/W6): the four agent inputs were inert (values never saved, never
   // returned by the server). A single fact line replaces them.
   "settings.agent.managed_note": "Agent parameters are set in the agent's own config on the node (COLLECT_INTERVAL / HEARTBEAT_INTERVAL / MAX_CONCURRENT) — the balancer neither stores nor changes them.",
-  "settings.agent.timeout": "Agent Timeout (sec)",
 
   // ===== Renderers (additions for P3) =====
   "renderers.digest": "Digest",
@@ -1651,8 +1605,6 @@ window.I18N_EN = {
   "gguf.show_less_files": "Collapse list",
 
   // ===== Per-Model Profiles (Шаг 5 cppworker-preflight-nctx-session) =====
-  "settings.profiles.title": "Per-Model Profiles (n_ctx override)",
-  "settings.profiles.desc": "Per-model profile overrides contextLength for a specific GGUF model. Used in the 3-tier resolver between body and per-backend default. Useful for models with large windows (gemma-4 — up to 256K) or for accelerating small models with short windows.",
   "settings.profiles.empty": "No profiles configured. Create the first one to override n_ctx for a specific model.",
   "settings.profiles.add": "Add profile…",
   "settings.profiles.edit": "Edit profile",
@@ -1734,18 +1686,9 @@ window.I18N_EN = {
   "settings.profiles.kv_cache_type": "KV-cache quantization",
   "settings.profiles.kv_cache_type_help": "KV-cache quantization. q8_0 saves ~50% VRAM with minimal quality loss. q4_0 saves ~75%, but noticeable degradation on long contexts. '' = inherit (F16).",
   "settings.profiles.notes_help": "Free-form description (purpose, performance notes).",
-  "settings.profiles.timeouts_section": "Per-model timeouts (sec, 0 = use global)",
-  "settings.profiles.streaming_timeout": "Streaming total timeout",
-  "settings.profiles.streaming_idle_timeout": "Streaming idle timeout",
-  "settings.profiles.request_timeout": "Request timeout",
-  "settings.profiles.first_byte_timeout": "First byte timeout",
-  "settings.profiles.timeout_help": "0 = auto (3-tier resolver: per-model profile → stats from history → heuristic by GGUF size → global config). After the 1st successful generation, auto-tune takes over and replaces the heuristic. > 0 overrides for this model only.",
-  "settings.profiles.reasoning_mode": "Reasoning mode (×3 timeout for thinking models)",
-  "settings.profiles.reasoning_mode_help": "Enable for reasoning-capable models (gemma-4, Qwen3-Instruct with thinking): the heuristic timeout is automatically multiplied by 3 (e.g., 900s → 2700s). Don't touch the fields below — they will be filled automatically. You can override manually later.",
   "settings.profiles.invalid_n_ctx": "n_ctx must be in [256, 262144]",
   "settings.profiles.advanced_toggle_show": "Show advanced",
   "settings.profiles.advanced_toggle_hide": "Hide advanced",
-  "settings.profiles.refresh": "Refresh",
 
   // ===== gguf Settings tab — backend options (per-backend cppworker) =====
   "gguf.backend_options_title": "Backend load options (this cppworker)",

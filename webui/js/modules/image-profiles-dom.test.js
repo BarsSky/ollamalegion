@@ -259,6 +259,8 @@ global.fetch = function (url, init) {
     return jsonResponse({ error: 'unexpected ' + p }, 404);
 };
 
+// R640: чистый слой вынесен и обязан грузиться первым (как в index.html).
+require('./image-profile-pure.js');
 require('./image-profiles.js');
 const IP = global.ImageProfiles;
 assert.ok(IP, 'window.ImageProfiles должен быть экспортирован');

@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -2664,6 +2664,9 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          (app.js refreshPage('image') вызывает window.ImagePage.init). -->
     <!-- R-Image Phase 6 (2026-10-02): редактор профилей image-моделей.
          Грузится ДО image-page.js: его init() вызывает window.ImageProfiles.mount. -->
+    <!-- R640: чистый слой редактора профилей image-моделей обязан грузиться ПЕРЕД
+         image-profiles.js: тот берёт window.ImageProfilePure и раздаёт имена. -->
+    <script defer src="js/modules/image-profile-pure.js?v=R640"></script>
     <script defer src="js/modules/image-profiles.js?v=R425"></script>
     <!-- R89 (2026-10-08): «Поделиться моделью» — перенос модели с одного бэкенда
          на другие через балансер. Грузится ДО image-page.js и gguf-renderer-*.js:

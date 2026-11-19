@@ -26,6 +26,8 @@ const assert = require('assert');
 
 // Модуль пишет window.ImageProfiles и на загрузке не трогает DOM.
 global.window = global;
+// R640: чистый слой вынесен и обязан грузиться первым (как в index.html).
+require('./image-profile-pure.js');
 require('./image-profiles.js');
 
 const IP = global.ImageProfiles;

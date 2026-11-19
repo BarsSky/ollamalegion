@@ -28,7 +28,6 @@ webui/js/app.js
 webui/js/i18n/en.js
 webui/js/i18n/ru.js
 webui/js/modules/gguf-renderer-detail-render.js
-webui/js/modules/image-profiles.js
 webui/js/modules/reference-page.js
 webui/js/modules/renderers.js
 webui/js/monitor/ui-renderer.js

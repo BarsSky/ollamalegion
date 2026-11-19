@@ -1,4 +1,37 @@
-﻿## [0.7.439 - R635: R3 — preflight окна разложен на четыре файла (файлов ≥1500: 15 -> 14), 2026-11-19]
+﻿## [0.7.440 - R636: R3 — автотюн разложен на десять файлов (файлов ≥1500: 14 -> 13), 2026-11-19]
+
+Пятнадцатый шаг R3. `internal/balancer/autotune.go` (1666 строк) держал правила выбора KV-типа и числа
+слоёв, анализ, отчёт, предохранитель, трекер, две перезагрузки и планирование применения.
+
+| Файл | Строк | Слой |
+|---|---|---|
+| `autotune.go` | 1666 → **327** | типы профиля и правила: `computeOptimalKVCacheType*`, `computeOptimalNumGPULayers*` |
+| `autotune_analyze.go` (новый) | 188 | `AnalyzeLoadedModelPublic`, `analyzeLoadedModelWithWorkload` |
+| `autotune_report.go` (новый) | 78 | `severityRank`, `countSubOptimal`, `FormatRecommendationShort` |
+| `autotune_gate.go` (новый) | 111 | `IsAutoTuneEnabled`, `AutoTuneReloadPlan`, `NeedsReload` |
+| `autotune_circuit.go` (новый) | 62 | `AutoTuneCircuit` и конфигурация предохранителя |
+| `autotune_tracker.go` (новый) | 112 | `AutoTuneTracker`, снимки, доступ с `Proxy` |
+| `autotune_reload.go` (новый) | 371 | `triggerAutoTuneReload`, `executeAutoTuneReload` |
+| `autotune_apply.go` (новый) | 204 | `ApplyAutoTunePlan` |
+| `autotune_apply_result.go` (новый) | 79 | свежая копия модели, расхождение, `AutoTuneApplyResult`, unload |
+| `autotune_plan.go` (новый) | 188 | `PlanApplyAutoTune`, правила минимального контекста |
+
+**Счётчик:** `файлов ≥1500 строк: 14 → 13`. Функций в десяти файлах **37**, типов 11 — столько же,
+сколько было в одном.
+
+**Ошибка, которую поймал замер (и снова не тест).** Первый прогон я снова сдвинул сопоставление
+«блок → имя»: границ было 9, а имён — 9 вместо 10, и последний блок вообще не записался, зато имена
+разъехались с содержимым (`autotune_circuit.go` получил трекер и т.д.). `go build` при этом был
+зелёным бы — файлы валидны, просто названия врут, а один кусок потерян. Поймал сравнением с числом
+блоков до сборки, откатил через `git checkout` и переделал: **правило на будущее — `число имён =
+число границ + 1`, и каждая пара (имя, диапазон строк) печатается при разбиении.** Теперь печатаю.
+
+**Проверено:** `go build -tags llama_stub ./...` = 0; `go vet` = 0; `go test -tags llama_stub
+./internal/balancer/ ./tests/` — зелёные; `structure_report.ps1`: файлов ≥1500 — **13**, функций >300 — 39,
+>1000 — 0, боевых `_rNNN` — 0.
+
+**Остаток R3:** 13 файлов ≥1500 (цель ≤3), функций >300 — 39 (цель ≤5).
+## [0.7.439 - R635: R3 — preflight окна разложен на четыре файла (файлов ≥1500: 15 -> 14), 2026-11-19]
 
 Четырнадцатый шаг R3. `internal/balancer/preflight_nctx.go` (1601 строка) держал разбор запроса и
 метаданных, решение о preflight, тексты отказов и сам `RunPreflight` (338 строк).

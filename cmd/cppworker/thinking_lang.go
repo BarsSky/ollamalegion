@@ -1,4 +1,4 @@
-// thinking_lang.go — Round 32 #12 (2026-08-11): language detection
+﻿// thinking_lang.go — Round 32 #12 (2026-08-11): language detection
 // + language-specific thinking instructions for soft prompt path.
 //
 // Проблема (Round 32 #11 follow-up): cppworker's soft prompt для
@@ -137,7 +137,7 @@ func thinkingInstructionFor(lang LangCode) string {
 		// Теперь инструкция задаёт ПОВЕДЕНИЕ (думать пошагово, ответ отдельно) и
 		// разметку не диктует: модель использует канал своего шаблона, а cppworker
 		// разбирает его теги (reasoning_content.go) и вырезает одиночные маркеры
-		// (reasoning_orphan_tags_r114.go).
+		// (reasoning_orphan_tags.go).
 		return "Перед ответом подумай пошагово. Тщательно разбери задачу, рассмотри " +
 			"разные варианты, покажи ход рассуждения, затем дай чёткий финальный " +
 			"ответ. Финальный ответ должен содержать ТОЛЬКО ответ, без хода " +

@@ -1685,7 +1685,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// R470 (2026-11-06): эхо размышлений на tools-пути — только по явной просьбе
 	// клиента (think:true). Иначе Cline сохраняет их как текст нашего ответа, и
 	// модель на следующем ходу видит свои размышления как свой прошлый ответ
-	// (разбор — reasoning_echo_r470.go). Разбор вывода и промпт не меняются.
+	// (разбор — reasoning_echo.go). Разбор вывода и промпт не меняются.
 	reasoningEcho := toolsThinkingEchoR470(thinkOverride)
 	thinkingStreamed := false
 	// anyStreamed — клиенту ушёл ХОТЬ ОДИН байт (thinking или content).
@@ -2368,7 +2368,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// в content: клиент показывает их как «thinking», а не как ответ.
 		// R108: отдаём оба имени (`thinking` — канон §4.1, `reasoning` — legacy).
 		// R404: если thinking уже ушёл дельтами — в финале НЕ дублируем его.
-		// R470: эхо размышлений — только если клиент их попросил (см. reasoning_echo_r470.go).
+		// R470: эхо размышлений — только если клиент их попросил (см. reasoning_echo.go).
 		if reasoningEcho && reasoningOut != "" && !thinkingStreamed {
 			msg["thinking"] = reasoningOut
 			msg["reasoning"] = reasoningOut
@@ -2617,7 +2617,7 @@ func finishChatStream(in *chatStreamFinish) {
 	duration := time.Since(in.start)
 
 	// R83/v59: пустой вывод модели — один повторный проход (см.
-	// empty_output_retry_r83.go). Здесь ничего не потеряно: при raw_len=0 дельт
+	// empty_output_retry_budget.go). Здесь ничего не потеряно: при raw_len=0 дельт
 	// клиенту не отправлялось.
 	// R83/v62 (2026-10-02): автоповтор ТОЛЬКО если клиент ещё ждёт.
 	// Если контекст запроса уже отменён (клиент ушёл — по своему таймауту, кнопке
@@ -3375,7 +3375,7 @@ func (x *toolsStreamRun) emitContentWindow(token string) {
 	// Живой прогон: streamed_content_bytes=5363 при content_len=3323 — 2040
 	// символов английских размышлений уехали в content вместе с русским
 	// ответом, хотя финальный разбор считал их reasoning. Держим начало до
-	// закрывающего маркера (см. reasoning_start_hold_r471.go).
+	// закрывающего маркера (см. reasoning_start_hold.go).
 	if *x.emittedLen == 0 && reasoningStartHoldR471(prompt, modelName, reasoningEcho) {
 		*x.reasoningHold = true
 		*x.toolsHold = true

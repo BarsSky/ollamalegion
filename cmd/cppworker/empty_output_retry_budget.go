@@ -1,4 +1,4 @@
-// empty_output_retry_r83.go — R83/v59 (2026-10-01): повтор генерации, если модель
+﻿// empty_output_retry_budget.go — R83/v59 (2026-10-01): повтор генерации, если модель
 // не выдала ни одного байта.
 //
 // ЖИВОЙ ФАКТ. Пробник debug/streamprobe на запросе Cline (gemma-4-E4B-it-Q4_K_M,

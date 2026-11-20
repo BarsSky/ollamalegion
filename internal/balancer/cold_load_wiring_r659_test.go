@@ -67,8 +67,12 @@ func r659FirstCallLineIn(t *testing.T, filename, fnName, method string) int {
 
 // TestR659_ServeHTTPStartsColdLoadBeforeQueue — заявка, у которой слот не взят,
 // запускает загрузку ДО постановки в очередь.
+//
+// Точка входа — startColdLoadBeforeQueueR659 (в proxy.go от неё одна строка:
+// размер файла proxy.go ограничен стражем R628), поэтому проверяются два звена
+// цепи: вызов точки входа в ServeHTTP (до очереди) и её вызов maybeStartColdLoadR659.
 func TestR659_ServeHTTPStartsColdLoadBeforeQueue(t *testing.T) {
-	starts := r659CallLinesIn(t, "proxy.go", "ServeHTTP", "maybeStartColdLoadR659")
+	starts := r659CallLinesIn(t, "proxy.go", "ServeHTTP", "startColdLoadBeforeQueueR659")
 	if len(starts) == 0 {
 		t.Fatal("(*Proxy).ServeHTTP не запускает «загрузку вместо ожидания»: заявка снова " +
 			"будет ждать слот, пока свободные узлы простаивают (живой дефект 2026-11-20)")
@@ -80,6 +84,14 @@ func TestR659_ServeHTTPStartsColdLoadBeforeQueue(t *testing.T) {
 	if starts[0] > queue[0] {
 		t.Errorf("загрузка инициируется (строка %d) ПОСЛЕ постановки в очередь (строка %d): "+
 			"пока ждём слот, ёмкость не создаётся", starts[0], queue[0])
+	}
+	// Второе звено: точка входа обязана доходить до решения/запуска, а не быть
+	// пустой обёрткой (иначе первое звено зелёное, а эффекта нет).
+	if inner := r659CallLinesIn(t, "cold_load_placement.go", "startColdLoadBeforeQueueR659", "maybeStartColdLoadR659"); len(inner) != 1 {
+		t.Fatalf("startColdLoadBeforeQueueR659 вызывает maybeStartColdLoadR659 %d раз, ожидался 1", len(inner))
+	}
+	if inner := r659CallLinesIn(t, "cold_load_placement.go", "maybeStartColdLoadR659", "startColdLoadR659"); len(inner) != 1 {
+		t.Fatalf("maybeStartColdLoadR659 вызывает startColdLoadR659 %d раз, ожидался 1", len(inner))
 	}
 }
 
@@ -97,16 +109,16 @@ func TestR659_QueueStartsColdLoadWhileWaiting(t *testing.T) {
 // загрузка идёт на «нужном окне» (need), а не на клиентском num_ctx и не на
 // дефолте профиля. Иначе это было бы сжатие окна под живым клиентом (R294/R459).
 func TestR659_ColdLoadKeepsWindowRule(t *testing.T) {
-	lines := r659CallLinesIn(t, "cold_load_placement_r659.go", "startColdLoadR659", "warmupModel")
+	lines := r659CallLinesIn(t, "cold_load_placement.go", "startColdLoadR659", "warmupModel")
 	if len(lines) != 1 {
 		t.Fatalf("startColdLoadR659 обязан запускать загрузку ровно одним вызовом warmupModel, найдено %d", len(lines))
 	}
 	// И в теле старта окно обязано уезжать двумя полями: NumCtx (старые воркеры,
 	// total) и ContextPerSeq (окно на клиента — R83).
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "cold_load_placement_r659.go", nil, 0)
+	file, err := parser.ParseFile(fset, "cold_load_placement.go", nil, 0)
 	if err != nil {
-		t.Fatalf("разбор cold_load_placement_r659.go: %v", err)
+		t.Fatalf("разбор cold_load_placement.go: %v", err)
 	}
 	var fields []string
 	ast.Inspect(file, func(n ast.Node) bool {

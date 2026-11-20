@@ -508,3 +508,35 @@ func (p *Proxy) maybeStartColdLoadR659(model string, bt types.BackendType, windo
 	}
 	return plan, true
 }
+
+// startColdLoadBeforeQueueR659 — точка входа из ServeHTTP: заявка не получила
+// слот ни на одной прогретой копии (retry-цикл по loaded исчерпан).
+//
+// МЕСТО В ПОТОКЕ ВАЖНО. Вызывается ПОСЛЕ решения R301 о росте окна и ПЕРЕД
+// очередью: если окно можно поднять на прогретой копии (R385/R447), то это и
+// есть выбранное действие, и параллельная загрузка второй копии была бы лишней
+// работой. Если роста не требуется, заявка узнаёт, что слот не взят нигде, — и
+// тогда создаём ёмкость.
+//
+// Заявка при этом НЕ переезжает: она остаётся в очереди и обслуживается тем, что
+// станет готово раньше — своя копия (слот освободился) или новая (загрузка
+// закончилась). R139 в силе: уход живой сессии на холодный узел и ожидание там
+// стоили живого агентского хода (pi-ai idle timeout).
+//
+// Окно для загрузки — «нужное окно» переезда (session_move_need.go, вариант C):
+// max(потребность запроса, окно активной сессии, названное клиентом окно). Меньше
+// любого из них поднимать нельзя — это сжало бы окно под живым клиентом
+// (R294/R459).
+func (p *Proxy) startColdLoadBeforeQueueR659(
+	model string, bt types.BackendType, parsed *parsedRequest, fromBackend, sessionID, path string,
+) {
+	if p == nil || parsed == nil || model == "" {
+		return
+	}
+	need, _ := p.sessionMoveNeedR480(fromBackend, model, sessionID, parsed.NumCtx,
+		p.promptTokensForMoveR480(parsed.RawBody, path))
+	if need <= 0 {
+		return
+	}
+	p.maybeStartColdLoadR659(model, bt, need)
+}

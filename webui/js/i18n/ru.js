@@ -1,4 +1,4 @@
-﻿// OllamaLegion i18n - Russian translations
+// OllamaLegion i18n - Russian translations
 window.I18N_RU = {
   // Nav
   "nav.dashboard": "Дашборд",
@@ -2298,6 +2298,7 @@ window.I18N_RU = {
   "auth.role.viewer": "только чтение",
   "auth.logout": "Выйти",
   "auth.banner.login": "Войти по паролю или токену",
+  "auth.banner.sessionExpired": "Вход не выполнен: панель открыта в режиме чтения. Войти — кнопка справа.",
   "auth.banner.notConfigured": "Вход в WebUI не настроен: пользователей нет. Задайте LB_ADMIN_USER/LB_ADMIN_PASSWORD на балансере или войдите по аварийному API-токену.",
   "demo.bannerTitle": "🔶 ДЕМО-РЕЖИМ",
   "demo.bannerSubtitle": "имитация кластера для гостевого просмотра",

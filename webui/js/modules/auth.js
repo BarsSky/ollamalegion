@@ -1,4 +1,4 @@
-﻿// auth.js — R202 (2026-10-21): ВХОД В WEBUI (сессии, роли, CSRF).
+// auth.js — R202 (2026-10-21): ВХОД В WEBUI (сессии, роли, CSRF).
 //
 // ЗАЧЕМ. Сервер уже умеет сессии и роли (R201), но панель продолжала работать
 // «без входа»: любой запрос проходил, потому что X-API-Token в страницу больше не
@@ -202,7 +202,8 @@
     el.innerHTML = [
       '<form id="authForm" style="width:340px;background:var(--bg-panel,#111827);border:1px solid var(--border,#334155);',
       'border-radius:12px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,0.45);color:var(--text,#e5e7eb);font-size:var(--font-size-base)">',
-      '  <div style="font-size:var(--font-size-md);font-weight:600;margin-bottom:4px">🔐 Вход в OllamaLegion</div>',
+      '  <div style="font-size:var(--font-size-md);font-weight:600;margin-bottom:4px">',
+      '    <i class="fas fa-lock" aria-hidden="true"></i> Вход в OllamaLegion</div>',
       '  <div id="authHint" style="font-size:var(--font-size-xs);color:var(--text-secondary,#94a3b8);margin-bottom:14px">',
       '    Требуются учётные данные администратора.</div>',
       '  <label style="display:block;font-size:var(--font-size-xs);margin-bottom:4px">Пользователь</label>',
@@ -229,6 +230,19 @@
       '      style="width:100%;padding:7px;border-radius:8px;border:1px solid var(--border,#334155);',
       '      background:transparent;color:inherit;cursor:pointer;font-size:var(--font-size-xs)">Войти с токеном</button>',
       '  </div>',
+      // R665 (2026-11-21): оверлей входа БОЛЬШЕ НЕ ЛОВУШКА.
+      //
+      // Живая жалоба: «последние правки не дают взаимодействовать со страницей
+      // никак». Причина — не код панели: балансер перезапускался, сессии WebUI
+      // живут в его памяти, поэтому страница открывалась гостем, а гость с
+      // настроенными пользователями получает ЭТОТ полноэкранный слой. Слой
+      // блокирует всё, а объяснения «почему меня разлогинило» в нём не было.
+      // Теперь из слоя можно выйти в режим чтения (кнопка внизу страницы
+      // «Войти по паролю или токену» возвращает форму), а причина названа.
+      '  <button type="button" id="authGuestContinue"',
+      '    style="width:100%;margin-top:12px;padding:7px;border-radius:8px;border:0;background:transparent;',
+      '    color:var(--text-secondary,#94a3b8);cursor:pointer;font-size:var(--font-size-xs);text-decoration:underline">',
+      '    Продолжить без входа (только чтение)</button>',
       '</form>'
     ].join('');
     document.body.appendChild(el);
@@ -238,6 +252,7 @@
     el.addEventListener('click', function (ev) {
       var target = ev && ev.target;
       if (target && target.id === 'authTokenSubmit') { onTokenLogin(); }
+      if (target && target.id === 'authGuestContinue') { dismissOverlay(); }
     });
     return el;
   }
@@ -307,17 +322,32 @@
     });
   }
 
+  // R665: оператор явно выбрал «продолжить без входа» — до перезагрузки страницы
+  // слой не возвращаем (иначе следующий вызов showOverlay снова перекрыл бы панель).
+  var dismissedOverlay = false;
+
   function showOverlay() {
+    dismissedOverlay = false;
     var el = ensureOverlay();
     el.style.display = 'flex';
     var hint = document.getElementById('authHint');
     if (hint) {
       hint.textContent = state.usersConfigured
-        ? 'Требуются учётные данные администратора.'
+        ? 'Требуются учётные данные администратора. Если вы уже входили, сессия завершилась при перезапуске балансера — войдите заново или нажмите «Продолжить без входа».'
         : 'Вход не настроен (нет пользователей). Панель без входа не работает: задайте LB_ADMIN_USER/LB_ADMIN_PASSWORD на балансере или введите аварийный API-токен ниже.';
     }
     var name = document.getElementById('authName');
     if (name && name.focus) { name.focus(); }
+  }
+
+  // R665: выход из слоя входа в режим чтения. Полоса внизу объясняет состояние и
+  // даёт кнопку возврата к форме — то есть «нет взаимодействия» больше не
+  // единственный сценарий для того, кого разлогинило перезапуском балансера.
+  function dismissOverlay() {
+    dismissedOverlay = true;
+    hideOverlay();
+    showBanner('auth.banner.sessionExpired',
+      'Вход не выполнен: панель открыта в режиме чтения. Войти — кнопка справа.');
   }
 
   function hideOverlay() {

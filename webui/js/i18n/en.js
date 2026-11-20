@@ -1,4 +1,4 @@
-﻿// OllamaLegion i18n - English translations
+// OllamaLegion i18n - English translations
 window.I18N_EN = {
   // Nav
   "nav.dashboard": "Dashboard",
@@ -2270,6 +2270,7 @@ window.I18N_EN = {
   "auth.role.viewer": "read-only",
   "auth.logout": "Log out",
   "auth.banner.login": "Sign in with password or token",
+  "auth.banner.sessionExpired": "Not signed in: the panel is open in read-only mode. Use the button on the right to sign in.",
   "auth.banner.notConfigured": "WebUI sign-in is not configured: no users. Set LB_ADMIN_USER/LB_ADMIN_PASSWORD on the balancer or use the emergency API token.",
   "demo.bannerTitle": "🔶 DEMO MODE",
   "demo.bannerSubtitle": "a simulated cluster for guest viewing",

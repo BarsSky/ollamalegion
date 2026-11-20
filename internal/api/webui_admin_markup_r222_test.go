@@ -45,6 +45,8 @@ func TestR222_StaticAdminControlsAreMarked(t *testing.T) {
 func TestR222_DynamicAdminControlsAreMarked(t *testing.T) {
 	files := []string{
 		"../../webui/js/modules/gguf-renderer-detail-render.js",
+		"../../webui/js/modules/gguf-detail-models.js",
+		"../../webui/js/modules/gguf-detail-params.js",
 		"../../webui/js/modules/renderers.js",
 		"../../webui/js/modules/image-backends-page.js",
 	}
@@ -59,7 +61,15 @@ func TestR222_DynamicAdminControlsAreMarked(t *testing.T) {
 	}
 
 	// Конкретные действия, которые были открыты гостю.
-	detail := showFile(t, "../../webui/js/modules/gguf-renderer-detail-render.js")
+	//
+	// R656–R658 разложили gguf-страницу: кнопки модели уехали из
+	// gguf-renderer-detail-render.js в gguf-detail-models.js, «применить
+	// параметры» — в gguf-detail-params.js. Страж обязан читать МОДУЛИ, где
+	// разметка живёт сейчас, иначе он красный на зелёном коде (поймано при R659:
+	// `internal/api` не входил в круг проверки того шага).
+	detail := showFile(t, "../../webui/js/modules/gguf-renderer-detail-render.js") +
+		showFile(t, "../../webui/js/modules/gguf-detail-models.js") +
+		showFile(t, "../../webui/js/modules/gguf-detail-params.js")
 	for _, marker := range []string{
 		`gguf-load-btn" data-admin-only`,
 		`gguf-unload-btn" data-admin-only`,

@@ -304,3 +304,30 @@ func (b *Backend) SetModelReasoningEnabledForTest(name string, enabled bool) err
 	inst.info.ReasoningEnabled = enabled
 	return nil
 }
+
+// SetModelGeometryForTest — test helper: выставить геометрию KV у уже
+// инжектированного инстанса (nLayers / nKvHeads / headDimK / nEmbd).
+//
+// ЗАЧЕМ (R660). R659 решает «поднимется ли модель с нужным окном на свободном
+// узле» по формуле KV: 2 × nLayers × nKvHeads × headDimK × байт-на-элемент
+// (memfit). Эти числа балансер получает из /api/models; без них проверка окна
+// уходит в «проверить нечем» (verified=false). Живая проверка R659 на локальном
+// стенде показала именно это: воркер геометрию знал (max_vram_n_ctx считается по
+// ней), а в ответе /api/models её не было. Тест обязан проверять ПРОВОД, а не
+// факт наличия ключа с нулём — поэтому нужна инъекция ненулевой геометрии.
+func (b *Backend) SetModelGeometryForTest(name string, nLayers, nKvHeads, headDimK, nEmbd int) error {
+	if b == nil {
+		return fmt.Errorf("nil backend")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	inst, ok := b.models[name]
+	if !ok || inst == nil {
+		return fmt.Errorf("model %s is not injected", name)
+	}
+	inst.info.NLayers = nLayers
+	inst.info.NKvHeads = nKvHeads
+	inst.info.HeadDimK = headDimK
+	inst.info.NEmbd = nEmbd
+	return nil
+}

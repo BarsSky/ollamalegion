@@ -19,6 +19,7 @@ import (
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
 )
+
 func handleListModels(w http.ResponseWriter, r *http.Request) {
 	models := backend.ListModels()
 	mm := backend.ModelManager()
@@ -189,11 +190,25 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			// тяжёлая модель на узле с малой VRAM выглядела «нормально
 			// загруженной», хотя в логе было «offloaded 20/66 layers to GPU» и
 			// ~10 ГБ в CPU_Mapped. Оператор не видел причину медленности.
-			"gpu_layers_actual":   m.GPULayers,
-			"offload_degraded":    m.OffloadDegraded,
-			"offload_note":        m.OffloadNote,
-			"n_embd":              m.NEmbd,
-			"n_vocab":             m.NVocab,
+			"gpu_layers_actual": m.GPULayers,
+			"offload_degraded":  m.OffloadDegraded,
+			"offload_note":      m.OffloadNote,
+			"n_embd":            m.NEmbd,
+			"n_vocab":           m.NVocab,
+			// R660 (2026-11-20): ГЕОМЕТРИЯ KV — в ответ, а не только в расчёт.
+			//
+			// ЖИВОЙ ФАКТ (проверка R659 на локальном стенде): воркер считает
+			// потолок окна по nLayers × nKvHeads × headDimK (max_vram_n_ctx,
+			// max_exact_fit_n_ctx), то есть эти числа у него ЕСТЬ, но в /api/models
+			// они не публиковались. Балансер, решающий «поднимется ли модель с
+			// нужным окном на СВОБОДНОМ узле» (R659), получал пустую геометрию и
+			// уходил в «проверить нечем» (verified=false) — то есть грузил на
+			// свободный узел без проверки окна. Балансерный поллер уже разбирает
+			// ровно эти имена полей (llamacpp_metrics_poller.go: n_kv_heads,
+			// head_dim_k, head_dim_v), поэтому достаточно их отдать.
+			"n_kv_heads":          m.NKvHeads,
+			"head_dim_k":          m.HeadDimK,
+			"head_dim_v":          m.HeadDimV,
 			"context_size":        m.ContextSize,
 			"gguf_context_length": m.GGUFContextLength,
 			"size_bytes":          effectiveSize,
@@ -372,21 +387,21 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]interface{}{
-		"models":            enrichedModels,
-		"count":             len(models),
-		"max_vram_n_ctx":    maxVRAMNCtx,
-		"max_ram_n_ctx":     maxRAMNCtx,
+		"models":         enrichedModels,
+		"count":          len(models),
+		"max_vram_n_ctx": maxVRAMNCtx,
+		"max_ram_n_ctx":  maxRAMNCtx,
 		// R592: «тень» резерва VRAM. max_vram_n_ctx выше — то, что применяется
 		// (с резервом CPPWORKER_VRAM_OVERHEAD_MB); здесь — потолок без резерва,
 		// то есть как его считает мост, и размер самого резерва.
 		"max_vram_n_ctx_unreserved": maxVRAMNCtxUnreserved,
 		"vram_reserve_mb":           vramReserveMB,
 		"available_vram_mb":         availableVRAMMB,
-		"total_vram_mb":     totalVRAMMB,
-		"available_ram_mb":  availableRAMMB,
-		"total_ram_mb":      totalRAMMB,
-		"model_max_context": modelMaxContext,
-		"gpu_count":         backend.GetGPUCount(),
+		"total_vram_mb":             totalVRAMMB,
+		"available_ram_mb":          availableRAMMB,
+		"total_ram_mb":              totalRAMMB,
+		"model_max_context":         modelMaxContext,
+		"gpu_count":                 backend.GetGPUCount(),
 		// Round 37 (2026-08-18): auto-adapt fields.
 		// feasible_max_context = min(VRAM, RAM, GGUF) — recommended max n_ctx.
 		// gguf_max_context     = max GGUF training context — hard upper bound.

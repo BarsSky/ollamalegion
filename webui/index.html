@@ -2659,6 +2659,9 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          DataRefresh.mount) и ДО модулей страниц (они регистрируют провайдеров). -->
     <script defer src="js/modules/data-refresh.js?v=R425"></script>
 <script defer src="js/modules/refresh-guard.js?v=R512"></script>
+<!-- R662 (2026-11-20): незавершённый ввод (не только фокус) защищает страницу от
+     авто-обновления — см. js/modules/form-dirty.js и тик в app-data.js. -->
+<script defer src="js/modules/form-dirty.js?v=R662"></script>
     <!-- R-Image Phase 5 (2026-10-02): Image page (генерация + image-модели).
          Загружается ПОСЛЕ utils/api/gguf-api (нужны Utils/Api/I18N) и ДО app.js
          (app.js refreshPage('image') вызывает window.ImagePage.init). -->

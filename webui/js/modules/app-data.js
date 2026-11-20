@@ -344,6 +344,18 @@
                     return;
                 }
             }
+            // R662 (2026-11-20): ФОКУС — НЕ ЕДИНСТВЕННОЕ «ИДЁТ ВВОД».
+            //
+            // Живая жалоба (продолжение R512): набрал значение → кликнул чекбокс,
+            // вкладку или пустое место → фокус уже не в текстовом поле → следующий
+            // тик перерисовывает страницу и затирает набранное. Модуль form-dirty.js
+            // помнит время последней ПРАВКИ на странице и не даёт тику её стирать.
+            // Ограничители: TTL 2 минуты (авто-обновление возвращается само) и сброс
+            // на submit формы — то есть «заморозки навсегда» из комментария R512 нет.
+            if (window.FormDirty && typeof window.FormDirty.isDirtyPage === 'function' &&
+                window.FormDirty.isDirtyPage(currentPage)) {
+                return;
+            }
             fetchClusterState().then(function () {
                 if (window.DataRefresh) window.DataRefresh.markFresh();
             }).catch(function (e) {

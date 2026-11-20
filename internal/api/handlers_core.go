@@ -140,6 +140,16 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 // и любым входящим сообщением.
 const wsReadDeadline = 90 * time.Second
 
+// wsSnapshotWriteDeadline — сколько ждём ОДНУ запись снапшота clusterState.
+//
+// Было 30 с (inline в обработчике). Причина уменьшить: за 30 с в канале
+// подписчика (буфер 100) накапливается поток устаревших состояний, и клиент
+// получал их пачкой уже после того, как они перестали быть правдой. Свежий
+// снапшот — это данные, которые важны «сейчас»; если сокет не принял его за
+// 15 с, клиент действительно не читает, и соединение закрывается (браузер
+// переподключится сам — см. ws_snapshot_coalesce.go).
+const wsSnapshotWriteDeadline = 15 * time.Second
+
 // wsMetricsHandler — WebSocket handler для live-метрик.
 func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	// Auth до Upgrade. R493f (2026-11-17): сессия WebUI — законный доступ наравне
@@ -268,7 +278,20 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			// R661 (2026-11-20): СКЛЕИВАНИЕ СНАПШОТОВ.
+			//
+			// Живая жалоба: `failed to send websocket snapshot` и «нет связи» в
+			// браузере. Канал подписчика держит до 100 снапшотов; медленный клиент
+			// получал их по одному, на каждый — 30 с write deadline, и одна
+			// застрявшая запись рвала соединение ради данных, которые уже устарели.
+			// Теперь берём ПОСЛЕДНИЙ снапшот, промежуточные отбрасываем: стоимость
+			// тика не зависит от отставания клиента, а в лог попадает, сколько
+			// устаревших пропущено (иначе «склейка» выглядела бы как потеря данных).
+			data, coalesced, drainedClosed := drainLatestClusterSnapshot(metricsChan, data)
+			if drainedClosed {
+				return
+			}
+			conn.SetWriteDeadline(time.Now().Add(wsSnapshotWriteDeadline))
 			// Periodic snapshot — отправляем как clusterState
 			var clusterState types.ClusterState
 			if err := json.Unmarshal(data, &clusterState); err != nil {
@@ -281,7 +304,15 @@ func (s *Server) wsMetricsHandler(w http.ResponseWriter, r *http.Request) {
 				"data":      clusterState,
 			}
 			if err := conn.WriteJSON(wrapper); err != nil {
-				logger.Get().Errorw("failed to send websocket snapshot", "error", err)
+				// R661: причина называет, ЧТО произошло. «Не читает поток» —
+				// единственный случай, когда соединение действительно надо
+				// закрывать: сокет не принял одну свежую запись за
+				// wsSnapshotWriteDeadline. Склеенные устаревшие снапшоты (coalesced)
+				// показывают, насколько клиент отставал.
+				logger.Get().Warnw("websocket: снапшот не отправлен — клиент не читает поток, закрываем соединение",
+					"client", clientID, "coalesced_skipped", coalesced,
+					"write_deadline_sec", int(wsSnapshotWriteDeadline.Seconds()),
+					"error", err)
 				return
 			}
 

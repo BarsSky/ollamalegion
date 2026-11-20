@@ -23,6 +23,7 @@ package balancer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -49,6 +50,12 @@ type r659Worker struct {
 	mu      sync.Mutex
 	loads   []map[string]interface{}
 	filesOK bool
+	// R663: живая проверка кандидата идёт в /api/models — фальшивый воркер
+	// отвечает так, как это делает настоящий, чтобы можно было проверить отказы.
+	modelState     string // "" / "loaded" / "loading"
+	canLoadOwn     *bool  // nil = поле отсутствует (старый воркер)
+	apiModelsCode  int    // 0 = 200, иначе заданный код
+	modelsGETCount int
 }
 
 func newR659Worker(t *testing.T) *r659Worker {
@@ -57,6 +64,33 @@ func newR659Worker(t *testing.T) *r659Worker {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(rw http.ResponseWriter, r *http.Request) {
 		rw.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/api/models", func(rw http.ResponseWriter, r *http.Request) {
+		// R663: живую пробу кандидата отличаем по метке (X-R659-Probe). Опрос
+		// поллера метрик в счётчик проб не входит — у него свой интервал 30 с.
+		isProbe := r.Header.Get("X-R659-Probe") != ""
+		w.mu.Lock()
+		if isProbe {
+			w.modelsGETCount++
+		}
+		code := w.apiModelsCode
+		state := w.modelState
+		canLoadOwn := w.canLoadOwn
+		w.mu.Unlock()
+		if code != 0 {
+			rw.WriteHeader(code)
+			return
+		}
+		models := `[]`
+		if state != "" {
+			models = `[{"name":"` + r659Model + `","state":"` + state + `"}]`
+		}
+		own := ""
+		if canLoadOwn != nil {
+			own = fmt.Sprintf(`"can_load_own_models":%v,"role":"donor","donor":%v,"donor_reason":"rpc_server_enabled",`, *canLoadOwn, !*canLoadOwn)
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(rw, `{`+own+`"count":`+fmt.Sprint(len(models))+`,"models":`+models+`}`)
 	})
 	mux.HandleFunc("/api/models/files", func(rw http.ResponseWriter, r *http.Request) {
 		if !w.filesOK {
@@ -78,6 +112,22 @@ func newR659Worker(t *testing.T) *r659Worker {
 	w.srv = httptest.NewServer(mux)
 	t.Cleanup(w.srv.Close)
 	return w
+}
+
+// setModelsResponse — переключить ответ /api/models (R663).
+func (w *r659Worker) setModelsResponse(state string, canLoadOwn *bool, code int) {
+	w.mu.Lock()
+	w.modelState = state
+	w.canLoadOwn = canLoadOwn
+	w.apiModelsCode = code
+	w.mu.Unlock()
+}
+
+// modelsProbes — сколько раз балансер спрашивал /api/models (кэш проб).
+func (w *r659Worker) modelsProbes() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.modelsGETCount
 }
 
 func (w *r659Worker) loadRequests() []map[string]interface{} {

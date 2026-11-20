@@ -95,7 +95,17 @@ type coldLoadPlanR659 struct {
 // очереди, не отправляли POST /load каждая.
 type coldLoadStateR659 struct {
 	started map[string]time.Time
-	mu      sync.Mutex
+	// probes — кэш живых ответов узлов (R663): один GET /api/models на узел и
+	// модель раз в coldLoadProbeCacheTTL. Иначе каждая итерация ожидания (раз в
+	// 5 с) дёргала бы воркер лишним запросом в его же лог.
+	probes map[string]coldLoadProbeEntryR659
+	mu     sync.Mutex
+}
+
+// coldLoadProbeEntryR659 — запись кэша живых проверок.
+type coldLoadProbeEntryR659 struct {
+	At    time.Time
+	Probe coldLoadProbeR659
 }
 
 // markStartedR659 — true, если загрузку на этом узле можно просить (не просили
@@ -133,6 +143,43 @@ func (s *coldLoadStateR659) startedAtR659(backendID, model string) (time.Time, b
 		return time.Time{}, false
 	}
 	return at, true
+}
+
+// clearStartedR659 — забыть отметку о попытке (R663: живая проверка показала, что
+// загрузка не подхватилась — отказ узла или провал; ждать полный TTL бессмысленно).
+func (s *coldLoadStateR659) clearStartedR659(backendID, model string) {
+	key := backendID + "\x00" + model
+	s.mu.Lock()
+	delete(s.started, key)
+	s.mu.Unlock()
+}
+
+// cachedProbeR659 — живой ответ узла из кэша (не старше coldLoadProbeCacheTTL).
+func (s *coldLoadStateR659) cachedProbeR659(backendID, model string, now time.Time) (coldLoadProbeR659, bool) {
+	key := backendID + "\x00" + model
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.probes[key]
+	if !ok || now.Sub(entry.At) >= coldLoadProbeCacheTTL {
+		return coldLoadProbeR659{}, false
+	}
+	return entry.Probe, true
+}
+
+// putProbeR659 — запомнить живой ответ; протухшие записи чистятся здесь же.
+func (s *coldLoadStateR659) putProbeR659(backendID, model string, now time.Time, probe coldLoadProbeR659) {
+	key := backendID + "\x00" + model
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.probes == nil {
+		s.probes = make(map[string]coldLoadProbeEntryR659, 4)
+	}
+	for k, entry := range s.probes {
+		if now.Sub(entry.At) >= coldLoadProbeCacheTTL {
+			delete(s.probes, k)
+		}
+	}
+	s.probes[key] = coldLoadProbeEntryR659{At: now, Probe: probe}
 }
 
 // coldLoadAutoLoadAllowedR659 — разрешено ли вообще инициировать загрузку
@@ -411,6 +458,41 @@ func (p *Proxy) planColdLoadR659(model string, bt types.BackendType, window int)
 		}
 		if !p.coldLoadCandidateIsColdR659(backendID, model) {
 			continue
+		}
+		// R663: ЖИВАЯ ПРОВЕРКА КАНДИДАТА.
+		//
+		// Кэш метрик отстаёт на интервал поллера (30 с), поэтому «по кэшу холодный»
+		// не значит «сейчас холодный»: узел мог уже поднять модель (в том числе по
+		// этой же причине R659) или быть донором раскладки, который собственных
+		// копий не держит и отвечает 409. Оба случая стоили лишнего POST /load на
+		// живом стенде — здесь они отсекаются до отправки.
+		probe := p.probeColdLoadCandidateR659(backendID, model)
+		if probe.Known {
+			if !probe.CanLoadOwn {
+				if logger.Get() != nil {
+					logger.Get().Debugw("R663: кандидат пропущен — узел не держит собственных копий модели",
+						"backend", backendID, "model", model, "reason", probe.Reason)
+				}
+				continue
+			}
+			if probe.ModelPresent {
+				// Узел уже держит или грузит модель — просить загрузку нечего;
+				// заявку обслужит очередь, когда копия будет готова.
+				continue
+			}
+		}
+		// Дедупликация загрузки: одна попытка на узел, но не «навсегда по таймеру».
+		// Если живая проверка показала, что модели нет и она не грузится, значит
+		// попытка не подхватилась (отказ, провал) — после короткой паузы повторяем.
+		if at, started := p.coldLoadStateR659.startedAtR659(backendID, model); started {
+			if probe.Known && !probe.ModelPresent {
+				if time.Since(at) < coldLoadRetryAfterFailedR659 {
+					continue
+				}
+				p.coldLoadStateR659.clearStartedR659(backendID, model)
+			} else {
+				continue
+			}
 		}
 		fit := p.coldLoadWindowFitR659(backendID, model, window)
 		if fit.Verified && !fit.Fits {

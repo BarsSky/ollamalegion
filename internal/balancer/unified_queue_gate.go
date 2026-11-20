@@ -74,7 +74,7 @@ func (p *Proxy) tryAcquireAnyBackendSlotDetailedGatedR480(
 func (p *Proxy) waitForInferenceBackendGatedR480(
 	ctx context.Context, model string, bt types.BackendType, session string, gate func(string) bool,
 ) (backendID string, release func(), waited time.Duration, position int, err error) {
-	return p.waitForInferenceBackendR480(ctx, model, bt, session, &queueMoveR480{gate: gate})
+	return p.waitForInferenceBackendR480(ctx, model, bt, session, &queueMoveR480{gate: gate}, 0)
 }
 
 // queueMoveR480 — предикат переезда и его need для списка причин R460.
@@ -131,10 +131,19 @@ func (p *Proxy) sessionQueueGateR480(from, model string) (func(string) bool, int
 //   - кандидат с окном >= окна текущей копии — можно;
 //   - известный «холодный» (свежая метрика, модели нет) — нельзя;
 //   - окно неизвестно — можно (не выдумываем предел), с WARN.
+//
+// R659 (2026-11-20): у очереди появилась третья реакция на «холодного»
+// кандидата — не «переехать и ждать загрузку» (это запрещено R459/R139 и
+// остаётся запрещённым), а «пока ждём свой слот, НАЧАТЬ загрузку там». Окно для
+// загрузки — coldWindow: максимум из окна текущей копии сессии, потребности
+// запроса и явно названного клиентом окна. Меньше любого из них поднимать
+// нельзя: это сжало бы окно под живым клиентом (R294/R459).
 func (p *Proxy) waitForInferenceBackendWithMoveR480(
 	ctx context.Context, model string, bt types.BackendType, session, from string,
+	requestedNCtx, requestTokens int,
 ) (backendID string, release func(), waited time.Duration, position int, err error) {
 	var move *queueMoveR480
+	coldWindow := 0
 	if from != "" {
 		gate, fromWindow := p.sessionQueueGateR480(from, model)
 		if gate != nil {
@@ -146,13 +155,21 @@ func (p *Proxy) waitForInferenceBackendWithMoveR480(
 			logger.Get().Infow("R480: очередь сессии с гейтом R459",
 				"session", session, "from", from, "model", model,
 				"session_window", move.need)
+			coldWindow = fromWindow
+			if requestTokens > coldWindow {
+				coldWindow = requestTokens
+			}
+			if requestedNCtx > coldWindow {
+				coldWindow = requestedNCtx
+			}
 		}
 	}
-	return p.waitForInferenceBackendR480(ctx, model, bt, session, move)
+	return p.waitForInferenceBackendR480(ctx, model, bt, session, move, coldWindow)
 }
 
 func (p *Proxy) waitForInferenceBackendR480(
 	ctx context.Context, model string, bt types.BackendType, session string, move *queueMoveR480,
+	coldWindow int,
 ) (backendID string, release func(), waited time.Duration, position int, err error) {
 	gate := func(string) bool { return true }
 	if move != nil && move.gate != nil {
@@ -170,6 +187,14 @@ func (p *Proxy) waitForInferenceBackendR480(
 	if id != "" {
 		lease := p.newAdmissionLease(id, session, 0, 0)
 		return id, lease.Release, 0, 0, nil
+	}
+	// R659: слот не взят ни на одной прогретой копии — до постановки в очередь
+	// пробуем начать загрузку на свободном узле. Заявка при этом остаётся в
+	// очереди: она обслужится тем, что станет готово раньше.
+	lastColdAttempt := time.Time{}
+	if coldWindow > 0 {
+		p.maybeStartColdLoadR659(model, bt, coldWindow)
+		lastColdAttempt = time.Now()
 	}
 	wait := p.admissionWaitBudget()
 	if wait <= 0 || p.admission == nil {
@@ -219,6 +244,14 @@ func (p *Proxy) waitForInferenceBackendR480(
 				}
 				return id, lease.Release, waited, position, nil
 			}
+		}
+		// R659: пока заявка ждёт, ёмкость могла появиться — свободный узел
+		// освободил слот или поднялся после прошлой попытки. Повторяем попытку
+		// редко (coldLoadRetryEveryR659), потому что загрузка идёт минуты, а
+		// решение о ней — не бесплатное (метрики + каталог).
+		if coldWindow > 0 && time.Since(lastColdAttempt) >= coldLoadRetryEveryR659 {
+			p.maybeStartColdLoadR659(model, bt, coldWindow)
+			lastColdAttempt = time.Now()
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {

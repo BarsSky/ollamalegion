@@ -79,7 +79,7 @@ func TestR480_QueueMoveWithoutKnownWindowServes(t *testing.T) {
 	p := r480SelectorProxy(t)
 	p.setAdmissionWait(2 * time.Second)
 	id, release, _, _, err := p.waitForInferenceBackendWithMoveR480(
-		context.Background(), r459Model, types.BackendTypeLlamaCpp, "s1", "b9")
+		context.Background(), r459Model, types.BackendTypeLlamaCpp, "s1", "b9", 0, 0)
 	if err != nil {
 		t.Fatalf("без известного окна очередь обязана обслужить запрос, получено %v", err)
 	}

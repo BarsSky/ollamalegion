@@ -387,6 +387,13 @@ type Proxy struct {
 	// Ограничение предотвращает исчерпание всех свободных слотов загрузками.
 	warmupSem chan struct{}
 
+	// coldLoadStateR659 — память о запущенных «загрузках вместо ожидания»
+	// (cold_load_placement_r659.go). Нужна, чтобы заявки, одновременно ждущие в
+	// очереди, не отправляли по POST /load каждая: загрузка одна, ожидать её
+	// можно всем. Поле-значение (не указатель): нулевое состояние рабочее,
+	// поэтому тестовые литералы &Proxy{...} и старые инициализаторы не ломаются.
+	coldLoadStateR659 coldLoadStateR659
+
 	// modelLatencyTracker собирает per-model метрики генерации (tokens/sec,
 	// inter-token gap, first-byte latency) для адаптивного расчёта таймаутов.
 	// Используется в proxyRequestLlamaCpp, handleStreamingResponse и proxyRequest
@@ -1283,6 +1290,33 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// R659 (2026-11-20): ЗАГРУЗКА ВМЕСТО ПАССИВНОГО ОЖИДАНИЯ.
+	//
+	// ЖИВОЙ ДЕФЕКТ (второй стенд, 2026-11-20): 27B загружена на занятом мастере,
+	// рядом два простаивающих узла, а второй запрос встал в очередь с маркером
+	// `any` на 300 с и был отменён клиентом. В логах свободных узлов — ноль
+	// попыток загрузки: retry-цикл выше перебирает только ПРОГРЕТЫЕ копии
+	// (selectBackendExcludingGatedR480 → findBackendWithModelExcluding), а
+	// очередь отклоняет холодного кандидата гейтом R459. Ёмкость при этом не
+	// создаётся вовсе.
+	//
+	// МЕСТО В ПОТОКЕ ВАЖНО. Стоим ПОСЛЕ R301 и ПЕРЕД очередью: если окно можно
+	// поднять на прогретой копии (R385/R447), это и есть выбранное действие —
+	// параллельная загрузка второй копии была бы лишней работой. Если роста не
+	// требуется (вердикт «не сейчас» либо окно уже покрыто), заявка узнаёт, что
+	// слот не взят ни на одной прогретой копии, — и тогда создаём ёмкость.
+	//
+	// Заявка при этом НЕ переезжает: она остаётся в очереди и обслуживается тем,
+	// что станет готово раньше — своя копия (слот освободился) или новая
+	// (загрузка закончилась). R139 в силе: уход живой сессии на холодный узел и
+	// ожидание там стоили живого агентского хода (pi-ai idle timeout).
+	if !readOnlyOrMgmt && acquiredBackend == "" && model != "" && parsed != nil {
+		if need, _ := p.sessionMoveNeedR480(targetBackend, model, sessionID, parsed.NumCtx,
+			p.promptTokensForMoveR480(parsed.RawBody, path)); need > 0 {
+			p.maybeStartColdLoadR659(model, bt, need)
+		}
+	}
+
 	if acquiredBackend == "" {
 		// Round 22 (2026-08-03): read/mgmt endpoints не идут в очередь —
 		// они короткие операции, queueing тратит время впустую.
@@ -1342,7 +1376,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		unifiedBackend, unifiedRelease, unifiedWaited, unifiedPosition, waitErr :=
-			p.waitForInferenceBackendWithMoveR480(ctxWithRID, model, bt, sessionKey, sessionFromBackend)
+			p.waitForInferenceBackendWithMoveR480(ctxWithRID, model, bt, sessionKey, sessionFromBackend,
+				parsed.NumCtx, p.promptTokensForMoveR480(parsed.RawBody, path))
 		if waitErr == nil {
 			acquiredBackend = unifiedBackend
 			targetBackend = unifiedBackend

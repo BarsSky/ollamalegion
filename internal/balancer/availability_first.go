@@ -280,15 +280,23 @@ func (p *Proxy) pickLoadableFreeBackendR493(model string, allowedTypes []types.B
 		}
 		return ""
 	}
-	sizeBytes := p.getModelSizeBytes(model)
-	needMB := 0.0
-	if sizeBytes > 0 {
-		needMB = float64(sizeBytes) / (1024 * 1024) * vramFitSlack
-	}
+	// R659 (2026-11-20): отбор и предикат вынесены в отдельные функции, чтобы
+	// тот же выбор узла под загрузку использовала «загрузка вместо ожидания»
+	// (cold_load_placement_r659.go). Двух копий условий быть не должно: они
+	// разъезжаются ровно так, как это уже случалось в аудите (R493/R553).
+	return p.pickLoadableFromCandidatesR493(p.loadableCandidateIDsR493(model, allowedTypes), model)
+}
 
-	// Группировка кандидатов. Сначала собираем ВСЕ группы, потом считаем:
-	//   свободные         — P3;
-	//   «только fallback» — P4 минус P1/P2/P3 (обычно узлы без метрик).
+// loadableCandidateIDsR493 — КОГО вообще рассматриваем под загрузку модели.
+//
+// R493: свободные узлы (P3) и узлы, попавшие ТОЛЬКО в fallback (P4, обычно без
+// метрик). Загруженные узлы, не прошедшие порог прогрева, сюда не входят: их
+// выбирать «вместо очереди» нельзя, иначе порог LB_PREWARM_TRIGGER_LOAD перестал
+// бы действовать.
+func (p *Proxy) loadableCandidateIDsR493(model string, allowedTypes []types.BackendType) []string {
+	if p == nil {
+		return nil
+	}
 	var freeGroup, fallbackGroup []string
 	loadedOrWarming := make(map[string]bool, 8)
 	for _, group := range p.expandCandidates(model, allowedTypes) {
@@ -315,63 +323,88 @@ func (p *Proxy) pickLoadableFreeBackendR493(model string, allowedTypes []types.B
 		}
 		candidates = append(candidates, id)
 	}
+	return candidates
+}
 
+// canLoadModelNowR493 — предикат «на этом узле модель можно ПОДНЯТЬ сейчас».
+//
+// Один предикат на все пути: этап 3b (выбор узла под загрузку), R659 (загрузка
+// вместо ожидания) и why_queued. Второе значение — стабильный код причины
+// отказа ("" = подходит); числа причины (сколько нужно/свободно) печатаются
+// здесь же, чтобы вызывающий не собирал их второй раз.
+func (p *Proxy) canLoadModelNowR493(backendID, model string) (bool, string) {
+	if p == nil || backendID == "" {
+		return false, rejectNoMetricsR460
+	}
+	if !p.hasFreeSlotNowR493(backendID) {
+		return false, rejectSlotsBusyR460
+	}
+	if !p.canAcceptRequest(backendID) {
+		return false, rejectOverLoadThresholdR460
+	}
+	state := p.backends[backendID]
+	if state == nil || state.Backend == nil {
+		return false, rejectNoMetricsR460
+	}
+	// R493 (долг 11b): «свободен» — ещё не «свободен для этой модели». Без
+	// проверки каталога узел выбирался по VRAM, загрузка на нём падала
+	// `model_not_found`, и клиент получал 503, хотя готовая копия стояла рядом (в
+	// занятом узле) и достаточно было подождать слот. Условие исключения
+	// намеренно узкое: только когда каталог узла ПРОЧИТАН (known) и воркер не
+	// сообщил о недоступности каталога (dirErr). «Не опрашивали» и «каталог
+	// отвалился» узлы не исключают: при выключенном поллере
+	// (LB_MODEL_CATALOG_REFRESH_SEC=0) каталог пуст у всех, и строгая проверка
+	// выкинула бы из выбора весь кластер.
+	if hasOnDisk, catalogKnown, _, dirErr, _ := p.backendCatalogPresenceR493(backendID, model); catalogKnown && dirErr == "" && !hasOnDisk {
+		// Уровень Debug, а не Info: функция вызывается КАЖДЫМ шагом ожидания в
+		// очереди (живой прогон 2026-11-14 — 4 строки в секунду), а оператору
+		// адресована одна строка `why_queued`, которая называет ту же причину по
+		// каждому кандидату однократно.
+		if logger.Get() != nil {
+			logger.Get().Debugw("R493: свободный узел пропущен — файла модели нет на диске узла",
+				"backend", backendID, "model", model, "reason", rejectFileAbsentR460)
+		}
+		return false, rejectFileAbsentR460
+	}
+	// Phase 6: пока на хосте идёт image-генерация, текстовую модель там не
+	// поднимаем — GPU занят картинкой, и загрузка (140-260 с) всё равно встанет
+	// в очередь за локом.
+	if p.imageGateBlocksTextBackend(state) {
+		return false, imageLockWaitReason
+	}
+	// R493/R248: размер файла × 1.05 против свободной VRAM. Это грубая проверка
+	// «вообще влезает ли», окно сюда не входит — его проверяет R659
+	// (coldLoadWindowFitR659), потому что у этапа 3b нужное окно неизвестно.
+	sizeBytes := p.getModelSizeBytes(model)
+	if sizeBytes > 0 {
+		needMB := float64(sizeBytes) / (1024 * 1024) * vramFitSlack
+		if freeMB, known := p.backendVramFreeMB(backendID); known && float64(freeMB) < needMB {
+			if logger.Get() != nil {
+				logger.Get().Infow("R493: свободный узел пропущен — модель не влезает в свободную VRAM",
+					"backend", backendID, "model", model,
+					"need_mb", int(needMB), "free_mb", freeMB)
+			}
+			return false, rejectVRAMInsufficientR460
+		}
+	}
+	return true, ""
+}
+
+// pickLoadableFromCandidatesR493 — лучший по score среди прошедших предикат.
+//
+// R493 (12n, «на будущее»): порядок обхода — через шов selection_order.go. По
+// умолчанию это прежний fit по VRAM; `LB_SELECTION_ORDER=leastconn` переставляет
+// уже допущенных кандидатов так, что первым идёт менее занятый узел. Фильтры
+// (слот, image-gate, каталог, fit) не меняются.
+func (p *Proxy) pickLoadableFromCandidatesR493(candidates []string, model string) string {
+	if p == nil || len(candidates) == 0 {
+		return ""
+	}
 	var bestID string
 	bestScore := -1.0
-	// R493 (12n, «на будущее»): порядок обхода — через шов selection_order.go.
-	// По умолчанию это прежний fit по VRAM; `LB_SELECTION_ORDER=leastconn`
-	// переставляет уже допущенных кандидатов так, что первым идёт менее занятый
-	// узел. Фильтры (слот, image-gate, каталог, fit) остаются ниже и не меняются.
 	for _, backendID := range p.orderCandidatesForSelectionR493(candidates, model) {
-		if !p.hasFreeSlotNowR493(backendID) {
+		if ok, _ := p.canLoadModelNowR493(backendID, model); !ok {
 			continue
-		}
-		if !p.canAcceptRequest(backendID) {
-			continue
-		}
-		state := p.backends[backendID]
-		if state == nil {
-			continue
-		}
-		// R493 (долг 11b): этап 3b выбирает узел под ЗАГРУЗКУ, поэтому «свободен» —
-		// ещё не «свободен для этой модели». Без проверки каталога узел выбирался
-		// по VRAM, загрузка на нём падала `model_not_found`, и клиент получал 503,
-		// хотя готовая копия стояла рядом (в занятом узле) и достаточно было
-		// подождать слот. Ровно об этом предупреждает R91 и комментарий выше
-		// («не пытается грузить модель на узле, где её нет») — теперь это правда
-		// и для этого пути, а не только для переезда и failover.
-		//
-		// Условие исключения намеренно узкое: только когда каталог узла ПРОЧИТАН
-		// (known) и воркер не сообщил о недоступности каталога (dirErr). «Не
-		// опрашивали» и «каталог отвалился» узлы не исключают: при выключенном
-		// поллере (LB_MODEL_CATALOG_REFRESH_SEC=0) каталог пуст у всех, и строгая
-		// проверка выкинула бы из выбора весь кластер.
-		if hasOnDisk, catalogKnown, _, dirErr, _ := p.backendCatalogPresenceR493(backendID, model); catalogKnown && dirErr == "" && !hasOnDisk {
-			// Уровень Debug, а не Info: функция вызывается КАЖДЫМ шагом ожидания
-			// в очереди (живой прогон 2026-11-14 — 4 строки в секунду), а
-			// оператору адресована одна строка `why_queued`, которая называет ту
-			// же причину по каждому кандидату однократно.
-			if logger.Get() != nil {
-				logger.Get().Debugw("R493: свободный узел пропущен — файла модели нет на диске узла",
-					"backend", backendID, "model", model, "reason", "file_absent")
-			}
-			continue
-		}
-		// Phase 6: пока на хосте идёт image-генерация, текстовую модель там не
-		// поднимаем — GPU занят картинкой, и загрузка (140-260 с) всё равно
-		// встанет в очередь за локом.
-		if p.imageGateBlocksTextBackend(state) {
-			continue
-		}
-		if needMB > 0 {
-			if freeMB, known := p.backendVramFreeMB(backendID); known && float64(freeMB) < needMB {
-				if logger.Get() != nil {
-					logger.Get().Infow("R493: свободный узел пропущен — модель не влезает в свободную VRAM",
-						"backend", backendID, "model", model,
-						"need_mb", int(needMB), "free_mb", freeMB)
-				}
-				continue
-			}
 		}
 		score := p.calculateScore(backendID)
 		if score > bestScore {

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"ollama-loadbalancer/pkg/types"
 )
@@ -63,6 +64,15 @@ const (
 	// код их не выдавал — обещание и поведение разошлись.
 	rejectFileAbsentR460         = "file_absent"
 	rejectCatalogUnavailableR460 = "catalog_unavailable"
+	// R659 (2026-11-20): свободный узел, но НУЖНОЕ ОКНО там не поднимется —
+	// либо проверить нечем, либо не влезает. Раньше оба случая выглядели как
+	// model_not_loaded («модель не загружена»), хотя загрузкой это НЕ лечится:
+	// окно 201216 на 20.5 ГБ свободной VRAM не поднимется ни при какой попытке.
+	// Отдельные коды нужны ровно затем, чтобы «почему заявка ждёт» отвечало
+	// числами, а не «попробуйте ещё раз».
+	rejectWindowFitUnknownR460 = "window_fit_unknown"
+	rejectWindowDoesNotFitR460 = "window_does_not_fit"
+	rejectModelLoadingR460     = "model_loading"
 )
 
 // backendRejectionMoveR480 — контекст переезда сессии для списка причин.
@@ -120,42 +130,80 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move .
 				reason = rejectNoMetricsR460
 				detail = "метрик нет — загрузку модели проверить нельзя"
 			} else if !p.backendHasModel(metrics, model) {
-				// Это НЕ ошибка: по R459 холодную копию под живую сессию не
-				// берём. Но оператор должен видеть, что «свободный» бэкенд
-				// свободен ровно потому, что модели на нём нет.
-				reason = rejectModelAbsentR460
-				detail = "модель не загружена (загрузка = минуты и, возможно, меньшее окно)"
-				// R493 (долги 11a/11b): каталог узла отвечает, УСТРАНИМА ли
-				// загрузка здесь. Порядок важен: «файла нет» и «каталог
-				// недоступен» называются ВМЕСТО model_not_loaded, потому что
-				// загрузкой они не лечатся, а VRAM решает только тогда, когда
-				// файл на диске действительно есть.
-				hasOnDisk, catalogKnown, files, dirErr, ageSec := p.backendCatalogPresenceR493(id, model)
+				// R659 (2026-11-20): «загрузка уже идёт» и «модели нет» — разные
+				// причины. Первая означает «подожди, она поднимется», вторая —
+				// «здесь её не будет». Раньше обе печатались как model_not_loaded,
+				// и оператор шёл искать разницу в логах воркера.
+				state.mu.Lock()
+				_, warming := state.WarmingUpModels[model]
+				state.mu.Unlock()
+				startedAt, coldStarted := p.coldLoadStateR659.startedAtR659(id, model)
 				switch {
-				case catalogKnown && dirErr != "":
-					// R93: пустой список при dirError≠"" — это «каталог отвалился»,
-					// а НЕ «моделей нет». Утверждать «файла нет» здесь нельзя.
-					reason = rejectCatalogUnavailableR460
-					detail = "каталог моделей узла недоступен, наличие файла проверить нельзя: " + dirErr
-				case catalogKnown && !hasOnDisk:
-					reason = rejectFileAbsentR460
-					// Форма «файлов в каталоге: N» вместо «N файлов» намеренно: при
-					// N=1 живой прогон 2026-11-14 показал «в каталоге 1 файлов», а
-					// склонение по числу — это второй список правил в диагностике,
-					// который однажды разойдётся с первым.
-					detail = fmt.Sprintf(
-						"файла модели нет на диске узла (файлов в каталоге: %d, снимок %d с назад) — загрузка здесь невозможна без копирования файла",
-						files, ageSec)
+				case warming:
+					reason = rejectModelLoadingR460
+					detail = "модель уже загружается на этом узле — заявка ждёт её готовности"
+				case coldStarted:
+					reason = rejectModelLoadingR460
+					detail = fmt.Sprintf("загрузка начата %d с назад (R659: вместо пассивного ожидания) — узел поднимает модель",
+						int(time.Since(startedAt).Seconds()))
 				default:
-					// R493 (долг 11a): если известно, что модель СЮДА не влезет,
-					// «модель не загружена» — неполная причина: её нельзя
-					// устранить загрузкой. Называем это числами, теми же, что
-					// решают выбор узла под загрузку (R248/R493: размер × 1.05
-					// против свободной VRAM).
-					if needMB, freeMB, vramKnown := p.vramNeedVsFreeR493(id, model); vramKnown && float64(freeMB) < needMB {
-						reason = rejectVRAMInsufficientR460
-						detail = fmt.Sprintf("модель не влезает: need %s, free %s",
-							formatGiBR493(needMB), formatGiBR493(float64(freeMB)))
+					// Это НЕ ошибка: по R459 холодную копию под живую сессию не
+					// берём. Но оператор должен видеть, что «свободный» бэкенд
+					// свободен ровно потому, что модели на нём нет.
+					reason = rejectModelAbsentR460
+					detail = "модель не загружена (загрузка = минуты и, возможно, меньшее окно)"
+					// R493 (долги 11a/11b): каталог узла отвечает, УСТРАНИМА ли
+					// загрузка здесь. Порядок важен: «файла нет» и «каталог
+					// недоступен» называются ВМЕСТО model_not_loaded, потому что
+					// загрузкой они не лечатся, а VRAM решает только тогда, когда
+					// файл на диске действительно есть.
+					hasOnDisk, catalogKnown, files, dirErr, ageSec := p.backendCatalogPresenceR493(id, model)
+					switch {
+					case catalogKnown && dirErr != "":
+						// R93: пустой список при dirError≠"" — это «каталог отвалился»,
+						// а НЕ «моделей нет». Утверждать «файла нет» здесь нельзя.
+						reason = rejectCatalogUnavailableR460
+						detail = "каталог моделей узла недоступен, наличие файла проверить нельзя: " + dirErr
+					case catalogKnown && !hasOnDisk:
+						reason = rejectFileAbsentR460
+						// Форма «файлов в каталоге: N» вместо «N файлов» намеренно: при
+						// N=1 живой прогон 2026-11-14 показал «в каталоге 1 файлов», а
+						// склонение по числу — это второй список правил в диагностике,
+						// который однажды разойдётся с первым.
+						detail = fmt.Sprintf(
+							"файла модели нет на диске узла (файлов в каталоге: %d, снимок %d с назад) — загрузка здесь невозможна без копирования файла",
+							files, ageSec)
+					default:
+						// R493 (долг 11a): если известно, что модель СЮДА не влезет,
+						// «модель не загружена» — неполная причина: её нельзя
+						// устранить загрузкой. Называем это числами, теми же, что
+						// решают выбор узла под загрузку (R248/R493: размер × 1.05
+						// против свободной VRAM).
+						if needMB, freeMB, vramKnown := p.vramNeedVsFreeR493(id, model); vramKnown && float64(freeMB) < needMB {
+							reason = rejectVRAMInsufficientR460
+							detail = fmt.Sprintf("модель не влезает: need %s, free %s",
+								formatGiBR493(needMB), formatGiBR493(float64(freeMB)))
+						} else if mv != nil && mv.Need > 0 {
+							// R659: размер весов влезает, но окно — нет. Это тот
+							// самый случай, когда «подожди загрузку» не помогает:
+							// окно 201216 на 20.5 ГБ свободной VRAM не поднимется,
+							// и заявка честно ждёт свою копию.
+							fit := p.coldLoadWindowFitR659(id, model, mv.Need)
+							switch {
+							case !fit.Verified:
+								reason = rejectWindowFitUnknownR460
+								detail = fmt.Sprintf("окно %d проверить нечем: %s", mv.Need, fit.Reason)
+							case !fit.Fits:
+								reason = rejectWindowDoesNotFitR460
+								detail = fmt.Sprintf(
+									"с окном %d не влезает: нужно %s (веса %s + KV %s + резерв %s), свободно %s",
+									mv.Need, formatGiBR493(float64(fit.NeedMB)),
+									formatGiBR493(float64(fit.WeightsMB)),
+									formatGiBR493(float64(fit.KVMB)),
+									formatGiBR493(float64(fit.ReserveMB)),
+									formatGiBR493(float64(fit.FreeMB)))
+							}
+						}
 					}
 				}
 			}

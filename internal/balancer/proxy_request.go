@@ -965,6 +965,17 @@ type warmupOptions struct {
 	// (SessionKey). Пустые значения = прежнее поведение.
 	Ctx        context.Context
 	SessionKey string
+
+	// R659 (2026-11-20): окно НА КЛИЕНТА (слот) для загрузки — `contextPerSeq`.
+	//
+	// Зачем отдельное поле, если есть NumCtx: NumCtx уезжает воркеру как
+	// `contextSize`, то есть СУММАРНОЕ окно модели. При parallel > 1 воркер
+	// делит его между слотами, и слот получает ровно половину запрошенного
+	// (живой дефект R83: запросили 32768 — слот получил 16384). Загрузка
+	// «вместо ожидания» обязана дать слоту НЕ МЕНЬШЕ нужного окна (иначе это
+	// сжатие под живым клиентом, R294/R459), поэтому окно передаётся как
+	// contextPerSeq: воркер сам считает суммарное = PAD256(per) × слоты.
+	ContextPerSeq int
 }
 
 // warmupModel — загрузка модели в VRAM:
@@ -1140,6 +1151,18 @@ func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model stri
 	if opts.NumCtx > 0 {
 		loadBody["contextSize"] = opts.NumCtx
 	}
+	// R659 (2026-11-20): окно НА КЛИЕНТА.
+	//
+	// `contextSize` воркер трактует как СУММАРНОЕ окно модели и делит его между
+	// слотами (EffectiveContextSize, internal/cppbackend). Загрузка «вместо
+	// ожидания» знает окно на КЛИЕНТА и обязана дать слоту не меньше него —
+	// поэтому, когда окно известно как per-slot, оно уезжает в contextPerSeq
+	// (R83: суммарное = PAD256(per) × слоты, считает воркер). contextSize
+	// оставляем как есть: старые сборки contextPerSeq не знают, и для них это
+	// единственный способ поднять модель с ненулевым окном.
+	if opts.ContextPerSeq > 0 {
+		loadBody["contextPerSeq"] = opts.ContextPerSeq
+	}
 	// Передаём gpuLayers если задан
 	if opts.GPULayers > 0 {
 		loadBody["gpuLayers"] = opts.GPULayers
@@ -1186,8 +1209,9 @@ func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model stri
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			logger.Get().Infow("warmupLlamaCppModel: model loaded into VRAM",
 				"backend", backendID, "model", model, "status", resp.StatusCode,
-				"numCtx", opts.NumCtx, "gpuLayers", opts.GPULayers)
-			p.updateLlamaCppRunningModelInMetrics(backendID, model)
+				"numCtx", opts.NumCtx, "contextPerSeq", opts.ContextPerSeq,
+				"gpuLayers", opts.GPULayers)
+			p.updateLlamaCppRunningModelInMetrics(backendID, model, opts.ContextPerSeq)
 		} else {
 			logger.Get().Warnw("warmupLlamaCppModel: model load returned non-2xx",
 				"backend", backendID, "model", model, "status", resp.StatusCode,
@@ -1227,7 +1251,15 @@ func (p *Proxy) updateRunningModelInMetrics(backendID, model string) {
 }
 
 // updateLlamaCppRunningModelInMetrics — обновляет LlamaCppMetrics после успешного warmup.
-func (p *Proxy) updateLlamaCppRunningModelInMetrics(backendID, model string) {
+//
+// R659 (2026-11-20): perSeqNCtx — окно НА КЛИЕНТА, с которым загрузка только
+// что прошла (contextPerSeq). Зачем записывать: без него запись о загрузке
+// сообщает ContextLength=0, то есть «окно неизвестно», и первый же запрос,
+// пришедший на свежую копию до опроса поллера (≤30 с), preflight планирует
+// перезагрузить — вторую загрузку подряд. Значение достоверно: воркер отвечает
+// 2xx на /load только после успешной загрузки, а окно он либо принял, либо
+// отверг (молчаливого понижения нет — R522).
+func (p *Proxy) updateLlamaCppRunningModelInMetrics(backendID, model string, perSeqNCtx ...int) {
 	p.metricsMgr.mu.Lock()
 	defer p.metricsMgr.mu.Unlock()
 
@@ -1239,18 +1271,26 @@ func (p *Proxy) updateLlamaCppRunningModelInMetrics(backendID, model string) {
 		p.metricsMgr.llamaMetrics[backendID] = lm
 	}
 
-	for _, m := range lm.LoadedModels {
+	window := 0
+	if len(perSeqNCtx) > 0 && perSeqNCtx[0] > 0 {
+		window = perSeqNCtx[0]
+	}
+	for i, m := range lm.LoadedModels {
 		if m.Name == model {
+			if window > 0 && m.ContextPerSeq <= 0 {
+				lm.LoadedModels[i].ContextPerSeq = window
+			}
 			return
 		}
 	}
 
 	lm.LoadedModels = append(lm.LoadedModels, types.LlamaCppModel{
-		Name:  model,
-		State: "loaded",
+		Name:          model,
+		State:         "loaded",
+		ContextPerSeq: window,
 	})
 	logger.Get().Debugw("updateLlamaCppRunningModelInMetrics: added model to llama.cpp metrics",
-		"backend", backendID, "model", model)
+		"backend", backendID, "model", model, "context_per_seq", window)
 }
 
 // resolveLlamaCppModelPath — Audit 2026-08-17 P0.1 fix.

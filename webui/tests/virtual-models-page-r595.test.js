@@ -139,7 +139,9 @@ check('R595: спецслучаи сняты (navModeIndependent, demo-mode)', f
 });
 
 check('R595: страница в списке известных роутера и в refreshPage', function () {
-    const app = fs.readFileSync(path.join(ROOT, 'webui', 'js', 'app.js'), 'utf8');
+    // R655: refreshPage переехал в app-data.js — читаем оба файла.
+const app = fs.readFileSync(path.join(ROOT, 'webui', 'js', 'app.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(ROOT, 'webui', 'js', 'modules', 'app-data.js'), 'utf8');
     assert.ok(/'virtual-models', 'agents'/.test(app) || /'virtual-models'/.test(app),
         'virtual-models не в списке страниц pageFromURL');
     assert.ok(/case 'virtual-models':/.test(app), 'refreshPage не знает про страницу');

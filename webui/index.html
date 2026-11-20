@@ -2776,6 +2776,14 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          confirmDeleteBackend) via window.BackendCRUD. Loaded BEFORE app.js
          so window.ui public API can reference these at IIFE return time. -->
     <script defer src="js/app-modals.js?v=R425"></script>
+    <!-- R652: настройки (apply/save/verify) и кэш конфигурации — фабрика; до app.js. -->
+    <script defer src="js/modules/app-settings.js?v=R652"></script>
+    <!-- R653: журналы, прокси-логи, выгрузки и уведомления — фабрика; до app.js. -->
+    <script defer src="js/modules/app-logs.js?v=R653"></script>
+    <!-- R654: модели, агенты, лимиты и карточка деталей модели — фабрика; до app.js. -->
+    <script defer src="js/modules/app-models.js?v=R654"></script>
+    <!-- R655: обновление страниц/данных, опрос, фильтры и тосты — фабрика; до app.js. -->
+    <script defer src="js/modules/app-data.js?v=R655"></script>
     <script defer src="js/app.js?v=R425"></script>
 </body>
 </html>

@@ -23,7 +23,9 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
-const appJs = fs.readFileSync(path.join(root, 'js', 'app.js'), 'utf8');
+// R655: тик и refreshPage переехали в app-data.js — читаем оба файла.
+const appJs = fs.readFileSync(path.join(root, 'js', 'app.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(root, 'js', 'modules', 'app-data.js'), 'utf8');
 
 let passed = 0;
 const failures = [];

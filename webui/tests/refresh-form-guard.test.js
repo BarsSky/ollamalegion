@@ -23,7 +23,9 @@ const vm = require('vm');
 
 const root = path.join(__dirname, '..');
 const moduleSrc = fs.readFileSync(path.join(root, 'js', 'modules', 'refresh-guard.js'), 'utf8');
-const appJs = fs.readFileSync(path.join(root, 'js', 'app.js'), 'utf8');
+// R655: периодический тик переехал в app-data.js — читаем оба файла.
+const appJs = fs.readFileSync(path.join(root, 'js', 'app.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(root, 'js', 'modules', 'app-data.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 
 let passed = 0;

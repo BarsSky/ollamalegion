@@ -193,7 +193,11 @@ global.Api = {
 // --- inventory: исходник модуля / index.html --------------------------------
 const MODULE_SRC = fs.readFileSync(path.join(__dirname, 'image-backends-page.js'), 'utf8');
 const INDEX_HTML = fs.readFileSync(path.join(__dirname, '..', '..', 'index.html'), 'utf8');
-const APP_SRC = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+// R652: часть настроек (в т.ч. проверка текущей страницы) вынесена в app-settings.js,
+// где currentPage читается геттером getCurrentPage() — читаем оба файла.
+const APP_SRC = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(__dirname, 'app-settings.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(__dirname, 'app-data.js'), 'utf8');
 
 const HTML_IDS = new Set();
 {
@@ -425,7 +429,7 @@ function lastRequest(filter) {
         assert.ok(APP_SRC.indexOf('window.ImageBackendsPage.render(') !== -1, 'app.js не рендерит таблицу');
         assert.ok(APP_SRC.indexOf('window.ImageBackendsPage.syncVisibility(') !== -1, 'app.js не синхронизирует видимость');
         assert.ok(APP_SRC.indexOf("page === 'image'") !== -1, 'switchPage не перечитывает кластер для страницы');
-        assert.ok(APP_SRC.indexOf("currentPage === 'image'") !== -1, 'периодический опрос не обновляет таблицу');
+        assert.ok(/(?:currentPage|getCurrentPage\(\)) === 'image'/.test(APP_SRC), 'периодический опрос не обновляет таблицу');
         assert.strictEqual(/case 'image-backends':/.test(APP_SRC), false, 'остался мёртвый case image-backends');
     });
 

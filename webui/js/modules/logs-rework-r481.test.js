@@ -27,7 +27,8 @@ const index = read('webui/index.html');
 // R650: очередь/журналы/прокси-логи вынесены в renderers-logs.js. Сторож читает ОБА
 // файла — иначе он краснеет на переносе (тот же класс, что R623/R626).
 const renderers = read('webui/js/modules/renderers.js') + '\n' + read('webui/js/modules/renderers-logs.js');
-const appjs = read('webui/js/app.js');
+// R653: журналы/прокси-логи/уведомления вынесены в app-logs.js — читаем оба файла.
+const appjs = read('webui/js/app.js') + '\n' + read('webui/js/modules/app-logs.js');
 const usersAdmin = read('webui/js/modules/users-admin.js');
 const ru = read('webui/js/i18n/ru.js');
 const en = read('webui/js/i18n/en.js');

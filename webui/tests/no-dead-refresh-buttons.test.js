@@ -165,7 +165,9 @@ check('действия удалённых кнопок стали провай�
 });
 
 check('каждая страница с собственным источником имеет провайдера', function () {
-    const appJs = readSrc('js/app.js');
+    // R652–R655: слои вынесены из app.js — читаем и модули.
+const appJs = readSrc('js/app.js') + '\n' + readSrc('js/modules/app-data.js') +
+    '\n' + readSrc('js/modules/app-models.js') + '\n' + readSrc('js/modules/app-settings.js');
     const required = ['models', 'agents', 'logs', 'sessions', 'queue', 'monitor', 'settings'];
     const missing = required.filter((p) => appJs.indexOf("DR.register('" + p + "'") === -1);
     assert.deepStrictEqual(missing, [], 'нет провайдеров для страниц: ' + missing.join(', '));

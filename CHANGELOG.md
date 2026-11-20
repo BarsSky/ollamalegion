@@ -1,3 +1,41 @@
+## [0.7.455 - R652–R655: app.js разложен на четыре слоя (3930 → 1058 строк; файлов ≥1500: 2 → 1), 2026-11-20]
+
+Оркестратор WebUI разложен так же, как `renderers.js` в R649–R651: четыре слоя-фабрики, у
+каждого явный список зависимостей из `scripts/webui_extract_deps.js`.
+
+| Слой | Что ушло | Строк | Что берёт из app.js |
+|---|---|---|---|
+| `app-settings.js` (R652) | применение/сохранение настроек, `verifySync`, кэш конфигурации бэкендов (R88), авто-сохранение | 974 | `data`, `currentPage` (геттер), `refreshPage`, `showToast`, 2 update-функции |
+| `app-logs.js` (R653) | журналы (`addLog`/`addLogEntry`, F.2), `/ws/logs`, выгрузки, прокси-логи (R389/R481), уведомления (F.α) | 547 | `data`, `init`, рендереры, `showToast` |
+| `app-data.js` (R655) | `refreshPage`, периодический опрос с паузой по видимости, провайдеры страниц, фильтры/сортировка, статус соединения, тосты | 851 | `data`, рендереры, слои журналов/настроек |
+| `app-models.js` (R654) | Load/Unload/Delete, прогресс операций (R346), лимиты, вкл/выкл узла (R250), агенты, донорские ограничения (R304), карточка деталей модели | 850 | `data`, `Api`, `addLog`, `showToast`, `filterBackendsForUI`, `backendsPage` |
+
+`app.js`: **3930 → 1058 строк** (непустых **3673 → 979**); файлов ≥1500 в предмете работ:
+**2 → 1** (`gguf-renderer-detail-render.js` 3849). Запись `app.js` из списка-базы удалена.
+
+**Цикл зависимостей и как он решён.** Настройки зовут `refreshPage`/`showToast` из `app-data.js`,
+а `app-data.js` зовёт `loadSettings` из настроек — прямая ссылка на момент вызова фабрики была бы
+`undefined`. Поэтому ровно эти четыре зависимости передаются **ленивыми обёртками**
+(`function () { return X.apply(null, arguments); }`), которые разрешаются при вызове, а не при
+загрузке. Это записано комментарием в `app.js` и в шапке `app-settings.js`.
+
+**Что поймали тесты (и это ровно тот класс R623/R626).**
+- `async`-функции `fetchAgents`/`showAgentDetails` попали в span журналов (R653) и не были
+  экспортированы — `ReferenceError` при загрузке `app.js`; вынесены и привязаны.
+- `autoDetectCppWorkerPort` остался в `app.js` (он объявлен ПОСЛЕ span моделей), но попал в
+  rebind-список R654 — присваивание `undefined` затёрло бы функцию; поймано чтением и убрано.
+- Девять сторожей читали `app.js` по имени (`logs-rework-r481`, `settings-form-guard-r513`,
+  `image-backends-page`, `diagnostics-r476`, `auto-refresh-drives-providers`,
+  `no-dead-refresh-buttons`, `reference-page-static`, `refresh-form-guard`,
+  `virtual-models-page-r595`) — все переведены на чтение ОБОИХ файлов, как в R626.
+
+**Проверено:** `node scripts/run-webui-tests.js` — **131 набор, 131 зелёный**;
+`go test -tags llama_stub ./tests/ -run 'TestR628|TestR506|TestR648'` — зелёный;
+`scripts/structure_report.ps1` — `OK файлов >= 1500 строк сейчас: 1 цель: <= 3`.
+
+**Осталось:** `gguf-renderer-detail-render.js` (3849) — последний файл R6; второй критерий §5
+(«функции >300», 39) по-прежнему требует отдельного плана.
+
 ## [0.7.454 - R649–R651: renderers.js разложен на четыре слоя (2497 → 1067 непустых; файлов ≥1500: 3 → 2), 2026-11-20]
 
 Шаг R6 по WebUI-модулям начат с `renderers.js` — того самого, который R643 разрезал частично

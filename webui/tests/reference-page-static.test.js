@@ -28,7 +28,8 @@ function readSrc(rel) {
 }
 
 const html = readSrc('index.html');
-const appJs = readSrc('js/app.js');
+// R655: refreshPage переехал в app-data.js — читаем оба файла.
+const appJs = readSrc('js/app.js') + '\n' + readSrc('js/modules/app-data.js');
 const pageJs = readSrc('js/modules/reference-page.js');
 // R642: состояние и помощники страницы вынесены в reference-page-helpers.js.
 // Разметка кнопок и ключи t('...') теперь живут в ДВУХ файлах — читаем оба, иначе

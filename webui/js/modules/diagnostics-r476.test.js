@@ -41,7 +41,9 @@ function check(name, fn) {
 }
 
 const indexHtml = read('webui/index.html');
-const appJs = read('webui/js/app.js');
+// R652–R655: слои вынесены из app.js — сторож читает все его модули (R623/R626).
+const appJs = read('webui/js/app.js') + '\n' + read('webui/js/modules/app-data.js') +
+    '\n' + read('webui/js/modules/app-settings.js') + '\n' + read('webui/js/modules/app-models.js');
 const apiJs = read('webui/js/modules/api.js');
 const diagJs = read('webui/js/modules/diagnostics.js');
 const routesGo = read('internal/api/routes.go');

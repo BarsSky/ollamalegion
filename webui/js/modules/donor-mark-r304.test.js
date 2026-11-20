@@ -164,6 +164,11 @@ global.BackendCRUD = { editBackend() {}, confirmDeleteBackend() {} };
 const BACKENDS = [];
 global.App = { context: { data: { backends: BACKENDS } } };
 
+// R652: настройки вынесены в модуль app-settings.js — грузим до app.js.
+require('./app-settings.js');
+require('./app-logs.js');
+require('./app-models.js');
+require('./app-data.js');
 require('../app.js');
 const ui = global.window.App.ui;
 assert.ok(ui && typeof ui.executeModelOperation === 'function',

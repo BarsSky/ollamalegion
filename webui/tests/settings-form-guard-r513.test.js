@@ -23,7 +23,13 @@ const vm = require('vm');
 
 const root = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
-const appJs = read('js/app.js');
+// R655: тик/refreshPage/registerPageProviders переехали в app-data.js.
+const appJs = read('js/app.js') + '\n' + read('js/modules/app-data.js');
+// R652: слой настроек (applyServerConfig и родня) вынесен в app-settings.js —
+// тело берём оттуда; функции модуля на 8 пробелах, поэтому нужен терпимый extractor.
+const settingsJs = read('js/modules/app-settings.js');
+// R654: лимиты бэкендов переехали в app-models.js — тело берём оттуда.
+const modelsJs = read('js/modules/app-models.js');
 const guardSrc = read('js/modules/refresh-guard.js');
 const registrySrc = read('js/modules/settings-registry.js');
 const autotuneSrc = read('js/modules/autotune_settings.js');
@@ -60,6 +66,19 @@ function loadGuard(docActiveElement) {
 // --- извлечение тела функции по имени ---------------------------------------
 // Функции в app.js объявлены на 4 пробелах, поэтому конец тела — следующий
 // `\n    function ` (проверено: вложенных объявлений на этом отступе нет).
+// R652: тот же extractor, но без требования 4-пробельного отступа (модуль — 8).
+function extractFnIndented(src, name) {
+    const start = src.indexOf('function ' + name + '(');
+    assert.ok(start >= 0, 'в app-settings.js нет функции ' + name + ' — проверка потеряла точку отсчёта');
+    const bodyOpen = src.indexOf('{', start);
+    let depth = 0, i = bodyOpen;
+    for (; i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}' && --depth === 0) break;
+    }
+    return { head: src.slice(start, bodyOpen), body: src.slice(bodyOpen + 1, i) };
+}
+
 function extractFn(src, name) {
     const marker = '    function ' + name + '(';
     const start = src.indexOf(marker);
@@ -82,7 +101,7 @@ function extractFn(src, name) {
 
 // --- поведение applyServerConfig --------------------------------------------
 function runApplyServerConfig(editing) {
-    const fn = extractFn(appJs, 'applyServerConfig');
+    const fn = extractFnIndented(settingsJs, 'applyServerConfig');
     const requested = [];
     const writes = [];
     const settingsPage = { tagName: 'DIV', contains: function () { return editing; } };
@@ -108,13 +127,13 @@ function runApplyServerConfig(editing) {
     const sandbox = { window: win, document: doc, console: { warn: function () {}, error: function () {} } };
     vm.createContext(sandbox);
     vm.runInContext(guardSrc, sandbox, { filename: 'refresh-guard.js' });
-    const runner = new Function('serverConfig', 'window', 'document', 'console', 'localStorage',
+    const runner = new Function('serverConfig', 'window', 'document', 'console', 'localStorage', 'getCurrentPage',
         fn.body + '\nreturn null;');
     let error = null;
     try {
         runner({}, win, doc, { warn: function () {}, error: function () {}, log: function () {} }, {
             setItem: function () {}, getItem: function () { return null; }
-        });
+        }, function () { return 'settings'; });
     } catch (e) { error = e; }
     return { requested: requested, writes: writes, error: error };
 }
@@ -136,7 +155,7 @@ check('R513/4: без ввода формы applyServerConfig заливает �
 
 // --- поведение loadBackendLimits --------------------------------------------
 function runLoadBackendLimits(editing) {
-    const fn = extractFn(appJs, 'loadBackendLimits');
+    const fn = extractFnIndented(modelsJs, 'loadBackendLimits');
     const tbody = { tagName: 'TBODY', innerHTML: 'СОХРАНЁННЫЙ_ВВОД', contains: function () { return editing; } };
     const doc = {
         activeElement: { tagName: 'INPUT', type: 'number' },

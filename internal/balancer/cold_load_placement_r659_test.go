@@ -66,13 +66,19 @@ func newR659Worker(t *testing.T) *r659Worker {
 		rw.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/api/models", func(rw http.ResponseWriter, r *http.Request) {
-		// R663: живую пробу кандидата отличаем по метке (X-R659-Probe). Опрос
-		// поллера метрик в счётчик проб не входит — у него свой интервал 30 с.
-		isProbe := r.Header.Get("X-R659-Probe") != ""
-		w.mu.Lock()
-		if isProbe {
-			w.modelsGETCount++
+		// Живая проба кандидата отличается меткой X-R659-Probe (R663).
+		//
+		// ВАЖНО: обычный опрос отвечает 503. Поллер метрик балансера иначе
+		// перезаписал бы ВНЕДРЁННЫЕ тестом метрики узла (свободная VRAM, загруженная
+		// копия с геометрией) своим ответом «моделей нет, VRAM неизвестна» — и тесты
+		// R659 становились бы таймингозависимыми (падали только под -race, когда
+		// первый опрос успевал раньше проверки).
+		if r.Header.Get("X-R659-Probe") == "" {
+			rw.WriteHeader(http.StatusServiceUnavailable)
+			return
 		}
+		w.mu.Lock()
+		w.modelsGETCount++
 		code := w.apiModelsCode
 		state := w.modelState
 		canLoadOwn := w.canLoadOwn

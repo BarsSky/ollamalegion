@@ -48,6 +48,13 @@ var sizeSkipDirsR628 = map[string]bool{
 	"dist":         true,
 	"test-results": true,
 	"llama.cpp":    true, // vendored submodule целиком
+	// R647 (решение владельца, 2026-11-19, вариант A): критерий §5 считается ТОЛЬКО по
+	// предмету работ — Go-код и WebUI-модули. Данные словарей (webui/js/i18n) и C-мост
+	// (c/bridge: bridge.c и его cgo-биндинг) из метрики ИСКЛЮЧЕНЫ осознанно: словари
+	// делить не надо (это данные), а деление C-кода на горячем пути llama.cpp —
+	// отдельный риск, не про читаемость. Причина записана в docs/architecture/debts.ru.md §15c.
+	"i18n":         true,
+	"bridge":       true,
 }
 
 // sizeExtsR628 — расширения боевого кода (совпадает с structure_report.ps1).

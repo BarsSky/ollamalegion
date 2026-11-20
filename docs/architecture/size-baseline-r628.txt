@@ -22,10 +22,6 @@
 # отсюда в том же коммите. Разделили на два файла, и оба ещё >= 1500 — обе строки
 # остаются (счётчик не изменился, это честно видно в CHANGELOG).
 
-c/bridge/bridge.c
-c/bridge/bridge.go
 webui/js/app.js
-webui/js/i18n/en.js
-webui/js/i18n/ru.js
 webui/js/modules/gguf-renderer-detail-render.js
 webui/js/modules/renderers.js

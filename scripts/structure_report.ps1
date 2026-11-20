@@ -16,7 +16,7 @@
 #   функций > 1000 строк ........................ 0
 #   функций > 300 строк ......................... <= 5
 #   функций >= 150 строк ........................ <= 60
-#   файлов >= 1500 строк (наш код) .............. <= 3
+#   файлов >= 1500 строк (наш код, без данных i18n и C-моста) <= 3
 #   internal/cppbackend/backend.go .............. <= 800
 #   боевых файлов с _rNNN ....................... 0
 param(
@@ -85,7 +85,16 @@ $funcs | Sort-Object Lines -Descending | Select-Object -First $TopLines |
 $over1000 = @($funcs | Where-Object { $_.Lines -gt 1000 }).Count
 $over300 = @($funcs | Where-Object { $_.Lines -gt 300 }).Count
 $ge150 = @($funcs).Count
-$bigFiles = @($files | Where-Object { $_.Lines -ge 1500 }).Count
+# R647 (решение владельца, 2026-11-19, вариант A): критерий §5 «файлов >= 1500»
+# считается ТОЛЬКО по предмету работ рефакторинга — Go-код и WebUI-модули.
+# Исключены осознанно и записано в §15c реестра долгов:
+#   - webui/js/i18n/*      — это ДАННЫЕ (словари), план §«чего не делать» запрещает их трогать;
+#   - c/bridge/*           — C-мост и его cgo-биндинг: R3/R6 их не касаются, деление C-кода
+#                            на горячем пути llama.cpp — отдельный риск, не про читаемость.
+# Остальные метрики отчёта (длины функций, backend.go, _rNNN) считаются как раньше:
+# исключение сделано ТОЛЬКО для размера файлов, чтобы не подкрутить счётчик функций.
+$sizeScopedOut = 'webui[\\/]js[\\/]i18n[\\/]|c[\\/]bridge[\\/]'
+$bigFiles = @($files | Where-Object { $_.Lines -ge 1500 -and $_.Path -notmatch $sizeScopedOut }).Count
 $backendFile = $files | Where-Object { $_.Path -eq 'internal\cppbackend\backend.go' } | Select-Object -First 1
 $backendLines = if ($backendFile) { $backendFile.Lines } else { 0 }
 

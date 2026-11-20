@@ -721,7 +721,7 @@ func (st *llamaCppStreamState) translateAndWriteFrame(data string) error {
 	}
 	// R493-12a: окна передаём четырьмя моментами — иначе в «время промпта»
 	// снова попали бы очередь и загрузка, а размышления выпали бы из
-	// «времени генерации» (см. stats_windows.go).
+	// «времени генерации» (см. stats_time_window.go).
 	statsWindows := statsWindowsForTransportR493(st.requestStartTime, st.upstreamSentTime, st.firstDeltaTime, st.firstContentTime, time.Now())
 	// R493-12a: загрузку модели знает воркер (она внутри запроса) — берём
 	// её из заголовка ответа, иначе 40+ секунд не попадут никуда.

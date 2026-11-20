@@ -121,7 +121,7 @@ func (p *Proxy) prepareUpstreamCall(w http.ResponseWriter, r *http.Request, back
 	// очереди/загрузки/preflight); firstDeltaTime (поле состояния стрима) —
 	// первый дельта-чанк ЛЮБОГО вида (content, reasoning/thinking, tool_calls).
 	// Разбор окна: docs/architecture/stats-and-context-check.ru.md,
-	// код: stats_windows.go.
+	// код: stats_time_window.go.
 	return c, nil
 }
 

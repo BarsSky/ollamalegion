@@ -91,6 +91,13 @@ global.Utils = global.window.Utils;
 // R643: рендер параметров вынесен в renderers-params.js (фабрика) — грузим первым,
 // как в index.html; renderers.js зовёт window.RenderersParams при загрузке.
 require('./renderers-params.js');
+// R649: страницы («Бэкенды»/«Модели»/«Сессии»/«Агенты»/«GGUF») вынесены в
+// renderers-pages.js (фабрика) — грузим до renderers.js, как в index.html.
+require('./renderers-pages.js');
+// R650: очередь/журналы/прокси-логи вынесены в renderers-logs.js (фабрика).
+require('./renderers-logs.js');
+// R651: дашборд/GPU-кластер вынесены в renderers-cluster.js (фабрика).
+require('./renderers-cluster.js');
 require('./renderers.js');
 const R = global.window.Renderers;
 assert.ok(R && typeof R.dedupModelCards === 'function', 'Renderers.dedupModelCards должен быть экспортирован');

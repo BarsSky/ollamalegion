@@ -10,7 +10,9 @@ let checks = 0;
 function check(name, fn) { fn(); checks++; console.log('  ✓ ' + name); }
 
 const css = fs.readFileSync(path.join(__dirname, '..', '..', 'css', 'pages.css'), 'utf8');
-const js = fs.readFileSync(path.join(__dirname, 'renderers.js'), 'utf8');
+// R650: карточка лога вынесена из renderers.js в renderers-logs.js — читаем оба файла.
+const js = fs.readFileSync(path.join(__dirname, 'renderers.js'), 'utf8') + '\n' +
+  fs.readFileSync(path.join(__dirname, 'renderers-logs.js'), 'utf8');
 
 check('log-message переносит текст и длинные токены', function () {
   const m = css.match(/\.log-message\s*\{[\s\S]*?\}/);

@@ -24,4 +24,3 @@
 
 webui/js/app.js
 webui/js/modules/gguf-renderer-detail-render.js
-webui/js/modules/renderers.js

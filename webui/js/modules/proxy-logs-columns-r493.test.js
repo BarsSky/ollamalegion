@@ -27,11 +27,12 @@ function check(name, fn) {
 }
 
 const css = fs.readFileSync(path.join(__dirname, '..', '..', 'css', 'pages.css'), 'utf8');
-const js = fs.readFileSync(path.join(__dirname, 'renderers.js'), 'utf8');
+// R650: proxyLogs вынесена из renderers.js в renderers-logs.js — разметка теперь там.
+const js = fs.readFileSync(path.join(__dirname, 'renderers-logs.js'), 'utf8');
 
 function proxyLogsSource() {
   const start = js.indexOf('function proxyLogs(');
-  assert.ok(start > 0, 'в renderers.js не найдена функция proxyLogs');
+  assert.ok(start > 0, 'в renderers-logs.js не найдена функция proxyLogs');
   // до следующей функции того же уровня («    function name(»)
   const rest = js.slice(start + 10);
   const end = rest.indexOf('\n    function ');

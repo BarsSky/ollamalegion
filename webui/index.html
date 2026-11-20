@@ -2692,6 +2692,13 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <!-- R643: рендер параметров загрузки (image/llama.cpp) — фабрика, грузится ПЕРЕД
          renderers.js: тот зовёт window.RenderersParams и передаёт Utils. -->
     <script defer src="js/modules/renderers-params.js?v=R643"></script>
+    <!-- R649: пять страниц (Бэкенды/Модели/Сессии/Агенты/GGUF) — фабрика, грузится
+         ПЕРЕД renderers.js: тот зовёт window.RenderersPages при загрузке. -->
+    <script defer src="js/modules/renderers-pages.js?v=R649"></script>
+    <!-- R650: очередь, журналы и прокси-логи — фабрика; тоже до renderers.js. -->
+    <script defer src="js/modules/renderers-logs.js?v=R650"></script>
+    <!-- R651: дашборд/GPU-кластер/ёмкость/таблица бэкендов — фабрика; тоже до renderers.js. -->
+    <script defer src="js/modules/renderers-cluster.js?v=R651"></script>
     <script defer src="js/modules/renderers.js?v=R425"></script>
     <!-- R102 (2026-10-10, S6 плана 2026-10-07): окно «Объединение бэкендов».
          Модуль сам монтируется в #backendMergePanel на странице «Бэкенды». -->

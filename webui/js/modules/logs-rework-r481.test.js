@@ -24,7 +24,9 @@ function read(rel) {
 }
 
 const index = read('webui/index.html');
-const renderers = read('webui/js/modules/renderers.js');
+// R650: очередь/журналы/прокси-логи вынесены в renderers-logs.js. Сторож читает ОБА
+// файла — иначе он краснеет на переносе (тот же класс, что R623/R626).
+const renderers = read('webui/js/modules/renderers.js') + '\n' + read('webui/js/modules/renderers-logs.js');
 const appjs = read('webui/js/app.js');
 const usersAdmin = read('webui/js/modules/users-admin.js');
 const ru = read('webui/js/i18n/ru.js');

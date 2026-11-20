@@ -55,6 +55,10 @@ global.GgufApi = {
     requestViaBackend: function () { return Promise.resolve({ files: [] }); },
 };
 
+// R656: таб Models вынесен в gguf-detail-models.js — грузим до detail-render.
+require('./gguf-detail-models.js');
+require('./gguf-detail-params.js');
+require('./gguf-detail-settings.js');
 require('./gguf-renderer-detail-render.js');
 
 let checks = 0;

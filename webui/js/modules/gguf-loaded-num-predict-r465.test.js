@@ -45,7 +45,7 @@ function check(name, fn) {
 
 const balancerRuntime = read('internal/balancer/llamacpp_runtime_config.go');
 const workerConfig = read('cmd/cppworker/handlers_config.go');
-const renderer = read('webui/js/modules/gguf-renderer-detail-render.js');
+const renderer = read('webui/js/modules/gguf-renderer-detail-render.js') + '\n' + read('webui/js/modules/gguf-detail-models.js') + '\n' + read('webui/js/modules/gguf-detail-settings.js') + '\n' + read('webui/js/modules/gguf-detail-params.js');
 
 check('R465: структура балансера несёт default_num_predict', function () {
     assert.ok(/json:"default_num_predict/.test(balancerRuntime),

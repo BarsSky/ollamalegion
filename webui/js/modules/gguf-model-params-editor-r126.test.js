@@ -87,6 +87,10 @@ function makeDom(fields) {
     return root;
 }
 
+// R656: таб Models вынесен в gguf-detail-models.js — грузим до detail-render.
+require('./gguf-detail-models.js');
+require('./gguf-detail-params.js');
+require('./gguf-detail-settings.js');
 require('./gguf-renderer-detail-render.js');
 const M = global.GgufModule;
 
@@ -170,7 +174,9 @@ global.CppWorkerParams = { applyProfileWithProgress: function (name) { applyWith
     // ── 4. Редактор встроен в обе карточки ──────────────────────────────────
     const fs = require('fs');
     const path = require('path');
-    const src = fs.readFileSync(path.join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8');
+    const src = fs.readFileSync(path.join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(__dirname, 'gguf-detail-models.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(__dirname, 'gguf-detail-settings.js'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, 'gguf-detail-params.js'), 'utf8');
     const diskPane = src.slice(src.indexOf('function renderModelsPane'), src.indexOf('function exactLayerPlanJS'));
     const loadedPane = src.slice(src.indexOf('function renderLoadedPane'), src.indexOf('function renderDownloadsPane'));
     check('редактор есть в списке моделей на диске (пункт 6)',

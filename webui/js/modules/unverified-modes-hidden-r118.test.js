@@ -40,6 +40,10 @@ global.GgufApi = {
 };
 
 require('./gguf-renderer-refresh.js');
+// R656: таб Models вынесен в gguf-detail-models.js — грузим до detail-render.
+require('./gguf-detail-models.js');
+require('./gguf-detail-params.js');
+require('./gguf-detail-settings.js');
 require('./gguf-renderer-detail-render.js');
 const M = global.GgufModule;
 
@@ -71,7 +75,9 @@ check('R118: в форме загрузки нет непроверенных ba
     assert.deepStrictEqual(values, ['', 'cuda'],
         'в списке backend раскладки остались непроверенные варианты: ' + values.join(', '));
     // И в исходнике формы их тоже нет (страховка от возврата опций мимо списка).
-    const src = fs.readFileSync(path.join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8');
+    const src = fs.readFileSync(path.join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(__dirname, 'gguf-detail-models.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(__dirname, 'gguf-detail-settings.js'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, 'gguf-detail-params.js'), 'utf8');
     ['vulkan', 'kompute'].forEach(function (bad) {
         const re = new RegExp('<option value="' + bad + '"');
         assert.ok(!re.test(src), 'непроверенный backend раскладки вернулся в форму: ' + bad);

@@ -57,6 +57,10 @@ global.GgufApi = {
     requestViaBackend: function () { return Promise.resolve({ files: [] }); },
 };
 
+// R656: таб Models вынесен в gguf-detail-models.js — грузим до detail-render.
+require('./gguf-detail-models.js');
+require('./gguf-detail-params.js');
+require('./gguf-detail-settings.js');
 require('./gguf-renderer-detail-render.js');
 const M = global.GgufModule;
 
@@ -124,7 +128,8 @@ const html = (function () {
 
 check('секция раскладки вынесена из Multi-GPU (проверка по исходнику)', (function () {
     const fs = require('fs');
-    const src = fs.readFileSync(require('path').join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8');
+    const src = fs.readFileSync(require('path').join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8') + '\n' +
+        fs.readFileSync(require('path').join(__dirname, 'gguf-detail-settings.js'), 'utf8');
     const multi = src.indexOf("gguf.tab_multi_gpu");
     const role = src.indexOf("gguf.tab_rpc_role");
     if (multi < 0 || role < 0) return false;
@@ -136,7 +141,8 @@ check('секция раскладки вынесена из Multi-GPU (пров
 
 check('порт узла и галочка узла живут в секции раскладки', (function () {
     const fs = require('fs');
-    const src = fs.readFileSync(require('path').join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8');
+    const src = fs.readFileSync(require('path').join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8') + '\n' +
+        fs.readFileSync(require('path').join(__dirname, 'gguf-detail-settings.js'), 'utf8');
     const role = src.indexOf("gguf.tab_rpc_role");
     const kv = src.indexOf("gguf.tab_kv_cache");
     const section = src.slice(role, kv);

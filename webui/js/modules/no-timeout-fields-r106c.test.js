@@ -142,7 +142,7 @@ check('настройки моделей не дублируются в «Нас
         assert.ok(html.indexOf(gone) === -1,
             'в index.html остался блок ' + gone + ' — он должен быть только на странице GGUF');
     }
-    const gguf = fs.readFileSync(path.join(WEBUI, 'js', 'modules', 'gguf-renderer-detail-render.js'), 'utf8');
+    const gguf = fs.readFileSync(path.join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, 'gguf-detail-settings.js'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, 'gguf-detail-params.js'), 'utf8');
     assert.ok(/id="cppProfilesList"/.test(gguf), 'на странице GGUF пропал список профилей моделей');
     assert.ok(/data-role="cpp-load-defaults"/.test(gguf), 'на странице GGUF пропал блок «что получат новые модели»');
     assert.ok(/data-role="cpp-model-catalog"/.test(gguf), 'на странице GGUF пропал блок «модели в папке»');

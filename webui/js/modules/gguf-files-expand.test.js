@@ -29,6 +29,11 @@ const vm = require('vm');
 
 const SRC_RENDER = path.join(__dirname, 'gguf-renderer-detail-render.js');
 const SRC_DETAIL = path.join(__dirname, 'gguf-renderer-detail.js');
+// R656: таб Models вынесен в gguf-detail-models.js — грузим в песочницу первым.
+const SRC_MODELS = path.join(__dirname, 'gguf-detail-models.js');
+const SRC_SETTINGS = path.join(__dirname, 'gguf-detail-settings.js');
+// R658: редактор параметров вынесен в gguf-detail-params.js — грузим до settings.
+const SRC_PARAMS = path.join(__dirname, 'gguf-detail-params.js');
 
 // Файлы тестового репозитория: 9 штук. Первые пять попадут в видимую часть
 // (pickTopGgufFiles сортирует по приоритету кванта), остальные — в хвост.
@@ -86,7 +91,7 @@ sandbox.M = sandbox.window.GgufModule = {
 };
 
 vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(SRC_RENDER, 'utf8'), sandbox, { filename: SRC_RENDER });
+vm.runInContext(fs.readFileSync(SRC_MODELS, 'utf8') + '\n' + fs.readFileSync(SRC_PARAMS, 'utf8') + '\n' + fs.readFileSync(SRC_SETTINGS, 'utf8') + '\n' + fs.readFileSync(SRC_RENDER, 'utf8'), sandbox, { filename: SRC_RENDER });
 
 const M = sandbox.window.GgufModule;
 assert.strictEqual(typeof M.renderHuggingFacePane, 'function',

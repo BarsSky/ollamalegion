@@ -27,6 +27,10 @@ const path = require('path');
 const vm = require('vm');
 
 const SRC = path.join(__dirname, 'gguf-renderer-detail-render.js');
+// R656: таб Models вынесен в gguf-detail-models.js — сторож читает оба файла.
+const SRC2 = path.join(__dirname, 'gguf-detail-models.js');
+// R657: таб Settings/RPC/редакторы вынесены в gguf-detail-settings.js.
+const SRC3 = path.join(__dirname, 'gguf-detail-settings.js');
 
 let passed = 0;
 const failures = [];
@@ -175,7 +179,8 @@ sandbox.window.GgufModule = {
 };
 
 vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(SRC, 'utf8'), sandbox, { filename: SRC });
+// R656: сначала модуль (объявляет window.GgufDetailModels), потом detail-render.
+vm.runInContext(fs.readFileSync(SRC2, 'utf8') + '\n' + fs.readFileSync(SRC3, 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, 'gguf-detail-params.js'), 'utf8') + '\n' + fs.readFileSync(SRC, 'utf8'), sandbox, { filename: SRC });
 const M = sandbox.window.GgufModule;
 
 (async function run() {

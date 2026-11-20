@@ -68,7 +68,11 @@ function loadModule() {
         state: STATE,
         _: function (key, fallback) { return fallback || key; },
     };
-    require('./gguf-renderer-detail-render.js');
+    // R656: таб Models вынесен в gguf-detail-models.js — грузим до detail-render.
+require('./gguf-detail-models.js');
+require('./gguf-detail-params.js');
+require('./gguf-detail-settings.js');
+require('./gguf-renderer-detail-render.js');
     MODULE = global.GgufModule;
     assert.ok(typeof MODULE.renderLoadedPane === 'function', 'renderLoadedPane не экспортирован');
     return MODULE;

@@ -45,6 +45,12 @@ global.window.GgufModule = {
 const fs = require('fs');
 const path = require('path');
 const SRC = path.join(__dirname, 'gguf-renderer-detail-render.js');
+// R656: таб Models вынесен в gguf-detail-models.js — до detail-render.
+
+require('./gguf-detail-models.js');
+require('./gguf-detail-params.js');
+require('./gguf-detail-settings.js');
+
 require(SRC);
 const M = global.window.GgufModule;
 

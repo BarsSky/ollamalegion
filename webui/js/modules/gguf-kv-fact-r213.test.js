@@ -20,7 +20,9 @@ const path = require('path');
 let checks = 0;
 function check(name, fn) { fn(); checks++; console.log('  ✓ ' + name); }
 
-const renderJs = fs.readFileSync(path.join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8');
+const renderJs = fs.readFileSync(path.join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(__dirname, 'gguf-detail-models.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(__dirname, 'gguf-detail-settings.js'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, 'gguf-detail-params.js'), 'utf8');
 const paramsJs = fs.readFileSync(path.join(__dirname, 'cppworker-params.js'), 'utf8');
 const goHandler = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'internal', 'api', 'gguf_backends_handler.go'), 'utf8');
 

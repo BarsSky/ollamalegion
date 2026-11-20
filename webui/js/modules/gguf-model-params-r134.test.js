@@ -121,6 +121,12 @@ global.window.GgufModule = {
         return fallback === undefined ? key : fallback;
     }
 };
+// R656: таб Models вынесен в gguf-detail-models.js — до detail-render.
+
+require('./gguf-detail-models.js');
+require('./gguf-detail-params.js');
+require('./gguf-detail-settings.js');
+
 require(SRC);
 const M = global.window.GgufModule;
 

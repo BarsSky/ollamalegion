@@ -61,6 +61,10 @@ M.currentBackend = function () { return { id: 'cppworker-gpu', host: '192.0.2.10
 global.Utils = { escapeHtml: function (s) { return String(s === undefined || s === null ? '' : s); } };
 global.I18N = { t: M._ };
 
+// R656: таб Models вынесен в gguf-detail-models.js — грузим до detail-render.
+require('./gguf-detail-models.js');
+require('./gguf-detail-params.js');
+require('./gguf-detail-settings.js');
 require('./gguf-renderer-detail-render.js');
 
 let checks = 0;

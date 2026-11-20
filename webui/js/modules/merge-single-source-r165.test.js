@@ -25,7 +25,9 @@ function check(name, fn) {
 }
 
 const refreshSrc = fs.readFileSync(path.join(__dirname, 'gguf-renderer-refresh.js'), 'utf8');
-const detailSrc = fs.readFileSync(path.join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8');
+const detailSrc = fs.readFileSync(path.join(__dirname, 'gguf-renderer-detail-render.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(__dirname, 'gguf-detail-models.js'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(__dirname, 'gguf-detail-settings.js'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, 'gguf-detail-params.js'), 'utf8');
 
 function countDefs(src) {
     return (src.match(/function\s+mergeModelRows\s*\(/g) || []).length;
@@ -52,7 +54,11 @@ check('M.mergeModelRows доступен сразу при загрузке мо
     };
     global.window.GgufModule = global.window.GgufModule || {};
     require('./gguf-renderer-refresh.js');
-    require('./gguf-renderer-detail-render.js');
+    // R656: таб Models вынесен в gguf-detail-models.js — грузим до detail-render.
+require('./gguf-detail-models.js');
+require('./gguf-detail-params.js');
+require('./gguf-detail-settings.js');
+require('./gguf-renderer-detail-render.js');
     const M = global.window.GgufModule;
     assert.strictEqual(typeof M.mergeModelRows, 'function',
         'M.mergeModelRows не функция до вызова refreshDetail — экспорт спрятан внутри функции');

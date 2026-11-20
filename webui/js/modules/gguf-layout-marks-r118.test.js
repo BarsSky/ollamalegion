@@ -52,6 +52,10 @@ global.GgufApi = {
 };
 
 require('./gguf-renderer-refresh.js');
+// R656: таб Models вынесен в gguf-detail-models.js — грузим до detail-render.
+require('./gguf-detail-models.js');
+require('./gguf-detail-params.js');
+require('./gguf-detail-settings.js');
 require('./gguf-renderer-detail-render.js');
 const M = global.GgufModule;
 assert.ok(typeof M.buildLayoutFlags === 'function', 'buildLayoutFlags должен быть опубликован');

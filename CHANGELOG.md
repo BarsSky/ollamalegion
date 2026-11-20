@@ -1,3 +1,50 @@
+## [0.7.453 - выпуск r261120-r648: пять образов из одного коммита b340e1da, стенд живой; выпуск поймал R5-регрессию Linux-сборки, 2026-11-20]
+
+| Сервис | Образ | Коммит |
+|---|---|---|
+| balancer | `balancer:r261120-r648` | `b340e1da` |
+| cppworker | `cppworker:gpu-r261120-r648` | `b340e1da` |
+| webui | `webui:r261120-r648` | `b340e1da` |
+| imageworker | `imageworker:r261120-r648` | `b340e1da` |
+| agent | `agent:r261120-r648` | `b340e1da` |
+
+Манифест: `tag=r261120-r648`, `gitCommit=b340e1da`, `cudaArch=75;86;120`, 5 записей.
+
+**Зачем выпуск.** Стенд жил на `r261119-r597` (образы из `ae84136f`), от HEAD — 54 коммита
+(R598–R647), в образах их не было. Это был единственный оставшийся шаг, менявший то, что видит
+оператор.
+
+**Выпуск сразу нашёл то, чего не видели 54 коммита.** `docker build` балансера упал на
+`undefined: statsWindowsR493`: R621 переименовал `stats_windows_r493.go` в `stats_windows.go`, а
+суффикс `_windows` в имени `.go`-файла делает его windows-only (R648). Локальные тесты идут под
+Windows и этого не видят; первой Linux-сборкой после r597 стал именно выпуск. Поэтому тег —
+`r648`, а не `r647`: образы собираются из коммита, который вообще собирается под Linux.
+
+**Сбой сборки безопасен.** Первый запуск остановился на балансере и не тронул ни
+`deployments/.env`, ни манифест, ни стенд (скрипт пишет теги только после всех сборок); образ
+cppworker из этой попытки (`gpu-r261120-r647`) удалён как ненужный.
+
+**Оценка диска уточнилась в меньшую сторону.** Ожидалось ≈7 ГБ, но 7 ГБ — это размер всего образа
+cppworker, а не прирост: с `ae84136f` не менялись ни `docker/`, ни `c/` (сабмодуль чистый на
+`b1b770d90d`), а identity-стражи стоят в стадии `go-builder`, поэтому тяжёлые стадии
+(`llama-builder` с CUDA под 75;86;120, `bridge-builder`) взялись из кэша (`CACHED`). Фактический
+прирост — сотни МБ; на C: оставалось 9.4 ГБ, после выпуска столько же.
+
+**Живая проверка (после `docker compose up -d`):**
+- `GET :18080/api/version` → `build_commit=b340e1da`, `build_image_tag=r261120-r648`,
+  `build=r261120-r648 (commit b340e1da, 2026-11-20T05:14:32Z)`.
+- `GET :18083/identity.json` → `commit=b340e1da`, `version=r261120-r648`.
+- `GET :18080/api/v1/backends`: оба узла **healthy**, `workerCommit=b340e1da`,
+  `workerVersion=r261120-r648`, **`workerReleaseMismatch=false`** у cppworker (llama
+  `b1b770d90d 2026-11-13`, RPC `10.0.0`) и у imageworker.
+- `scripts/check-image-tags.ps1 -ComposeFile docker-compose.stack.yml -EnvFile .env.example` →
+  **exit 0**: пять образов, `CUDA_ARCH .env=75;86;120 ↔ образ 120;75;86 — OK`.
+- Контейнеры `ol-stack-balancer`, `ol-stack-cppworker-gpu`, `ol-stack-webui`,
+  `ol-stack-imageworker` — все `Up (healthy)` на новых образах.
+
+**Откат:** вернуть пять тегов `r261119-r597` в `deployments/.env` и выполнить
+`docker compose -f docker-compose.stack.yml --profile full up -d` — образы r597 остаются в демоне.
+
 ## [0.7.452 - R648: R5-регрессия — `stats_windows.go` был windows-only, Linux-сборка балансера не собиралась 54 коммита; страж на платформенные суффиксы в именах, 2026-11-20]
 
 **Симптом.** Выпуск образов на HEAD (`a8ef0f51`): `docker build` балансера упал на компиляции —

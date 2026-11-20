@@ -326,7 +326,37 @@ static int pc_prepare(InternalModel* im, const llama_token* tokens, int n_tokens
     }
     // Обрезаем KV до общего префикса: всё, что дальше (хвост прошлого ответа),
     // не совпадает с новым промптом и должно быть пересчитано.
-    llama_memory_seq_rm(mem, seq_id, (llama_pos)common, -1);
+    //
+    // R658 (2026-11-20): ОБРЕЗКА МОЖЕТ НЕ УДАСТЬСЯ — и это не редкий случай.
+    //
+    // ЖИВОЙ ОТКАЗ (воспроизведён на стенде, Qwen3.8-9B `qwen35` — гибридная
+    // память attention+recurrent; окно 16384, VRAM 6.9/8.2 ГБ, промпт 380
+    // токенов, память и окно заведомо свободны):
+    //   [bridge] prefix cache: reused 625 of 631 tokens (cached 655, recompute 6)
+    //   decode: failed to initialize batch
+    //   llama_decode: failed to decode, ret = -1
+    // То есть ВТОРОЙ и КАЖДЫЙ следующий запрос с общим префиксом (обычный ход
+    // агента: тот же system+tools, растущая история) падал с «llama_decode
+    // failed for prompt batch», хотя памяти было втрое больше нужного.
+    //
+    // ПРИЧИНА. У гибридной памяти `llama_memory_hybrid::seq_rm` сначала идёт в
+    // recurrent-кэш; частичный откат там возможен только в пределах снапшотов
+    // последнего ubatch (llama-memory-recurrent.cpp: «models like Mamba or RWKV
+    // can't have a state partially erased at the end of the sequence»), иначе
+    // возвращается false, НЕ ТРОГАЯ НИ ОДНОГО КЭША — ни recurrent, ни attention
+    // (hybrid возвращает false до вызова mem_attn->seq_rm). Раньше результат
+    // игнорировался, и декод начинался с позиции `common`, пока в памяти лежал
+    // прошлый промпт (до 655): batch init падал на первой же порции.
+    //
+    // ПРАВИЛО: результат обрезки — часть контракта. Не удалось — переиспользовать
+    // нечего: помечаем кэш невалидным, вызывающий сделает reset и полный префилл.
+    bool trimmed = llama_memory_seq_rm(mem, seq_id, (llama_pos)common, -1);
+    if (!trimmed) {
+        im->pc_valid = 0;
+        pc_mu_unlock(&im->pc_mu);
+        fprintf(stderr, "[bridge] prefix cache: partial rollback unsupported (recurrent/hybrid memory) — full prefill, no reuse\n");
+        return 0;
+    }
     int cached = im->pc_count;
     pc_mu_unlock(&im->pc_mu);
 
@@ -2607,6 +2637,11 @@ InferenceResult bridge_infer(
     }
     // R493: prefill начинается с уже посчитанного префилла (0 = как раньше).
     int n_processed = pc_reuse;
+    // R658 (2026-11-20): один повтор полного префилла, если декод упал сразу
+    // после частичного переиспользования (страховка поверх проверки результата
+    // seq_rm в pc_prepare — память может принять обрезку и всё равно оказаться
+    // несовместимой).
+    bool pc_retried = false;
 
     while (n_processed < actual_tokens) {
         int batch_size = (actual_tokens - n_processed) > n_batch ? n_batch : (actual_tokens - n_processed);
@@ -2632,6 +2667,18 @@ InferenceResult bridge_infer(
         llama_set_embeddings(im->context, false);
         im->embeddings_mode = BRIDGE_MODE_CHAT;
         if (llama_decode(im->context, batch) != 0) {
+            // R658: сбой сразу после переиспользования префикса — это несовместимая
+            // память (recurrent/hybrid), а не VRAM. Один раз считаем промпт целиком.
+            if (pc_reuse > 0 && !pc_retried) {
+                pc_retried = true;
+                llama_batch_free(batch);
+                reset_inference_state(im, seq_id);
+                pc_invalidate(im);
+                pc_reuse = 0;
+                n_processed = 0;
+                fprintf(stderr, "[bridge] prefix cache: decode failed after reuse — retrying full prefill\n");
+                continue;
+            }
             free(tokens);
             free(output);
             // R493 (2026-11-17): те же факты, что и в стриминге (см. window_fit.c),
@@ -3156,6 +3203,10 @@ int bridge_infer_stream(
 
     // Процессим токены промпта (R493: с уже посчитанного префилла)
     int n_processed = pc_reuse;
+    // R658 (2026-11-20): один повтор полного префилла, если декод упал сразу
+    // после частичного переиспользования (страховка поверх проверки результата
+    // seq_rm в pc_prepare).
+    bool pc_retried = false;
     while (n_processed < actual_tokens) {
         int batch_size = (actual_tokens - n_processed) > n_batch ? n_batch : (actual_tokens - n_processed);
 
@@ -3177,6 +3228,18 @@ int bridge_infer_stream(
         llama_set_embeddings(im->context, false);
         im->embeddings_mode = BRIDGE_MODE_CHAT;
         if (llama_decode(im->context, batch) != 0) {
+            // R658: сбой сразу после переиспользования префикса — это несовместимая
+            // память (recurrent/hybrid), а не VRAM. Один раз считаем промпт целиком.
+            if (pc_reuse > 0 && !pc_retried) {
+                pc_retried = true;
+                llama_batch_free(batch);
+                reset_inference_state(im, seq_id);
+                pc_invalidate(im);
+                pc_reuse = 0;
+                n_processed = 0;
+                fprintf(stderr, "[bridge] prefix cache: decode failed after reuse — retrying full prefill\n");
+                continue;
+            }
             free(tokens);
             // R493 (2026-11-17): называем ФАКТЫ, а не догадки, и заполняем числа
             // (раньше в текст уходили нули «current_n_ctx=0, required_n_ctx=0»,

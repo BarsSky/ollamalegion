@@ -326,6 +326,21 @@
   // слой не возвращаем (иначе следующий вызов showOverlay снова перекрыл бы панель).
   var dismissedOverlay = false;
 
+  // R667 (2026-11-21): ключ, которым в этой вкладке запоминается выбор «работаю без
+  // входа». Живая жалоба: «после Ctrl+Shift+R опять сбрасывается нормальная работа с
+  // мышью» — полная перезагрузка открывала блокирующий слой заново, хотя оператор
+  // уже один раз его закрыл. sessionStorage хранит решение до закрытия вкладки:
+  // на перезагрузке остаётся полоса с кнопкой входа, а не перекрытие всей страницы.
+  var AUTH_GUEST_ACK = 'ol_auth_guest_ack';
+
+  function guestAckSaved() {
+    try { return window.sessionStorage.getItem(AUTH_GUEST_ACK) === '1'; } catch (e) { return false; }
+  }
+
+  function clearGuestAck() {
+    try { window.sessionStorage.removeItem(AUTH_GUEST_ACK); } catch (e) { /* приватный режим */ }
+  }
+
   function showOverlay() {
     dismissedOverlay = false;
     var el = ensureOverlay();
@@ -346,6 +361,7 @@
   function dismissOverlay() {
     dismissedOverlay = true;
     hideOverlay();
+    try { window.sessionStorage.setItem(AUTH_GUEST_ACK, '1'); } catch (e) { /* приватный режим */ }
     showBanner('auth.banner.sessionExpired',
       'Вход не выполнен: панель открыта в режиме чтения. Войти — кнопка справа.');
   }
@@ -484,6 +500,9 @@
           document.body.classList.add('auth-role-' + guestRole);
         }
         if (state.authenticated || state.tokenAuth) {
+          // R667: успешный вход отменяет «работаю без входа» — иначе после выхода
+          // страница осталась бы без блокирующего слоя, но и без объяснения.
+          clearGuestAck();
           hideOverlay();
           renderUserChip();
           applyRoleVisibility();
@@ -494,7 +513,15 @@
         applyRoleVisibility();
         watchDynamicAdminNodes();
         if (state.usersConfigured) {
-          showOverlay();
+          // R667: закрытый ранее слой не открываем заново после перезагрузки —
+          // вместо блокировки всей страницы остаётся полоса с кнопкой входа.
+          if (guestAckSaved()) {
+            dismissedOverlay = true;
+            showBanner('auth.banner.sessionExpired',
+              'Вход не выполнен: панель открыта в режиме чтения. Войти — кнопка справа.');
+          } else {
+            showOverlay();
+          }
         } else {
           // R222: пользователи не настроены. Панель не блокируем (при выключенной
           // серверной auth она открыта), но объясняем состояние и даём вход.

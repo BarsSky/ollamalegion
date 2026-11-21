@@ -150,7 +150,17 @@
         const cfg = await fetchConfig();
         if (cfg) {
             const cb = document.getElementById('autotune-global-enabled');
-            if (cb) cb.checked = cfg.globalEnabled;
+            // R676: тумблер «AutoTune включён» — такое же поле формы на странице
+            // «Настройки», как и остальные. Перерисовка (в том числе после
+            // WebSocket-тика) не должна возвращать серверное значение поверх
+            // выбора оператора: запись идёт через SafeForm.
+            if (cb) {
+                if (window.SafeForm && typeof window.SafeForm.setChecked === 'function') {
+                    window.SafeForm.setChecked(cb, cfg.globalEnabled === true);
+                } else {
+                    cb.checked = cfg.globalEnabled;
+                }
+            }
         }
         availableModels = await fetchAvailableModels();
         renderPerModelList();

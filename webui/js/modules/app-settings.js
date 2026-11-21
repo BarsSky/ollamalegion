@@ -31,6 +31,40 @@
 
         let autoSaveTimer = null;
 
+        // ---- ЗАПИСЬ В ПОЛЯ (R676) ----
+        //
+        // ЖИВАЯ ЖАЛОБА. «Постоянное обновление стирает то, что я ввёл в формы».
+        // Здесь были десятки прямых `el.value = …` / `el.checked = …`, которые
+        // заливали серверные значения независимо от защит R512/R662: защиты
+        // глушили ПЕРЕРИСОВКУ страницы, а запись шла мимо них. Замер на стенде:
+        // набрал 9999 → клик мимо → один проход applyServerConfig → 2048 при
+        // FormDirty.isDirtyPage('settings') === true.
+        //
+        // Теперь единственная точка записи — SafeForm (js/modules/safe-form.js):
+        // он пропускает запись только если поле не в фокусе, его значение не
+        // менял оператор и на странице нет свежей несохранённой правки. Поле с
+        // введённым значением не трогается, но рендер продолжается — остальные
+        // поля, бейджи и таблицы обновляются как обычно.
+        //
+        // Fallback на прямую запись оставлен осознанно и только на случай, когда
+        // модуль вообще не подключён (тогда поведение прежнее, а не «ничего не
+        // применяется»); за подключение отвечает webui/tests/page-contract-r676.test.js.
+        function writeValue(el, value) {
+            if (!el) { return false; }
+            var SF = (typeof window !== 'undefined') ? window.SafeForm : null;
+            if (SF && typeof SF.setValue === 'function') { return SF.setValue(el, value); }
+            el.value = value;
+            return true;
+        }
+
+        function writeChecked(el, value) {
+            if (!el) { return false; }
+            var SF = (typeof window !== 'undefined') ? window.SafeForm : null;
+            if (SF && typeof SF.setChecked === 'function') { return SF.setChecked(el, value); }
+            el.checked = !!value;
+            return true;
+        }
+
     // ---- Data Fetching ----
 
     /**
@@ -344,28 +378,26 @@
             window.RefreshGuard.editingInId('settings-page')) {
             return;
         }
+        // R676 (2026-11-21): ЗАСЛОН ВЫШЕ ОСТАЛСЯ, НО ОН БОЛЬШЕ НЕ ЕДИНСТВЕННЫЙ.
+        //
+        // Он нужен ровно для того, о чём написано в его комментарии: остановить
+        // побочные эффекты заливки ЦЕЛИКОМ, пока оператор печатает (скрытие групп
+        // полей режима, пересчёт аккордеонов). Значения полей теперь защищает
+        // SafeForm ПО КАЖДОМУ ПОЛЮ (writeValue/writeChecked ниже): если поле
+        // менял оператор или на странице есть свежая несохранённая правка —
+        // значение не заливается, а остальное обновляется. Именно этого не
+        // хватало: после ухода из поля (фокус ушёл) тик перезаливал форму.
 
-        var maEl = document.getElementById('modelAffinity');
-        if (maEl) maEl.checked = serverConfig.modelAffinity !== false;
-        var ssEl = document.getElementById('sessionStickiness');
-        if (ssEl) ssEl.checked = serverConfig.sessionStickiness !== false;
+        writeChecked(document.getElementById('modelAffinity'), serverConfig.modelAffinity !== false);
+        writeChecked(document.getElementById('sessionStickiness'), serverConfig.sessionStickiness !== false);
+        writeChecked(document.getElementById('useEnhancedScoring'), serverConfig.useEnhancedScoring !== false);
+        writeChecked(document.getElementById('predictionFiltering'), serverConfig.predictionFiltering !== false);
 
-        var useESEl = document.getElementById('useEnhancedScoring');
-        if (useESEl) useESEl.checked = serverConfig.useEnhancedScoring !== false;
-
-        var pfEl = document.getElementById('predictionFiltering');
-        if (pfEl) pfEl.checked = serverConfig.predictionFiltering !== false;
-
-        var gpuEl = document.getElementById('gpuMaxUsage');
-        if (gpuEl && serverConfig.gpuMaxUsage) gpuEl.value = serverConfig.gpuMaxUsage;
-        var vramEl = document.getElementById('vramMaxUsage');
-        if (vramEl && serverConfig.vramMaxUsage) vramEl.value = serverConfig.vramMaxUsage;
-        var cpuEl = document.getElementById('cpuMaxUsage');
-        if (cpuEl && serverConfig.cpuMaxUsage) cpuEl.value = serverConfig.cpuMaxUsage;
-        var ramEl = document.getElementById('ramMaxUsage');
-        if (ramEl && serverConfig.ramMaxUsage) ramEl.value = serverConfig.ramMaxUsage;
-        var diskEl = document.getElementById('minFreeDisk');
-        if (diskEl && serverConfig.minFreeDisk) diskEl.value = serverConfig.minFreeDisk;
+        if (serverConfig.gpuMaxUsage) writeValue(document.getElementById('gpuMaxUsage'), serverConfig.gpuMaxUsage);
+        if (serverConfig.vramMaxUsage) writeValue(document.getElementById('vramMaxUsage'), serverConfig.vramMaxUsage);
+        if (serverConfig.cpuMaxUsage) writeValue(document.getElementById('cpuMaxUsage'), serverConfig.cpuMaxUsage);
+        if (serverConfig.ramMaxUsage) writeValue(document.getElementById('ramMaxUsage'), serverConfig.ramMaxUsage);
+        if (serverConfig.minFreeDisk) writeValue(document.getElementById('minFreeDisk'), serverConfig.minFreeDisk);
         // R544 (F10/W6): поля #apiToken в разметке больше нет — оно было инертным
         // (сервер не отдаёт apiToken в обычном GET и не принимает в PUT). Токен
         // подставляется сервером в WEBUI_CONFIG.API_TOKEN, см. index.html
@@ -391,7 +423,7 @@
             }
             var formBackendTypeEl = document.getElementById('formBackendType');
             if (formBackendTypeEl && engineType !== 'all') {
-                formBackendTypeEl.value = engineType;
+                writeValue(formBackendTypeEl, engineType);
             }
             // Маркер типа движка в сайдбаре рисует ТОЛЬКО BackendTypeFilter:
             // он знает фактический состав кластера (clusterComposition) и
@@ -409,64 +441,61 @@
             } else {
                 // Fallback (устаревший путь)
                 var radio = document.querySelector('input[name="operatingMode"][value="' + serverConfig.operatingMode + '"]');
-                if (radio) radio.checked = true;
+                if (radio) writeChecked(radio, true);
             }
         }
 
         // RPC Settings — Model Replication (Вариант A)
-        var mrEnabledEl = document.getElementById('modelReplicationEnabled');
-        if (mrEnabledEl && serverConfig.modelReplication) mrEnabledEl.checked = serverConfig.modelReplication.enabled === true;
-        var mrMinEl = document.getElementById('modelReplicationMinInstances');
-        if (mrMinEl && serverConfig.modelReplication && serverConfig.modelReplication.defaultMinInstances) mrMinEl.value = serverConfig.modelReplication.defaultMinInstances;
-        var mrMaxEl = document.getElementById('modelReplicationMaxInstances');
-        if (mrMaxEl && serverConfig.modelReplication && serverConfig.modelReplication.defaultMaxInstances) mrMaxEl.value = serverConfig.modelReplication.defaultMaxInstances;
-        var mrIdleEl = document.getElementById('modelReplicationIdleUnload');
-        if (mrIdleEl && serverConfig.modelReplication && serverConfig.modelReplication.idleUnloadAfter) mrIdleEl.value = serverConfig.modelReplication.idleUnloadAfter;
+        if (serverConfig.modelReplication) {
+            writeChecked(document.getElementById('modelReplicationEnabled'), serverConfig.modelReplication.enabled === true);
+            if (serverConfig.modelReplication.defaultMinInstances) writeValue(document.getElementById('modelReplicationMinInstances'), serverConfig.modelReplication.defaultMinInstances);
+            if (serverConfig.modelReplication.defaultMaxInstances) writeValue(document.getElementById('modelReplicationMaxInstances'), serverConfig.modelReplication.defaultMaxInstances);
+            if (serverConfig.modelReplication.idleUnloadAfter) writeValue(document.getElementById('modelReplicationIdleUnload'), serverConfig.modelReplication.idleUnloadAfter);
+        }
 
         // RPC Settings — RPC Coordinator (Вариант B)
-        var rcEnabledEl = document.getElementById('rpcCoordinatorEnabled');
-        if (rcEnabledEl && serverConfig.rpcCoordinator) rcEnabledEl.checked = serverConfig.rpcCoordinator.enabled === true;
-        var rcUrlEl = document.getElementById('rpcCoordinatorURL');
-        if (rcUrlEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.coordinatorURL) rcUrlEl.value = serverConfig.rpcCoordinator.coordinatorURL;
-        var rcPortEl = document.getElementById('rpcCoordinatorWorkerPort');
-        if (rcPortEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.workerPort) rcPortEl.value = serverConfig.rpcCoordinator.workerPort;
-        var rcProtoEl = document.getElementById('rpcCoordinatorProtocol');
-        if (rcProtoEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.protocol) rcProtoEl.value = serverConfig.rpcCoordinator.protocol;
+        if (serverConfig.rpcCoordinator) {
+            writeChecked(document.getElementById('rpcCoordinatorEnabled'), serverConfig.rpcCoordinator.enabled === true);
+            if (serverConfig.rpcCoordinator.coordinatorURL) writeValue(document.getElementById('rpcCoordinatorURL'), serverConfig.rpcCoordinator.coordinatorURL);
+            if (serverConfig.rpcCoordinator.workerPort) writeValue(document.getElementById('rpcCoordinatorWorkerPort'), serverConfig.rpcCoordinator.workerPort);
+            if (serverConfig.rpcCoordinator.protocol) writeValue(document.getElementById('rpcCoordinatorProtocol'), serverConfig.rpcCoordinator.protocol);
+        }
         // R106c (2026-10-12): поле rpcCoordinatorTimeout убрано из формы.
 
         // RPC Settings — Virtual Models (Вариант C)
-        var vmEnabledEl = document.getElementById('virtualModelsEnabled');
-        if (vmEnabledEl && serverConfig.virtualModels) vmEnabledEl.checked = serverConfig.virtualModels.enabled === true;
-        var vmModeEl = document.getElementById('virtualModelsCoordMode');
-        if (vmModeEl && serverConfig.virtualModels && serverConfig.virtualModels.coordMode) vmModeEl.value = serverConfig.virtualModels.coordMode;
+        if (serverConfig.virtualModels) {
+            writeChecked(document.getElementById('virtualModelsEnabled'), serverConfig.virtualModels.enabled === true);
+            if (serverConfig.virtualModels.coordMode) writeValue(document.getElementById('virtualModelsCoordMode'), serverConfig.virtualModels.coordMode);
+        }
         // R106c (2026-10-12): поле virtualModelsTimeout убрано из формы.
 
         // RPC Settings — Distributed Inference (Вариант D)
-        var diEnabledEl = document.getElementById('distInferenceEnabled');
-        if (diEnabledEl && serverConfig.distInference) diEnabledEl.checked = serverConfig.distInference.enabled === true;
-        var diPortEl = document.getElementById('distInferenceGrpcPort');
-        if (diPortEl && serverConfig.distInference && serverConfig.distInference.grpcPort) diPortEl.value = serverConfig.distInference.grpcPort;
+        if (serverConfig.distInference) {
+            writeChecked(document.getElementById('distInferenceEnabled'), serverConfig.distInference.enabled === true);
+            if (serverConfig.distInference.grpcPort) writeValue(document.getElementById('distInferenceGrpcPort'), serverConfig.distInference.grpcPort);
+        }
 
         // llama.cpp / GGUF Settings
         var llamaCpp = serverConfig.llamaCpp || {};
         // Хелпер для безопасной установки value (поддерживает "0" как валидное значение).
+        // R676: обе записи идут через writeValue/writeChecked (SafeForm) — см. шапку.
         var setVal = function (id, val, fallback) {
             var el = document.getElementById(id);
             if (!el) return;
             if (val === undefined || val === null) {
-                if (fallback !== undefined) el.value = fallback;
+                if (fallback !== undefined) writeValue(el, fallback);
                 return;
             }
-            el.value = val;
+            writeValue(el, val);
         };
         var setCheck = function (id, val, fallback) {
             var el = document.getElementById(id);
             if (!el) return;
             if (val === undefined || val === null) {
-                if (fallback !== undefined) el.checked = !!fallback;
+                if (fallback !== undefined) writeChecked(el, !!fallback);
                 return;
             }
-            el.checked = !!val;
+            writeChecked(el, !!val);
         };
         // Базовые параметры
         setVal('gpuLayers', llamaCpp.numGpuLayers, -1);
@@ -586,22 +615,17 @@
 
     function applyLocalConfig(config) {
         if (!config) return;
-        var maEl = document.getElementById('modelAffinity');
-        if (maEl) maEl.checked = config.modelAffinity !== false;
-        var ssEl = document.getElementById('sessionStickiness');
-        if (ssEl) ssEl.checked = config.sessionStickiness !== false;
-        var pfEl = document.getElementById('predictionFiltering');
-        if (pfEl) pfEl.checked = config.predictionFiltering !== false;
-        var gpuEl = document.getElementById('gpuMaxUsage');
-        if (gpuEl && config.gpuMaxUsage) gpuEl.value = config.gpuMaxUsage;
-        var vramEl = document.getElementById('vramMaxUsage');
-        if (vramEl && config.vramMaxUsage) vramEl.value = config.vramMaxUsage;
-        var cpuEl = document.getElementById('cpuMaxUsage');
-        if (cpuEl && config.cpuMaxUsage) cpuEl.value = config.cpuMaxUsage;
-        var ramEl = document.getElementById('ramMaxUsage');
-        if (ramEl && config.ramMaxUsage) ramEl.value = config.ramMaxUsage;
-        var diskEl = document.getElementById('minFreeDisk');
-        if (diskEl && config.minFreeDisk) diskEl.value = config.minFreeDisk;
+        // R676: заливка локального конфига — та же опасная запись, что и
+        // серверная (это fallback, когда сервер недоступен). Идёт через SafeForm:
+        // набранное оператором не затирается, остальное применяется.
+        writeChecked(document.getElementById('modelAffinity'), config.modelAffinity !== false);
+        writeChecked(document.getElementById('sessionStickiness'), config.sessionStickiness !== false);
+        writeChecked(document.getElementById('predictionFiltering'), config.predictionFiltering !== false);
+        if (config.gpuMaxUsage) writeValue(document.getElementById('gpuMaxUsage'), config.gpuMaxUsage);
+        if (config.vramMaxUsage) writeValue(document.getElementById('vramMaxUsage'), config.vramMaxUsage);
+        if (config.cpuMaxUsage) writeValue(document.getElementById('cpuMaxUsage'), config.cpuMaxUsage);
+        if (config.ramMaxUsage) writeValue(document.getElementById('ramMaxUsage'), config.ramMaxUsage);
+        if (config.minFreeDisk) writeValue(document.getElementById('minFreeDisk'), config.minFreeDisk);
         // R544 (F10/W6): #apiToken и четырёх полей агента в разметке больше нет
         // (см. index.html section-security / section-agent). Заполнять их было
         // нечем и незачем: saveSettings эти значения не читал, а сервер их не

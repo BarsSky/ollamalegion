@@ -14,6 +14,15 @@
 // addLog/showToast, filterBackendsForUI, backendsPage/renderLogs/renderProxyLogs
 // и ДОСТУП К ТЕКУЩЕЙ СТРАНИЦЕ (геттером: currentPage — это let).
 //
+// R676 (2026-11-21): КОНТРАКТ СТРАНИЦЫ ПОЧИНЕН. Здесь стояло
+// `var currentPage = ctx.currentPage;` — а в это имя вызывающий (app.js)
+// передавал ФУНКЦИЮ-геттер. Поэтому `currentPage === 'backends'` (:89) и
+// `currentPage === 'logs'` (:127) были ЛОЖНЫ ВСЕГДА: панель «Бэкенды» не
+// перерисовывалась после исключения узла, а страница логов — после прихода
+// прокси-логов. Теперь имя читается вызовом (`getCurrentPage()`), как в
+// app-logs.js:20; инвариант проверяет webui/tests/page-contract-r676.test.js.
+
+//
 // ПОВЕДЕНИЕ НЕ МЕНЯЛОСЬ: тела перенесены как есть, отступ сохранён.
 (function () {
     'use strict';
@@ -24,7 +33,8 @@
         var Utils = ctx.Utils;
         var addLog = ctx.addLog;
         var backendsPage = ctx.backendsPage;
-        var currentPage = ctx.currentPage;
+        // R676: геттер, а не значение — см. шапку файла.
+        var getCurrentPage = ctx.getCurrentPage;
         var data = ctx.data;
         var filterBackendsForUI = ctx.filterBackendsForUI;
         var renderLogs = ctx.renderLogs;
@@ -86,7 +96,7 @@
             }
             return fetchClusterState();
         }).then(function() {
-            if (currentPage === 'backends') {
+            if (getCurrentPage() === 'backends') {
                 backendsPage(filterBackendsForUI(data.backends));
             }
         }).catch(function(err) {
@@ -124,7 +134,7 @@
     function fetchProxyLogs() {
         Api.proxyLogs(100).then(function(res) {
             data.proxyLogs = res.entries || [];
-            if (currentPage === 'logs') {
+            if (getCurrentPage() === 'logs') {
                 renderLogs(data.logs);
                 var proxyTab = document.getElementById('logsTabProxy');
                 if (proxyTab && proxyTab.classList.contains('active')) {
@@ -136,12 +146,45 @@
         });
     }
 
+    // limitRowKey — ключ строки таблицы лимитов для переноса ввода (R676).
+    function limitRowKey(el) {
+        if (!el || typeof el.getAttribute !== 'function') return '';
+        return (el.getAttribute('data-backend-id') || '') + '|' + (el.getAttribute('data-limit-type') || '');
+    }
+
+    /**
+     * replaceRowsPreserving — пересобрать таблицу, не уничтожив ввод оператора.
+     *
+     * ЗАЧЕМ (R676). `tbody.innerHTML = …` уничтожает узлы вместе с набранными
+     * числами. Защита R513 спасала только случай «курсор ещё в таблице»; обычный
+     * сценарий — набрал число, кликнул мимо, пришёл тик — терялся. Порядок
+     * безопасной пересборки: снять значения, которые оператор уже изменил
+     * (SafeForm.collectInputs), нарисовать таблицу и вернуть их обратно
+     * (SafeForm.restoreInputs). Данные (статусы, порты) при этом обновляются
+     * всегда: рендер больше не глушится целиком.
+     *
+     * Без SafeForm (модуль не подключён) — прежнее поведение, чтобы страница
+     * настроек не осталась без таблицы вовсе.
+     */
+    function replaceRowsPreserving(tbody, rowsHtml) {
+        var SF = (typeof window !== 'undefined') ? window.SafeForm : null;
+        if (!SF || typeof SF.collectInputs !== 'function' || typeof SF.restoreInputs !== 'function') {
+            tbody.innerHTML = rowsHtml;
+            return false;
+        }
+        var pending = SF.collectInputs(tbody, limitRowKey, '.backend-limit-input');
+        tbody.innerHTML = rowsHtml;
+        SF.restoreInputs(tbody, pending, limitRowKey, '.backend-limit-input');
+        return true;
+    }
+
     function loadBackendLimits() {
         var tbody = document.getElementById('backendLimitsBody');
         if (!tbody) return;
         // R513: лимиты — это `<input type="number">` в таблице; пересборка
         // innerHTML уносит набранное значение вместе со строкой. Пока оператор
-        // правит число в этой таблице, её не перерисовываем.
+        // правит число в этой таблице, её не перерисовываем (R676: после ухода из
+        // поля значение донесёт перенос через SafeForm — см. replaceRowsPreserving).
         if (window.RefreshGuard && typeof window.RefreshGuard.isEditingIn === 'function' &&
             window.RefreshGuard.isEditingIn(tbody)) {
             return;
@@ -151,7 +194,7 @@
             tbody.innerHTML = '<tr><td colspan="6" class="loading-cell">' + (window.I18N ? I18N.t('common.loading') : 'Loading...') + '</td></tr>';
             return;
         }
-        tbody.innerHTML = backends.map(function(b) {
+        var rowsHtml = backends.map(function(b) {
             var maxConcurrent = b.maxConcurrentRequests || b.activeRequests || 10;
             var maxModels = b.maxModels || 0;
             var statusClass = b.status === 'healthy' ? 'badge-success' : (b.status === 'warning' ? 'badge-warning' : 'badge-error');
@@ -165,6 +208,7 @@
                 '<td><span class="badge ' + statusClass + '">' + statusText + '</span></td>' +
             '</tr>';
         }).join('');
+        replaceRowsPreserving(tbody, rowsHtml);
     }
 
     function saveBackendLimits() {

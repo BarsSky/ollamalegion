@@ -5,6 +5,30 @@
 (function () {
     'use strict';
 
+    // ---- Запись в поля (R676) ----
+    //
+    // Импорт конфига — ЯВНОЕ действие оператора: он выбрал файл и подтвердил
+    // «Применить», поэтому значения записываются принудительно ({force:true}) —
+    // иначе защита полей отклонила бы импорт на странице с несохранённой правкой,
+    // и кнопка «Применить» молча ничего бы не сделала. База при этом всё равно
+    // запоминается (это делает SafeForm), поэтому следующее авто-обновление не
+    // сочтёт импортированные значения «правкой оператора».
+    function writeValue(el, value) {
+        if (!el) { return false; }
+        var SF = (typeof window !== 'undefined') ? window.SafeForm : null;
+        if (SF && typeof SF.setValue === 'function') { return SF.setValue(el, value, { force: true }); }
+        el.value = value;
+        return true;
+    }
+
+    function writeChecked(el, value) {
+        if (!el) { return false; }
+        var SF = (typeof window !== 'undefined') ? window.SafeForm : null;
+        if (SF && typeof SF.setChecked === 'function') { return SF.setChecked(el, value, { force: true }); }
+        el.checked = !!value;
+        return true;
+    }
+
     /**
      * Export current settings to JSON file
      */
@@ -321,7 +345,7 @@
         if (data.operating_mode) {
             var radio = document.querySelector('input[name="operatingMode"][value="' + data.operating_mode + '"]');
             if (radio) {
-                radio.checked = true;
+                writeChecked(radio, true);
                 if (window.SettingsUI) {
                 }
             }
@@ -389,14 +413,14 @@
     function setFieldValue(id, value) {
         var el = document.getElementById(id);
         if (el && value !== undefined && value !== null && value !== '') {
-            el.value = value;
+            writeValue(el, value);
         }
     }
 
     function setFieldChecked(id, value) {
         var el = document.getElementById(id);
         if (el && value !== undefined) {
-            el.checked = value === true;
+            writeChecked(el, value === true);
         }
     }
 

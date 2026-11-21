@@ -51,13 +51,16 @@ function tickBody() {
 
 check('тик авто-обновления вызывает провайдеров активной страницы', function () {
     const body = tickBody();
-    assert.ok(/\.refresh\(currentPage\)/.test(body),
-        'тик не вызывает DataRefresh.refresh(currentPage) — источники страницы (GGUF, image, диагностика) останутся старыми до ручного обновления');
+    // R676: страница тика — значение из геттера (`var page = getCurrentPage()`),
+    // поэтому вызовы идут по нему. Проверка принимает и прежнюю форму имени:
+    // важно, что провайдер вызывается для АКТИВНОЙ страницы.
+    assert.ok(/\.refresh\((?:page|currentPage)\)/.test(body),
+        'тик не вызывает DataRefresh.refresh(<активная страница>) — источники страницы (GGUF, image, диагностика) останутся старыми до ручного обновления');
 });
 
 check('тик авто-обновления перерисовывает активную страницу', function () {
     const body = tickBody();
-    assert.ok(/refreshPage\(currentPage\)/.test(body),
+    assert.ok(/refreshPage\((?:page|currentPage)\)/.test(body),
         'тик не перерисовывает страницу: данные обновятся в памяти, а на экране останутся прежние числа');
 });
 
@@ -97,7 +100,8 @@ check('пауза авто-обновления доходит до iframe мо�
     // паузы отправлялось только по событию и никогда при загрузке.
     assert.ok(/function monitorIframeMustPause\(\)/.test(appJs),
         'нет правила «когда монитору молчать»');
-    assert.ok(/currentPage !== 'monitor'/.test(appJs),
+    // R676: страница читается геттером (в файле не должно остаться значения-имени).
+    assert.ok(/(?:getCurrentPage\(\)|currentPage) !== 'monitor'/.test(appJs),
         'монитор не останавливается, когда его страница не открыта (76 % фоновых запросов)');
     assert.ok(/function syncMonitorIframePause\(\)/.test(appJs), 'нет отправки состояния паузы');
     const config = appJs.slice(appJs.indexOf('function sendMonitorConfig()'), appJs.indexOf('function monitorIframeMustPause()'));

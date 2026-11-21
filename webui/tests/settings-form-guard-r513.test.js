@@ -1,4 +1,4 @@
-﻿// settings-form-guard-r513.test.js — R513 (2026-11-19): авто-обновление и кнопка
+// settings-form-guard-r513.test.js — R513 (2026-11-19): авто-обновление и кнопка
 // «Обновить» не перетирают формы на странице «Настройки».
 //
 // ПРОДОЛЖЕНИЕ R512. R512 закрыл ровно один путь: таймер не запускал тик, пока
@@ -31,6 +31,9 @@ const settingsJs = read('js/modules/app-settings.js');
 // R654: лимиты бэкендов переехали в app-models.js — тело берём оттуда.
 const modelsJs = read('js/modules/app-models.js');
 const guardSrc = read('js/modules/refresh-guard.js');
+// R676: единственная точка записи в поля — её поведение и проверяется ниже.
+const safeFormSrc = read('js/modules/safe-form.js');
+const formDirtySrc = read('js/modules/form-dirty.js');
 const registrySrc = read('js/modules/settings-registry.js');
 const autotuneSrc = read('js/modules/autotune_settings.js');
 
@@ -100,6 +103,19 @@ function extractFn(src, name) {
 }
 
 // --- поведение applyServerConfig --------------------------------------------
+//
+// R676 (2026-11-21): запись в поля идёт через SafeForm, поэтому в песочницу
+// поднимается НАСТОЯЩИЙ модуль safe-form.js, а в runner добавляются реальные
+// хелперы фабрики (writeValue/writeChecked/updateLlamaCppOverridesPanel), которые
+// тело applyServerConfig зовёт по имени. Без них runner умирал бы
+// ReferenceError-ом на последней строке, а проверки перед ней «зеленели».
+function helpersSource(...names) {
+    return names.map(function (name) {
+        const fn = extractFnIndented(settingsJs, name);
+        return fn.head + '{' + fn.body + '}';
+    }).join('\n') + '\n';
+}
+
 function runApplyServerConfig(editing) {
     const fn = extractFnIndented(settingsJs, 'applyServerConfig');
     const requested = [];
@@ -123,11 +139,13 @@ function runApplyServerConfig(editing) {
         querySelectorAll: function () { return []; }
     };
     const win = {};
-    // sandbox с рабочим RefreshGuard (ветка editing)
+    // sandbox с рабочим RefreshGuard (ветка editing) и SafeForm (ветка записи)
     const sandbox = { window: win, document: doc, console: { warn: function () {}, error: function () {} } };
     vm.createContext(sandbox);
     vm.runInContext(guardSrc, sandbox, { filename: 'refresh-guard.js' });
+    vm.runInContext(safeFormSrc, sandbox, { filename: 'safe-form.js' });
     const runner = new Function('serverConfig', 'window', 'document', 'console', 'localStorage', 'getCurrentPage',
+        helpersSource('writeValue', 'writeChecked', 'updateLlamaCppOverridesPanel') +
         fn.body + '\nreturn null;');
     let error = null;
     try {
@@ -154,8 +172,11 @@ check('R513/4: без ввода формы applyServerConfig заливает �
 });
 
 // --- поведение loadBackendLimits --------------------------------------------
+// R676: пересборка строк вынесена в replaceRowsPreserving (перенос значений
+// оператора через SafeForm), поэтому его тело тоже поднимается в runner.
 function runLoadBackendLimits(editing) {
     const fn = extractFnIndented(modelsJs, 'loadBackendLimits');
+    const repl = extractFnIndented(modelsJs, 'replaceRowsPreserving');
     const tbody = { tagName: 'TBODY', innerHTML: 'СОХРАНЁННЫЙ_ВВОД', contains: function () { return editing; } };
     const doc = {
         activeElement: { tagName: 'INPUT', type: 'number' },
@@ -164,10 +185,14 @@ function runLoadBackendLimits(editing) {
     const sandbox = { window: {}, document: doc };
     vm.createContext(sandbox);
     vm.runInContext(guardSrc, sandbox, { filename: 'refresh-guard.js' });
-    const runner = new Function('window', 'document', 'data', 'Utils', 'I18N',
+    // SafeForm намеренно НЕ поднимается: проверяется ветка «модуль недоступен»
+    // (прежнее поведение), а перенос значений проверяют интеграционные кейсы R676.
+    const replaceFn = new Function('tbody', 'rowsHtml', 'window', repl.body);
+    const runner = new Function('window', 'document', 'data', 'Utils', 'I18N', 'replaceRowsPreserving',
         fn.body + '\nreturn null;');
     runner(sandbox.window, doc, { backends: [{ id: 'b1', host: 'h', status: 'healthy' }] },
-        { escapeHtml: function (s) { return String(s); } }, { t: function (k) { return k; } });
+        { escapeHtml: function (s) { return String(s); } }, { t: function (k) { return k; } },
+        function (tb, html) { return replaceFn(tb, html, sandbox.window); });
     return tbody;
 }
 
@@ -210,7 +235,9 @@ function extractFn2(src, name) {
 }
 
 check('R513/4: панель горячих настроек не пересобирается во время ввода', () => {
-    assertGuardBefore(registrySrc, 'render', 'el.innerHTML = renderPanel()', 'settings-registry.js');
+    // R676: пересборка панели идёт через swapPanel(el, renderPanel()) — заслон
+    // обязан стоять ДО неё (и до innerHTML внутри swapPanel).
+    assertGuardBefore(registrySrc, 'render', 'swapPanel(el, renderPanel())', 'settings-registry.js');
 });
 
 check('R513/4: список моделей AutoTune не пересобирается во время выбора', () => {
@@ -230,16 +257,21 @@ check('R513/4: провайдер «Настроек» тянет ВСЕ ист�
 check('R513/4: тик не делает второй проход refreshPage по «Настройкам»', () => {
     const tick = /refreshTimer = setInterval\([\s\S]*?\n        \}, interval\);/.exec(appJs);
     assert.ok(tick, 'не найдено тело периодического цикла');
-    assert.ok(/currentPage === 'settings'\) \{ return; \}/.test(tick[0]),
-        'тик по-прежнему вызывает refreshPage(currentPage) для настроек — форма затирается повторно');
+    // R676: страница тика — значение из геттера, поэтому сравнение идёт по `page`.
+    assert.ok(/(?:page|currentPage) === 'settings'\) \{ return; \}/.test(tick[0]),
+        'тик по-прежнему вызывает refreshPage(<страница>) для настроек — форма затирается повторно');
+    assert.ok(/var page = getCurrentPage\(\)/.test(tick[0]),
+        'страница тика не читается геттером getCurrentPage() — сравнение с ' +
+        "'settings' снова станет сравнением функции со строкой (дефект R676)");
 });
 
 check('R513/4: кнопка «Обновить» и индикатор свежести идут тем же путём', () => {
     const cur = extractFn(appJs, 'refreshCurrentPage').body;
-    assert.ok(/currentPage !== 'settings'/.test(cur),
+    // R676: значение страницы снято в `page` в начале прохода.
+    assert.ok(/(?:page|currentPage) !== 'settings'/.test(cur),
         'refreshCurrentPage делает повторный refreshPage для настроек');
     const btn = appJs.slice(appJs.indexOf("document.getElementById('refreshBtn').addEventListener"));
-    assert.ok(/currentPage !== 'settings'/.test(btn.slice(0, 2500)),
+    assert.ok(/(?:page|currentPage) !== 'settings'/.test(btn.slice(0, 2500)),
         'кнопка «Обновить» делает повторный refreshPage для настроек');
 });
 
@@ -250,6 +282,122 @@ check('R513/4: guard доступен по id (editingInId) — им польз�
     // document.getElementById('x') возвращает null → guard обязан вернуть false, а не упасть
     assert.strictEqual(g.editingInId('settings-page'), false,
         'editingInId на отсутствующем элементе должен быть false');
+});
+
+// --- R676: поведение на СТАБИЛЬНОМ DOM (настоящие SafeForm + FormDirty) ------
+//
+// Зачем отдельно от runApplyServerConfig выше. Там `getElementById` возвращает
+// НОВЫЙ объект на каждый вызов — так проверялся только текст («гард стоит до
+// заливки»). Для поведения нужны постоянные узлы: SafeForm помнит базовое
+// значение в WeakMap ПО УЗЛУ, а FormDirty — страницу по parentNode.
+//
+// Сценарий из живой жалобы: оператор набрал число → кликнул мимо (фокус ушёл) →
+// пришёл тик → applyServerConfig заливает серверное значение. До R676 набранное
+// исчезало.
+function buildLiveSettingsDom() {
+    const elements = {};
+    const page = { id: 'settings-page', tagName: 'DIV', parentNode: null, contains: function () { return false; } };
+    function field(id, type, value, checked) {
+        const el = { id: id, tagName: 'INPUT', type: type || 'number', value: value, checked: !!checked, parentNode: page };
+        elements[id] = el;
+        return el;
+    }
+    field('ctxSize', 'number', '2048');
+    field('batchSize', 'number', '512');
+    field('gpuLayers', 'number', '-2');
+    field('modelAffinity', 'checkbox', '', true);
+    const doc = {
+        activeElement: null, // оператор уже кликнул мимо: фокус не в поле
+        getElementById(id) {
+            if (id === 'settings-page') return page;
+            if (id === 'firstRunCard') return null; // R596: мастер заменён карточкой
+            return elements[id] || null;
+        },
+        querySelector() { return null; },
+        querySelectorAll() { return []; }
+    };
+    return { elements: elements, page: page, doc: doc, counters: { badges: 0 } };
+}
+
+/**
+ * buildApplyServerConfigStack — ОДИН раз поднять песочницу (RefreshGuard +
+ * FormDirty + SafeForm + тело applyServerConfig), чтобы несколько проходов
+ * обновления работали по одному и тому же состоянию: SafeForm помнит базу в
+ * WeakMap, FormDirty — правку страницы. Новая песочница на каждый проход
+ * обнуляла бы защиту и проверка «набранное цело» ничего бы не доказывала.
+ */
+function buildApplyServerConfigStack(dom) {
+    const fn = extractFnIndented(settingsJs, 'applyServerConfig');
+    const utils = {
+        escapeHtml: function (s) { return String(s); },
+        updateGpuLayersBadge: function () { dom.counters.badges++; },
+        setText: function () {}
+    };
+    const sandbox = { window: {}, document: dom.doc, Utils: utils, I18N: { t: function (k) { return k; } },
+        console: { warn: function () {}, error: function () {} } };
+    vm.createContext(sandbox);
+    vm.runInContext(guardSrc, sandbox, { filename: 'refresh-guard.js' });
+    vm.runInContext(formDirtySrc, sandbox, { filename: 'form-dirty.js' });
+    vm.runInContext(safeFormSrc, sandbox, { filename: 'safe-form.js' });
+    const runner = new Function('serverConfig', 'window', 'document', 'console', 'localStorage', 'getCurrentPage',
+        'Utils', 'I18N',
+        helpersSource('writeValue', 'writeChecked', 'updateLlamaCppOverridesPanel') +
+        fn.body + '\nreturn null;');
+    return {
+        window: sandbox.window,
+        apply(serverConfig) {
+            runner(serverConfig, sandbox.window, dom.doc,
+                { warn: function () {}, error: function () {}, log: function () {} },
+                { setItem: function () {}, getItem: function () { return null; } },
+                function () { return 'settings'; }, utils, sandbox.I18N);
+        }
+    };
+}
+
+const SERVER_2048 = { modelAffinity: true, llamaCpp: { contextLength: 2048, batchSize: 512, numGpuLayers: -2 } };
+const SERVER_4096 = { modelAffinity: true, llamaCpp: { contextLength: 4096, batchSize: 256, numGpuLayers: -2 } };
+
+check('R676(а): набрал → кликнул мимо → applyServerConfig НЕ затирает ввод', () => {
+    const dom = buildLiveSettingsDom();
+    const stack = buildApplyServerConfigStack(dom);
+    stack.apply(SERVER_2048); // первый рендер: поля получают базовое значение
+    assert.strictEqual(dom.elements.ctxSize.value, '2048', 'предпосылка: первая заливка применилась');
+
+    // Оператор набрал 9999 и кликнул мимо: фокус ушёл, страница помечена правкой.
+    dom.elements.ctxSize.value = '9999';
+    stack.window.FormDirty.noteEdit(dom.elements.ctxSize);
+    assert.strictEqual(stack.window.FormDirty.isDirtyPage('settings'), true, 'предпосылка: страница помечена правкой');
+
+    stack.window.SafeForm.resetStats();
+    dom.counters.badges = 0;
+    stack.apply(SERVER_4096);
+
+    assert.strictEqual(dom.elements.ctxSize.value, '9999',
+        'набранное значение стёрто обновлением — это и есть живая жалоба «обновление стирает формы»');
+    assert.ok(dom.counters.badges > 0,
+        'рендер не дошёл до конца: защита поля снова превратилась в остановку страницы');
+    assert.ok(stack.window.SafeForm.stats().blocked > 0,
+        'запись не доходила до SafeForm — поле сохранилось случайно, а не механизмом');
+});
+
+check('R676(б): данные обновляются, как только форма перестала быть «грязной»', () => {
+    const dom = buildLiveSettingsDom();
+    const stack = buildApplyServerConfigStack(dom);
+    stack.apply(SERVER_2048);
+    dom.elements.ctxSize.value = '9999';
+    stack.window.FormDirty.noteEdit(dom.elements.ctxSize);
+    // Форму сохранили (или истёк TTL) — страница чистая, но поле оператор менял.
+    stack.window.FormDirty.clear('settings');
+    stack.window.SafeForm.resetStats();
+
+    stack.apply(SERVER_4096);
+
+    assert.strictEqual(dom.elements.ctxSize.value, '9999',
+        'поле, которое оператор менял, перетёрто после снятия «грязного» флага');
+    assert.strictEqual(dom.elements.batchSize.value, '256',
+        'соседнее поле не обновилось: защита одного поля остановила весь рендер');
+    assert.ok(stack.window.SafeForm.stats().written > 0,
+        'SafeForm не выполнил ни одной записи — данные страницы снова «встали»');
 });
 
 if (failures.length) {

@@ -97,12 +97,17 @@ check('тик авто-обновления вызывает guard ПЕРЕД re
     assert.ok(end !== -1, 'не найден конец тела периодического цикла');
     const body = appJs.slice(start, end);
     const guardPos = body.indexOf('RefreshGuard.isEditingIn(');
-    const renderPos = body.indexOf('refreshPage(currentPage)');
+    // R676: страница тика читается геттером ОДИН раз в локальную `page`, поэтому
+    // перерисовка идёт по значению. Снимок в переменную, названную `currentPage`,
+    // снова сделал бы имя «похожим на значение, а на деле функцией».
+    const renderPos = body.indexOf('refreshPage(page)');
     assert.ok(guardPos !== -1, 'в тике нет проверки RefreshGuard.isEditingIn — формы будут затираться при вводе');
     assert.ok(renderPos !== -1, 'в тике нет перерисовки страницы (проверка выродилась)');
     assert.ok(guardPos < renderPos, 'проверка ввода обязана стоять ДО перерисовки страницы');
-    assert.ok(/document\.getElementById\(currentPage \+ '-page'\)/.test(body),
+    assert.ok(/document\.getElementById\(page \+ '-page'\)/.test(body),
         'guard должен получать контейнер АКТИВНОЙ страницы, иначе он проверяет не то поле');
+    assert.ok(/var page = getCurrentPage\(\)/.test(body),
+        'страница тика обязана читаться геттером getCurrentPage() — иначе guard проверяет не ту страницу');
 });
 
 check('модуль подключён в index.html (иначе guard молча выключен)', function () {

@@ -2662,6 +2662,13 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
 <!-- R662 (2026-11-20): незавершённый ввод (не только фокус) защищает страницу от
      авто-обновления — см. js/modules/form-dirty.js и тик в app-data.js. -->
 <script defer src="js/modules/form-dirty.js?v=R662"></script>
+<!-- R676 (2026-11-21): единственная безопасная точка ЗАПИСИ значения в поле
+     (js/modules/safe-form.js). Защиты R512/R662/R666 глушили перерисовку, но
+     значения заливались прямыми `el.value = …` мимо них. Грузится ПОСЛЕ
+     utils.js и form-dirty.js (читает window.FormDirty) и ДО всех модулей,
+     которые пишут в поля: settings-ui.js, settings-registry.js, config-io.js,
+     app-settings.js, app-models.js, app.js. -->
+<script defer src="js/modules/safe-form.js?v=R676"></script>
     <!-- R-Image Phase 5 (2026-10-02): Image page (генерация + image-модели).
          Загружается ПОСЛЕ utils/api/gguf-api (нужны Utils/Api/I18N) и ДО app.js
          (app.js refreshPage('image') вызывает window.ImagePage.init). -->

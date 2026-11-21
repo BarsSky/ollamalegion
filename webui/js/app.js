@@ -213,6 +213,7 @@ const ui = (function () {
 
 
     function switchPage(page) {
+        var prevPage = currentPage;
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
 
@@ -227,8 +228,15 @@ const ui = (function () {
         // страницы, поэтому защита от перерисовки снимается. Без сброса флаг
         // «несохранённая правка» пережил бы переход, и первый же рендер страницы
         // был бы пропущен (пустой раздел на 2 минуты TTL).
-        if (window.FormDirty && typeof window.FormDirty.clearAll === 'function') {
-            window.FormDirty.clearAll();
+        //
+        // R676 (2026-11-21): снимается защита ТОЛЬКО с покидаемой страницы.
+        // Здесь стоял `clearAll()`, то есть переход на «Бэкенды» стирал свежую
+        // правку на «Настройках» (и на любой другой странице тоже) — защита
+        // снималась с ЧУЖИХ страниц, и вернувшись оператор видел серверные
+        // значения вместо набранных. Возврат на ту же страницу (deep-link,
+        // повторный клик) защиту не снимает вовсе.
+        if (window.FormDirty && typeof window.FormDirty.clear === 'function' && prevPage !== page) {
+            window.FormDirty.clear(prevPage);
         }
         // R513 (2026-11-19): страница попадает в адрес, иначе F5 возвращает не
         // туда (см. syncPageURL и обработчики popstate/hashchange в init).
@@ -537,8 +545,22 @@ const ui = (function () {
                 if (preset[k] === undefined) return;
                 var el = document.getElementById(map[k]);
                 if (!el) return;
-                if (el.type === 'checkbox') el.checked = !!preset[k];
-                else el.value = preset[k];
+                // R676 (2026-11-21): запись в поле — через SafeForm.
+                //
+                // Пресет — ЯВНОЕ действие оператора (он нажал кнопку), поэтому
+                // запись принудительная: иначе защита отклоняла бы её, и кнопка
+                // молча «не срабатывала бы». После записи страница помечается
+                // «есть несохранённая правка», иначе тик авто-обновления вернул бы
+                // серверные значения раньше, чем оператор нажмёт «Сохранить», —
+                // пресет выглядел бы применённым и тут же пропадал.
+                if (el.type === 'checkbox') {
+                    SafeForm.setChecked(el, !!preset[k], { force: true });
+                } else {
+                    SafeForm.setValue(el, preset[k], { force: true });
+                }
+                if (window.FormDirty && typeof window.FormDirty.noteEdit === 'function') {
+                    window.FormDirty.noteEdit(el);
+                }
             });
             // Visual feedback: подсветить активную кнопку
             document.querySelectorAll('#ggufPresetSpeed, #ggufPresetMemory, #ggufPresetContext, #ggufPresetCpu')
@@ -654,7 +676,10 @@ const ui = (function () {
             // Session B: восстанавливаем последний query из localStorage.
             try {
                 var saved = localStorage.getItem('ollamalegion_models_search');
-                if (saved) modelsSearch.value = saved;
+                // R676: запись в поле — через SafeForm (force: это инициализация
+                // страницы, а не обновление; база запоминается, чтобы следующая
+                // программная запись не считала строку «правкой оператора»).
+                if (saved) SafeForm.setValue(modelsSearch, saved, { force: true });
             } catch (e) { /* ignore */ }
             modelsSearch.addEventListener('input', Utils.debounce(function(e) {
                 filterModels(e.target.value);
@@ -765,7 +790,10 @@ const ui = (function () {
                     cppPortDetectBtn.disabled = false;
                     cppPortDetectBtn.innerHTML = originalText;
                     if (detected) {
-                        if (portEl) portEl.value = detected;
+                        // R676: ответ на явный клик по «Определить» — запись
+                        // принудительная (иначе защита поля отклонила бы её и
+                        // кнопка выглядела бы сломанной), база запоминается.
+                        if (portEl) SafeForm.setValue(portEl, detected, { force: true });
                         showToast('Обнаружен порт CppWorker: ' + detected, 'success');
                     } else {
                         showToast('CppWorker не найден на портах 18092/18091/18093/18090. Укажите вручную.', 'error');
@@ -878,7 +906,14 @@ const ui = (function () {
         addLogEntry: addLogEntry,
         addProxyLog: addProxyLog,
         backendsPage: backendsPage,
-        currentPage: function () { return currentPage; },
+        // R676 (2026-11-21): КОНТРАКТ СТРАНИЦЫ. Здесь стоял ключ `currentPage` со
+        // значением-функцией, а app-data.js привязывал его к локальной
+        // `var currentPage` — и внутри фабрики это была ФУНКЦИЯ. Сравнение
+        // `page === currentPage` было ложным всегда, `document.getElementById(
+        // currentPage + '-page')` возвращал null, тик не перерисовывал ни одной
+        // страницы, а защиты R662/R666/R670 были мёртвым кодом. Имя ключа теперь
+        // совпадает с тем, как его читают (вызовом) — как в app-logs.js/app-settings.js.
+        getCurrentPage: function () { return currentPage; },
         dashboard: dashboard,
         data: data,
         exportBackends: exportBackends,
@@ -942,7 +977,10 @@ const ui = (function () {
         Utils: Utils,
         addLog: addLog,
         backendsPage: backendsPage,
-        currentPage: function () { return currentPage; },
+        // R676 (2026-11-21): тот же починенный контракт, что у AppData выше —
+        // геттер обязан называться `getCurrentPage` и вызываться. Иначе
+        // `currentPage === 'backends'` / `=== 'logs'` в app-models.js ложны всегда.
+        getCurrentPage: function () { return currentPage; },
         data: data,
         filterBackendsForUI: filterBackendsForUI,
         renderLogs: renderLogs,

@@ -411,6 +411,30 @@
         return out.join('');
     }
 
+    /**
+     * swapPanel — подменить разметку панели, сохранив значения полей (R676).
+     *
+     * ЗАЧЕМ. `el.innerHTML = renderPanel()` уничтожал узлы вместе с набранными
+     * числами. Черновики (`state.drafts`) спасали только те строки, по которым
+     * успело прийти input-событие; правка, сделанная до привязки обработчиков,
+     * терялась, а заслон R513 («пока ввод внутри панели — не рисуем») означал
+     * «данные встали», пока оператор сидит на странице настроек. Теперь порядок
+     * безопасный: снять значения, которые оператор уже изменил
+     * (SafeForm.collectInputs, ключ — data-hot-input), нарисовать панель заново и
+     * вернуть эти значения в новые поля (SafeForm.restoreInputs).
+     */
+    function swapPanel(root, html) {
+        var SF = (typeof window !== 'undefined') ? window.SafeForm : null;
+        if (!SF || typeof SF.collectInputs !== 'function' || typeof SF.restoreInputs !== 'function') {
+            root.innerHTML = html;
+            return false;
+        }
+        var pending = SF.collectInputs(root, 'data-hot-input');
+        root.innerHTML = html;
+        SF.restoreInputs(root, pending, 'data-hot-input');
+        return true;
+    }
+
     // render — единственная точка отрисовки: страница не рисует реестр сама.
     function render() {
         var el = state.root || containerEl();
@@ -421,13 +445,15 @@
         // ВНУТРИ панели, перерисовку пропускаем; данные (`state.settings`) при
         // этом уже обновлены load()-ом, и следующий рендер (после ухода из поля)
         // покажет свежие effective-значения.
+        // R676 (2026-11-21): после ухода из поля набранное тоже не теряется —
+        // значения переносит swapPanel ниже.
         if (typeof window !== 'undefined' && window.RefreshGuard &&
             typeof window.RefreshGuard.isEditingIn === 'function' &&
             window.RefreshGuard.isEditingIn(el)) {
             return false;
         }
         state.root = el;
-        el.innerHTML = renderPanel();
+        swapPanel(el, renderPanel());
         // R66b-reapply: секция — аккордеон с inline max-height, посчитанным по
         // высоте содержимого. Строки реестра приходят ПОСЛЕ первого расчёта, и
         // без пересчёта блок остался бы обрезанным («видно две настройки из

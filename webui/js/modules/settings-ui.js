@@ -15,6 +15,34 @@
 
     const STORAGE_KEY_SECTIONS = 'ollamalegion_settings_sections';
 
+    // ---- Запись в поля (R676) ----
+    //
+    // ЖИВАЯ ЖАЛОБА. «Постоянное обновление стирает то, что я ввёл в формы».
+    // Здесь записи `radio.checked = true` / `el.value = …` шли напрямую, мимо
+    // защит R512/R662 (они глушили перерисовку, но не запись). Теперь запись идёт
+    // через SafeForm (js/modules/safe-form.js): поле, которое оператор менял,
+    // или поле на странице со свежей несохранённой правкой не трогается.
+    //
+    // opts.force — для синхронизации ВЫБОРА (радио-группа режима/движка), которая
+    // следует за действием оператора: клик по карточке уже переключил радио, и
+    // повторная синхронизация обязана совпасть с ним, иначе подсветка карточки и
+    // выбранное значение разъедутся. Значения серверного конфига пишутся БЕЗ force.
+    function writeValue(el, value, opts) {
+        if (!el) { return false; }
+        var SF = (typeof window !== 'undefined') ? window.SafeForm : null;
+        if (SF && typeof SF.setValue === 'function') { return SF.setValue(el, value, opts); }
+        el.value = value;
+        return true;
+    }
+
+    function writeChecked(el, value, opts) {
+        if (!el) { return false; }
+        var SF = (typeof window !== 'undefined') ? window.SafeForm : null;
+        if (SF && typeof SF.setChecked === 'function') { return SF.setChecked(el, value, opts); }
+        el.checked = !!value;
+        return true;
+    }
+
     // ---- Accordion Sections ----
 
     function setupAccordion() {
@@ -131,7 +159,8 @@
         if (!serverMode) return;
         var radio = document.querySelector('input[name="operatingMode"][value="' + serverMode + '"]');
         if (radio) {
-            radio.checked = true;
+            // R676: выбор режима — синхронизация радио-группы (см. writeChecked).
+            writeChecked(radio, true, { force: true });
         }
     }
 
@@ -244,7 +273,8 @@
 
         var radio = document.querySelector('input[name="operatingMode"][value="' + mode + '"]');
         if (radio) {
-            radio.checked = true;
+            // R676: синхронизация радио-группы (см. writeChecked).
+            writeChecked(radio, true, { force: true });
         }
 
         // Fill fields per mode
@@ -271,7 +301,9 @@
     function setFieldValue(id, value) {
         var el = document.getElementById(id);
         if (el && value !== undefined && value !== null) {
-            el.value = value;
+            // R676: значения приходят из серверного конфига — запись без force,
+            // чтобы не затереть набранное оператором (см. writeValue).
+            writeValue(el, value);
         }
     }
 
@@ -478,11 +510,13 @@
             : type;
         document.querySelectorAll('#backendEngineCards .mode-card[data-backend-engine-type]').forEach(function (card) {
             var radio = card.querySelector('input[name="settingsBackendEngine"]');
+            // R676: подсветка карточки и её радио обязаны совпадать — выбор
+            // двигается действием оператора, поэтому запись принудительная.
             if (radio && radio.value === cardValue) {
-                radio.checked = true;
+                writeChecked(radio, true, { force: true });
                 card.classList.add('active');
             } else {
-                if (radio) radio.checked = false;
+                if (radio) writeChecked(radio, false, { force: true });
                 card.classList.remove('active');
             }
         });

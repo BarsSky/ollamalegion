@@ -13,6 +13,17 @@
 // ПОЧЕМУ ФАБРИКА. Слой берёт из `app.js` состояние (`data`), рендереры, слой
 // журналов/настроек и ДОСТУП К ТЕКУЩЕЙ СТРАНИЦЕ геттером (currentPage — это let).
 //
+// R676 (2026-11-21): КОНТРАКТ СТРАНИЦЫ ПОЧИНЕН. Здесь стояло
+// `var currentPage = ctx.currentPage;`, а вызывающий (`app.js:881`) передавал в
+// это имя ФУНКЦИЮ-геттер. Внутри фабрики `currentPage` была функцией, поэтому:
+// сравнение `page === currentPage` (снимок страницы) было ложным всегда, а
+// `document.getElementById(currentPage + '-page')` получал строку с исходником
+// функции и возвращал null. Тик не перерисовывал ни одной страницы, защита
+// R662/R666/R670 в этом файле была мёртвым кодом. Теперь — как в app-logs.js:20:
+// `getCurrentPage` и ВЫЗОВ в каждом чтении. В файле не должно остаться ни одного
+// сравнения `currentPage === '<строка>'` (инвариант проверяет
+// webui/tests/page-contract-r676.test.js).
+//
 // ПОВЕДЕНИЕ НЕ МЕНЯЛОСЬ: тела перенесены как есть, отступ сохранён.
 (function () {
     'use strict';
@@ -26,7 +37,9 @@
         var addLogEntry = ctx.addLogEntry;
         var addProxyLog = ctx.addProxyLog;
         var backendsPage = ctx.backendsPage;
-        var currentPage = ctx.currentPage;
+        // R676: имя страницы приходит функцией (`getCurrentPage()`), а не
+        // значением — `currentPage` в app.js это `let`, который меняет switchPage.
+        var getCurrentPage = ctx.getCurrentPage;
         var dashboard = ctx.dashboard;
         var data = ctx.data;
         var exportBackends = ctx.exportBackends;
@@ -74,6 +87,26 @@
 
         let refreshTimer = null;
 
+    // R676 (2026-11-21): СТРАНИЦЫ, У КОТОРЫХ ВСЕ ЗАПИСИ В ПОЛЯ ИДУТ ЧЕРЕЗ SafeForm.
+    //
+    // Зачем список. R662/R666 спасали формы единственным способом — глушили
+    // перерисовку «грязной» страницы целиком: ни данных, ни таблиц, ни метрик на
+    // две минуты TTL. Для «Настроек» это больше не нужно: каждое поле защищает
+    // сам SafeForm (правила «фокус / значение не менялось / страница чистая» в
+    // js/modules/safe-form.js), поэтому данные продолжают обновляться, а
+    // набранное — остаётся. Для остальных страниц защита R662 остаётся как была:
+    // их модули на SafeForm ещё не переведены, и снятие заслона стёрло бы ввод
+    // (это же прямо запрещено для gguf-*).
+    //
+    // Список растёт по мере перевода страниц, а не «по желанию»: попадание сюда
+    // без покрытия записей SafeForm-ом = потеря ввода оператора.
+    var SAFE_FORM_PAGES = { settings: true };
+
+    /** safeFormCoversPage — защищать ли поля страницы по-полевому, а не заслоном. */
+    function safeFormCoversPage(page) {
+        return SAFE_FORM_PAGES[String(page || '')] === true;
+    }
+
     function filterBackendsForUI(backends) {
         if (!Array.isArray(backends)) return backends;
         var filtered = backends.filter(function (b) {
@@ -119,12 +152,25 @@
         // (экран входа, поле в шапке) или свежая правка, первый рендер пропускался —
         // а второго без данных не будет. Теперь защита включается только ПОСЛЕ того,
         // как страница хотя бы раз отрисована: первая отрисовка неприкосновенна.
-        if (!(options && options.force) && page === currentPage && renderedPages[page] === true) {
+        // R676 (2026-11-21): «ГРЯЗНАЯ СТРАНИЦА» БОЛЬШЕ НЕ ГЛУШИТ ТО, ЧТО БЕЗОПАСНО.
+        //
+        // Живая жалоба, третья редакция: «постоянное обновление стирает то, что я
+        // ввёл». Замер: набрал 9999 → клик мимо → один refreshPage('settings') →
+        // в поле 2048. Причём защита «не перерисовывать» сработать не могла: у
+        // страницы «Настройки» поля заливаются напрямую (applyServerConfig), и
+        // заслон отключал ВМЕСТЕ с формой и все остальные данные. Для страниц,
+        // покрытых SafeForm (см. SAFE_FORM_PAGES), заслон по FormDirty снят:
+        // перерисовка идёт, значения полей защищает сам SafeForm, таблицы и
+        // метрики обновляются. Фокус-заслон (R512) остаётся для всех страниц — он
+        // про курсор/позицию ввода, а не про значения.
+        var currentPageName = getCurrentPage();
+        if (!(options && options.force) && page === currentPageName && renderedPages[page] === true) {
             if (window.RefreshGuard && typeof window.RefreshGuard.isEditingIn === 'function' &&
                 window.RefreshGuard.isEditingIn(document.getElementById(page + '-page'))) {
                 return;
             }
-            if (window.FormDirty && typeof window.FormDirty.isDirtyPage === 'function' &&
+            if (!safeFormCoversPage(page) &&
+                window.FormDirty && typeof window.FormDirty.isDirtyPage === 'function' &&
                 window.FormDirty.isDirtyPage(page)) {
                 return;
             }
@@ -332,7 +378,7 @@
      * метрики монитора нужны только когда оператор их видит.
      */
     function monitorIframeMustPause() {
-        if (currentPage !== 'monitor') return true;
+        if (getCurrentPage() !== 'monitor') return true;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return true;
         if (window.DataRefresh && typeof window.DataRefresh.isAuto === 'function') {
             return !window.DataRefresh.isAuto();
@@ -355,16 +401,20 @@
      * локальной копии data.* — кнопка «Обновить» визуально ничего не меняла.
      */
     function refreshCurrentPage() {
+        // R676: имя активной страницы читается ОДИН раз на проход (геттер) и
+        // дальше используется как значение — иначе между запросом и его ответом
+        // страница могла смениться, и перерисовка ушла бы не туда.
+        var page = getCurrentPage();
         if (window.DataRefresh && typeof window.DataRefresh.refresh === 'function') {
-            return window.DataRefresh.refresh(currentPage).then(function () {
+            return window.DataRefresh.refresh(page).then(function () {
                 // R513: у «Настроек» провайдер уже обошёл все её источники —
                 // повторная перерисовка была бы вторым проходом по тем же API
                 // (и вторым поводом перетереть форму).
-                if (currentPage !== 'settings') refreshPage(currentPage);
+                if (page !== 'settings') refreshPage(page);
                 return true;
             });
         }
-        refreshPage(currentPage);
+        refreshPage(page);
         return Promise.resolve(true);
     }
 
@@ -388,6 +438,10 @@
         refreshTimer = setInterval(() => {
             if (periodicRefreshPaused()) return;
             if (window.DataRefresh && !window.DataRefresh.isAuto()) return;
+            // R676: страница тика читается ОДИН раз (геттер), дальше это значение:
+            // пока тик ходит по сети, оператор может уйти на другой раздел, и
+            // перерисовка обязана остаться про ту страницу, для которой тик начат.
+            var page = getCurrentPage();
             // R512 (2026-11-18): НЕ перерисовывать страницу, пока оператор вводит
             // текст. Живая жалоба: «обновление держит новую информацию, но не даёт
             // работать с формами — постоянно их скрывая». Причина: refreshPage для
@@ -398,7 +452,7 @@
             // принесёт свежие данные. Логика «что считается вводом» — в
             // js/modules/refresh-guard.js (там же объяснение, почему не «dirty»-флаг).
             if (window.RefreshGuard && typeof window.RefreshGuard.isEditingIn === 'function') {
-                var editingPageEl = document.getElementById(currentPage + '-page');
+                var editingPageEl = document.getElementById(page + '-page');
                 if (window.RefreshGuard.isEditingIn(editingPageEl)) {
                     return;
                 }
@@ -411,8 +465,18 @@
             // помнит время последней ПРАВКИ на странице и не даёт тику её стирать.
             // Ограничители: TTL 2 минуты (авто-обновление возвращается само) и сброс
             // на submit формы — то есть «заморозки навсегда» из комментария R512 нет.
-            if (window.FormDirty && typeof window.FormDirty.isDirtyPage === 'function' &&
-                window.FormDirty.isDirtyPage(currentPage)) {
+            //
+            // R676 (2026-11-21): ЗАСЛОН ОСТАЁТСЯ ТОЛЬКО ТАМ, ГДЕ НЕТ SafeForm.
+            //
+            // Для страниц из SAFE_FORM_PAGES (сейчас — «Настройки») тик больше не
+            // пропускается: значения полей защищает SafeForm по каждому полю, а
+            // остальные данные (таблицы, цифры, effective-значения) обязаны
+            // обновляться. Раньше «грязная» страница означала «данные встали на две
+            // минуты», и жалоба «обновление не показывает новое» была второй
+            // половиной той же болезни.
+            if (!safeFormCoversPage(page) &&
+                window.FormDirty && typeof window.FormDirty.isDirtyPage === 'function' &&
+                window.FormDirty.isDirtyPage(page)) {
                 return;
             }
             fetchClusterState().then(function () {
@@ -434,7 +498,7 @@
             // Правило теперь одно на оба входа: провайдеры страницы + перерисовка
             // страницы из уже обновлённого состояния.
             var DR = window.DataRefresh;
-            var pageHasOwnSources = !!(DR && typeof DR.hasProvider === 'function' && DR.hasProvider(currentPage));
+            var pageHasOwnSources = !!(DR && typeof DR.hasProvider === 'function' && DR.hasProvider(page));
             if (!pageHasOwnSources) {
                 // Страницы без собственных провайдеров (dashboard, backends, help)
                 // живут на общем наборе запросов — как и раньше.
@@ -445,7 +509,7 @@
                 fetchSessions();
             }
             if (DR && typeof DR.refresh === 'function') {
-                DR.refresh(currentPage).then(function () {
+                DR.refresh(page).then(function () {
                     // Перерисовка: fetch-функции обновляют `data.*`, но не DOM
                     // страницы. Без этого авто-обновление обновляло данные, а
                     // оператор видел прежние числа (ровно то, на что жаловались).
@@ -455,8 +519,8 @@
                     // реестр, лимиты, AutoTune), и повторный refreshPage только
                     // сделал бы второй проход по тем же API. Раньше четыре
                     // перерисовки за тик и были причиной «формы пропадают».
-                    if (currentPage === 'settings') { return; }
-                    refreshPage(currentPage);
+                    if (page === 'settings') { return; }
+                    refreshPage(page);
                 }).catch(function () { /* ошибку покажет индикатор свежести */ });
                 return;
             }
@@ -471,7 +535,7 @@
             // был пуст/недоступен, loadBackendLimits() оставлял строку
             // «Загрузка...» НАВСЕГДА — periodic refresh её не перерисовывал.
             // R493: при живом DataRefresh это делает провайдер 'settings'.
-            if (currentPage === 'settings') {
+            if (page === 'settings') {
                 loadBackendLimits();
             }
         }, interval);
@@ -530,7 +594,7 @@
             fetchClusterState().then(function () {
                 if (window.DataRefresh) window.DataRefresh.markFresh();
             }).catch(function () { /* индикатор уже покажет состояние */ });
-            refreshPage(currentPage);
+            refreshPage(getCurrentPage());
         });
     }
 

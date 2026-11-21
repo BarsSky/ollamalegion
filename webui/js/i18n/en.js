@@ -13,6 +13,10 @@ window.I18N_EN = {
   "nav.virtual_models": "Virtual Models",
   "nav.diagnostics": "Diagnostics",
   "nav.diagnostics_hint": "Cluster summary, recent failures and a log bundle for troubleshooting",
+  // R675 (2026-11-21): the burger button on narrow screens
+  // (index.html:74, data-i18n="[title]nav.menu"). The key existed in neither
+  // pack → the literal "nav.menu" became the tooltip value.
+  "nav.menu": "Menu",
   "header.diagnostics": "Stand diagnostics",
   "diag.title": "Data for analysis",
   "diag.hint": "Everything that used to be searched for in five places: versions, context window, model profiles, flags, backend state. Copy a whole block or a single value with a click.",
@@ -338,6 +342,9 @@ window.I18N_EN = {
   "footer.documentation": "Documentation",
   "footer.github": "GitHub",
   "footer.license": "MIT License",
+  // R675 (2026-11-21): tooltip for the build number in the header and the
+  // footer (index.html:165 and 2371, data-i18n="[title]footer.version").
+  "footer.version": "Build version",
 
   // Help
   "help.scheme": "Request lifecycle: request, window, response",
@@ -2339,6 +2346,11 @@ window.I18N_EN = {
   // ===== R493 (2026-11-17): "Reference & templates" page =====
   "nav.reference": "Reference & templates",
   "header.reference": "Reference & templates",
+  // R675 (2026-11-21): H1 of the "Virtual models" page. The title is built
+  // DYNAMICALLY as 'header.' + page (webui/js/app.js:241), and the menu item's
+  // data-page is "virtual-models" (hyphen, unlike nav.virtual_models). The key
+  // header.virtual-models did not exist → the H1 showed the literal key.
+  "header.virtual-models": "Virtual models",
   "reference.title": "Reference & templates",
   "reference.hint": "Recommendation records are the reference: values with rationale. Templates are parameter sets that are applied to the backend where the model is loaded.",
   "reference.loading": "Loading the reference…",

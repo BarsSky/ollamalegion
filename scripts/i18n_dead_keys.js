@@ -87,7 +87,16 @@ function collectTranslatorWrappers(src) {
 
 function collectFromSource(src, rel) {
     // 1. атрибуты data-i18n*
-    for (const m of src.matchAll(/data-i18n(?:-title|-placeholder|-aria-label)?="([A-Za-z0-9_.]+)"/g)) {
+    //
+    // R675 (2026-11-21): учитывается ШТАТНАЯ форма `data-i18n="[title]nav.menu"`
+    // (ключ в квадратных скобках = «поставить этот атрибут»). Её понимают и
+    // I18N.apply, и scripts/check_webui_i18n_keys.py (BRACKET), а измеритель
+    // требовал, чтобы значение НАЧИНАЛОСЬ с ключа, — поэтому ключ, использованный
+    // только так, попадал в «мёртвые» и краснил храповик R575 (MAX_UNUSED = 0).
+    // Найдено на R675: добавленные nav.menu и footer.version объявлены ровно в
+    // этой форме (index.html:74,165,2371), чекер ключей их видел, а измеритель
+    // объявил мёртвыми — то есть отсутствие потребителя было ЛОЖНЫМ.
+    for (const m of src.matchAll(/data-i18n(?:-title|-placeholder|-aria-label)?="(?:\[[a-z-]+\])?([A-Za-z0-9_.]+)"/g)) {
         used.add(m[1]);
     }
     // 2. прямой вызов I18N.t / window.I18N.t

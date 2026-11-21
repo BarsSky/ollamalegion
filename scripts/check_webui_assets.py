@@ -101,19 +101,81 @@ def host_of(url: str) -> str:
 def missing_asset(target: Path) -> bool:
     """True, если ассета реально нет.
 
-    Форматные fallback'и (@font-face src: woff2, затем woff/ttf/eot) не считаем
-    ошибкой: если файла с нужным расширением нет, но рядом лежит файл с тем же
-    именем и другим шрифтовым расширением — браузер возьмёт поддерживаемый
-    формат. Именно так устроен vendored font-awesome.min.css (в репозитории
-    только .woff2, а .ttf/.woff/eot указаны как fallback для старых браузеров).
+    R675 (2026-11-21): ШРИФТОВАЯ ПОБЛАЖКА УБРАНА — она МАСКИРОВАЛА дефект.
+
+    ЧТО БЫЛО. Здесь стояло исключение: если файла `.ttf` нет, но рядом лежит
+    `.woff2` с тем же именем, ассет считался «на месте» — подразумевалось, что
+    браузер «возьмёт поддерживаемый формат». Это неверно: `src:` в @font-face —
+    это НЕ «если одного нет, возьми другой». Каждый перечисленный `url(...)`
+    браузер обязан загрузить в порядке приоритета, и 404 на первом же мёртвом
+    кандидате означает, что шрифт не загрузился вовсе. Именно так на втором
+    стенде (скриншот 1124x569) часть иконок превратилась в ПУСТЫЕ КВАДРАТЫ:
+    font-awesome.min.css перечислял несуществующие `.ttf` (их нет ни в
+    репозитории, ни в образе), чекер объявлял это нормой, а 404 на `/webfonts/
+    fa-solid-900.ttf` отдавался ещё и как `200 + index.html` (try_files), после
+    чего браузер молча выбрасывал «шрифт» из-за nosniff.
+
+    ТЕПЕРЬ. Отсутствие ЛЮБОГО файла, который реально перечислен в CSS/HTML, —
+    ошибка. Vendored font-awesome.min.css почищен (объявлен только `.woff2`),
+    поэтому проверка зелёная; а если кто-то снова допишет мёртвый fallback —
+    ci-джоб webui-static-checks упадёт на конкретном файле и строке.
     """
-    if target.exists():
-        return False
-    if target.suffix.lower() in FONT_EXT and target.parent.is_dir():
-        for sibling in target.parent.glob(target.stem + ".*"):
-            if sibling.suffix.lower() in FONT_EXT:
-                return False
-    return True
+    return not target.exists()
+
+
+def font_sibling_hint(target: Path) -> str:
+    """R675: подсказка для шрифтов — соседний формат НЕ спасает.
+
+    Нужна, чтобы диагностика называла причину, а не просто «файла нет»: именно
+    наличие рядом `.woff2` раньше читалось как «всё в порядке».
+    """
+    if target.suffix.lower() not in FONT_EXT or not target.parent.is_dir():
+        return ""
+    siblings = sorted(p.name for p in target.parent.glob(target.stem + ".*")
+                      if p.suffix.lower() in FONT_EXT)
+    if not siblings:
+        return ""
+    return (f" (рядом есть {', '.join(siblings)}, но браузер НЕ подставит соседний "
+            f"формат: каждый url() из src перечислен явно, мёртвый кандидат — 404)")
+
+
+FONT_FACE_RE = re.compile(r'@font-face\s*\{([^}]*)\}')
+SRC_DECL_RE = re.compile(r'src\s*:\s*([^;}]+)')
+
+
+def check_font_face_src(path: Path, root: Path, errors: list[str]) -> int:
+    """R675: один @font-face — ровно один src, и он указывает на существующий файл.
+
+    ЗАЧЕМ ОТДЕЛЬНОЕ ПРАВИЛО, ЕСЛИ ЕСТЬ ОБЩАЯ ПРОВЕРКА url(). Общая проверка
+    смотрит только «файл существует». Дефект R675 был в ДРУГОМ измерении: в
+    одном `src:` перечислялись два файла, и «мёртвый» второй кандидат (+
+    `?v=R83`, который не бампался) отправлял браузер в 404, где `try_files`
+    отдавал index.html с `nosniff`. Поэтому фиксируем форму: ровно один формат
+    на семейство — тогда нечему «мёртвым» кандидатом проваливать загрузку.
+    """
+    if not path.is_file():
+        return 0
+    text = path.read_text(encoding="utf-8", errors="replace")
+    blocks = FONT_FACE_RE.findall(text)
+    for i, block in enumerate(blocks, start=1):
+        srcs = SRC_DECL_RE.findall(block)
+        family = re.search(r'font-family\s*:\s*"([^"]+)"', block)
+        name = family.group(1) if family else f"#{i}"
+        if len(srcs) != 1:
+            errors.append(f"{path.relative_to(root)}: @font-face {name} объявляет "
+                          f"{len(srcs)} src — ожидается ровно один")
+            continue
+        urls = CSS_URL_RE.findall(srcs[0])
+        if len(urls) != 1:
+            errors.append(f"{path.relative_to(root)}: @font-face {name} перечисляет "
+                          f"{len(urls)} url() в одном src — лишние форматы мёртвые "
+                          f"(браузер не «подставит другой»): {', '.join(urls)}")
+            continue
+        url = strip_query(urls[0].strip())
+        if not url.startswith("data:") and missing_asset((path.parent / url).resolve()):
+            errors.append(f"{path.relative_to(root)}: @font-face {name} ссылается на "
+                          f"отсутствующий файл {url}")
+    return len(blocks)
 
 
 def check_html(path: Path, root: Path, errors: list[str]) -> int:
@@ -156,7 +218,8 @@ def check_css(path: Path, root: Path, errors: list[str]) -> int:
         checked += 1
         target = (path.parent / strip_query(url)).resolve()
         if missing_asset(target):
-            errors.append(f"{path.relative_to(root)}: url(\"{url}\") — файла нет")
+            errors.append(f"{path.relative_to(root)}: url(\"{url}\") — файла нет"
+                          f"{font_sibling_hint(target)}")
     return checked
 
 
@@ -232,30 +295,38 @@ def main() -> int:
     fa_checked = check_fa_icon_classes(root, errors)
 
     # Шрифты Font Awesome должны быть локальными.
+    #
+    # R675 (2026-11-21): здесь же ловится мёртвый формат. Раньше missing_asset()
+    # прощал отсутствие `.ttf` при наличии `.woff2` — и 10 несуществующих
+    # `url(../webfonts/fa-*.ttf)` жили в CSS (см. её docstring). Теперь каждое
+    # объявление обязано указывать на существующий файл.
     fa = root / "css" / "font-awesome.min.css"
     if fa.exists():
         for m in CSS_URL_RE.finditer(fa.read_text(encoding="utf-8", errors="replace")):
             raw_url = m.group(1).strip()
             # R-Image (2026-10-02): снимаем query (?v=R83) ДО проверки.
             # Без этого Path("....ttf?v=R83").suffix == ".ttf?v=R83" — не
-            # шрифтовое расширение, поэтому fallback из missing_asset()
-            # (нет .ttf, но есть .woff2 с тем же именем) не срабатывал, и
-            # чекер падал на vendored font-awesome.min.css, где в репозитории
-            # намеренно лежат только .woff2.
+            # шрифтовое расширение, и проверка «файл есть?» смотрела бы на
+            # буквальный путь с query.
             url = strip_query(raw_url)
             if url.startswith("../webfonts/"):
                 target = (fa.parent / url).resolve()
                 if missing_asset(target):
-                    errors.append(f"css/font-awesome.min.css: нет шрифта {raw_url}")
+                    errors.append(f"css/font-awesome.min.css: нет шрифта {raw_url}"
+                                  f"{font_sibling_hint(target)}")
+
+    # R675: форма @font-face — один src, один url() на семейство (см. docstring).
+    font_face_checked = check_font_face_src(fa, root, errors)
 
     if errors:
-        print("[assets] FAIL — внешние или отсутствующие ассеты:", file=sys.stderr)
+        print("[assets] FAIL — внешние, отсутствующие или мёртвые ассеты:", file=sys.stderr)
         for e in errors:
             print(f"  * {e}", file=sys.stderr)
         return 1
 
     print(f"[assets] OK: {html_checked} локальных ассетов в HTML + "
-          f"{css_checked} url() в CSS; внешних CDN нет, шрифты на месте; "
+          f"{css_checked} url() в CSS; внешних CDN нет, шрифты на месте "
+          f"({font_face_checked} @font-face по одному url()); "
           f"иконок fa-*: {fa_checked} (все есть в CSS); "
           f"панель балансера: {panel_checked} групп(ы) статики (страницы/css/js/img/webfonts)")
     return 0

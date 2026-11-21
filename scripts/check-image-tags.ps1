@@ -5,7 +5,7 @@
 .DESCRIPTION
   Проверяет БЕЗ docker (можно запускать где угодно, в т.ч. на CI):
 
-    1. каждый `image:` в docker-compose.cppworker-bundled-with-agent.yml
+    1. каждый `image:` в docker-compose.stack.yml
        параметризован через `${VAR:-default}` (а не литералом);
     2. для каждой найденной переменной есть строка `VAR=...` в deployments/.env
        (иначе compose возьмёт default, и выпуск «не доедет»);
@@ -17,12 +17,23 @@
   версиях» было штатной ситуацией. Пункт 3 ловит именно её: подняли webui, но
   забыли balancer → манифест и .env расходятся → проверка падает.
 
+  R675 (2026-11-21): дефолтный compose — docker-compose.stack.yml.
+
+  ЖИВОЙ ДЕФЕКТ. Дефолтом стоял docker-compose.cppworker-bundled-with-agent.yml,
+  а РЕЛИЗ идёт по docker-compose.stack.yml (release-all.ps1:104,
+  deployments/release-manifest.json:6). Наборы сервисов разные: в bundled-файле
+  ОТСУТСТВУЕТ imageworker (4 `image:` против 5), поэтому «проверено» относилось
+  не к тому файлу, которым выпускают, и расхождение тега imageworker не ловилось
+  никогда. Проверка, которая смотрит не на тот файл, опаснее отсутствующей: она
+  даёт зелёный свет.
+
 .EXAMPLE
   pwsh -File scripts/check-image-tags.ps1
   pwsh -File scripts/check-image-tags.ps1 -Verbose
+  pwsh -File scripts/check-image-tags.ps1 -ComposeFile docker-compose.cppworker-bundled-with-agent.yml
 #>
 param(
-    [string]$ComposeFile = "docker-compose.cppworker-bundled-with-agent.yml",
+    [string]$ComposeFile = "docker-compose.stack.yml",
     # Пусто = автоопределение: deployments/.env, если он есть, иначе
     # deployments/.env.example (см. пояснение ниже).
     [string]$EnvFile = "",
@@ -323,15 +334,47 @@ function Normalize-ArchList([string]$value) {
 }
 
 $cudaArchEnv = ''
-$envFileFull = Join-Path (Split-Path -Parent $PSCommandPath) "..\deployments\$EnvFile"
-if (-not (Test-Path $envFileFull)) { $envFileFull = Join-Path (Get-Location) $EnvFile }
-if (Test-Path $envFileFull) {
-    $m = Select-String -Path $envFileFull -Pattern '^\s*CUDA_ARCH\s*=\s*(.+)$' | Select-Object -First 1
+# R675 (2026-11-21): читаем ТОТ ЖЕ файл, который уже найден выше ($envPath).
+#
+# ЖИВОЙ ДЕФЕКТ. Здесь стояло `$EnvFile` — параметр со значением по умолчанию "".
+# При обычном запуске (без -EnvFile) `Join-Path … "..\deployments\\"` давал
+# КАТАЛОГ, а `Join-Path (Get-Location) ""` — текущий каталог; `Test-Path` на
+# каталоге истинен, поэтому Select-String получал папку, молча падал, и
+# `$cudaArchEnv` оставался пустым. Следствие: сверка CUDA_ARCH «проходила
+# успешно», ни разу не выполнившись, а в лог печаталось «CUDA_ARCH в  не задан»
+# (имя файла тоже было пустым) — то есть ровно та проверка, ради которой всё
+# написано (R597), не работала ни разу с момента появления.
+if ($envPath -and (Test-Path $envPath -PathType Leaf)) {
+    $m = Select-String -Path $envPath -Pattern '^\s*CUDA_ARCH\s*=\s*(.+)$' | Select-Object -First 1
     if ($m) { $cudaArchEnv = ($m.Matches[0].Groups[1].Value -replace '#.*$', '').Trim() }
 }
 if ($cudaArchEnv) {
     Write-Host ""
-    Write-Host "CUDA_ARCH: .env=$cudaArchEnv ↔ образ cppworker" -ForegroundColor Cyan
+    Write-Host "CUDA_ARCH: $usedEnvName=$cudaArchEnv ↔ образ cppworker" -ForegroundColor Cyan
+
+    # R675: offline-половина сверки — `.env` ↔ манифест выпуска (`cudaArch`).
+    #
+    # ЗАЧЕМ ОТДЕЛЬНО. Сверка с меткой образа ниже требует образа в локальном
+    # демоне: в CI и на чистой машине её просто нет, проверка помечается
+    # «ПРОПУСК» — и обещание `.env` о наборе архитектур остаётся непроверенным.
+    # Манифест знает, под что СОБИРАЛИ (`cudaArch` пишет релиз), поэтому
+    # расхождение `.env` ↔ манифест видно всегда, без docker. Это ровно дефект
+    # R597: `.env` обещал 75;86;120, а собрано было только под 86.
+    $manifestCudaArch = ''
+    if ($null -ne $manifest -and $null -ne $manifest.PSObject.Properties['cudaArch']) {
+        $manifestCudaArch = [string]$manifest.cudaArch
+    }
+    if ($manifestCudaArch) {
+        $envArch = Normalize-ArchList $cudaArchEnv
+        $mfArch = Normalize-ArchList $manifestCudaArch
+        if (($envArch -join ';') -ne ($mfArch -join ';')) {
+            $problems.Add("CUDA_ARCH: deployments/$usedEnvName обещает [$cudaArchEnv], а манифест $ManifestFile фиксирует сборку под [$manifestCudaArch] — на несовпавших архитектурах воркер упадёт с 'no kernel image is available'")
+        } else {
+            Write-Host "  OK  $usedEnvName=$($envArch -join ';') совпадает с манифестом (cudaArch=$manifestCudaArch)" -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host "  ПРОПУСК  в $ManifestFile нет поля cudaArch — offline-сверка архитектур невозможна" -ForegroundColor DarkGray
+    }
     $cppRepo = $effective.Keys | Where-Object { $_ -like '*cppworker' } | Select-Object -First 1
     if (-not $cppRepo) {
         Write-Host "  ПРОПУСК  образа cppworker нет в $ComposeFile" -ForegroundColor DarkGray
@@ -373,7 +416,7 @@ if ($cudaArchEnv) {
                 $problems.Add("${cppRef}: в метках образа нет CUDA_ARCH (описание '$desc') — какая архитектура собрана, неизвестно")
             } elseif ((($want -join ';') -ne ($built -join ';'))) {
                 $missing = @($want | Where-Object { $built -notcontains $_ })
-                $problems.Add("${cppRef} собран под [$($built -join ';')], а deployments/$EnvFile обещает CUDA_ARCH=$cudaArchEnv" +
+                $problems.Add("${cppRef} собран под [$($built -join ';')], а deployments/$usedEnvName обещает CUDA_ARCH=$cudaArchEnv" +
                     $(if ($missing.Count -gt 0) { " — не собрано под: $($missing -join ';'). На этих картах воркер упадёт с 'no kernel image is available'" } else { "" }))
             } else {
                 Write-Host "  OK  образ $cppRef собран под $($built -join ';') — совпадает с .env" -ForegroundColor DarkGray
@@ -382,7 +425,7 @@ if ($cudaArchEnv) {
     }
 } else {
     Write-Host ""
-    Write-Host "CUDA_ARCH в $EnvFile не задан — сверка архива с образом пропущена" -ForegroundColor DarkGray
+    Write-Host "CUDA_ARCH в deployments/$usedEnvName не задан — сверка архива с образом пропущена" -ForegroundColor DarkGray
 }
 
 # --- итог ------------------------------------------------------------------
@@ -392,5 +435,5 @@ if ($problems.Count -gt 0) {
     foreach ($p in $problems) { Write-Host "  - $p" -ForegroundColor Red }
     exit 1
 }
-Write-Host "OK: теги параметризованы, переменные ($($varSeen.Keys -join ', ')) есть в $EnvFile" -ForegroundColor Green
+Write-Host "OK: теги параметризованы, переменные ($($varSeen.Keys -join ', ')) есть в $usedEnvName (compose: $ComposeFile)" -ForegroundColor Green
 exit 0

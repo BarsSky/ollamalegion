@@ -486,7 +486,13 @@
         formatFileSize: formatFileSize,
         loadedHandleFor: loadedHandleFor,
         renderInventoryNote: renderInventoryNote,
-        showToast: (typeof window !== 'undefined' ? window.showToast : undefined),
+        // R675 (2026-11-21): ключ showToast УДАЛЁН — он был инертен с самого
+        // выноса (R656): фабрика GgufDetailModels ни разу не обращается к
+        // ctx.showToast (grep по файлу пуст), то есть зависимость «передавали»,
+        // но ею никто не пользовался. Такой ключ не просто мусор: он создаёт
+        // ложное впечатление, что тост в этом слое доступен, и при следующей
+        // правке его «уже передали» — а читать нечего. Проверка:
+        // scripts/webui_ctx_contract_check.js (правило «ключ инертен»).
         formatElapsedShort: formatElapsedShort,
         isUnloadingHandle: isUnloadingHandle,
         unloadingElapsedMs: unloadingElapsedMs,

@@ -1,4 +1,14 @@
-﻿## [0.7.474 - R671/R671b: панель снова инициализируется (потерянные экспорты R652-R655) + badge, 2026-11-21]
+﻿## [0.7.475 - R675: иконки-квадраты (кэш шрифтов), i18n-ключи, чистка образа, ctx-контракт фабрик, check-image-tags, 2026-11-21]
+
+- `docker/webui/Dockerfile:185` — контент-хеш `?v=` теперь подставляется и в `css/*.css` (раньше только `*.html`, поэтому шрифт навсегда просил `?v=R83` при годовом кэше — причина квадратов на втором стенде).
+- `Dockerfile:102-125` — из образа удаляются `js/**/*.test.js` (97 файлов, 1.19 MiB).
+- `webui/css/font-awesome.min.css:9` — удалены 10 мёртвых `.ttf` src (все 404); 10 `@font-face` по одному `url()` на существующие woff2.
+- `webui/nginx.conf:504-526` — шрифты: `expires 1h` + `try_files  =404` (закрыт «200 + index.html»); остальная статика по-прежнему 1y.
+- i18n: `nav.menu`, `footer.version`, `header.virtual-models` в ru/en; `getPageTitle` знает `virtual-models`; `check_webui_i18n_keys.py` проверяет динамические `header.<page>`; измеритель понимает `[title]key` (used 2204, unused 0).
+- НОВЫЙ `scripts/webui_ctx_contract_check.js` + `webui/tests/ctx-contract-r675.test.js`: свободные имена тела фабрики ⊆ привязки `var x = ctx.x` ⊆ ключи литерала вызывающего. На HEAD `eae57ad1` даёт 3 находки, сейчас 0. Нашёл живой дефект: `app-models.js` звал `fetchClusterState()` без привязки — исправлено (:42).
+- `scripts/check-image-tags.ps1`: дефолтный compose → `docker-compose.stack.yml` (imageworker в манифесте больше не «потерян»); `CUDA_ARCH` читается из найденного файла, добавлена offline-сверка `.env` ↔ манифест (`75;86;120`).
+- Проверено: `node --check` ×10, `node --test webui/tests/*.test.js` 36/36, раннер 133/133, `check_webui_assets.py` / `check_webui_i18n_keys.py` / `check-image-tags.ps1` / ctx-чекер — exit 0; два негативных теста краснеют как надо.
+## [0.7.474 - R671/R671b: панель снова инициализируется (потерянные экспорты R652-R655) + badge, 2026-11-21]
 
 **Живая жалоба:** у залогиненного оператора карточки «—», панели «Загрузка…», внизу «Подключение…», таблица
 бэкендов пуста. Полный анализ (CDP, реальный вход skyadmin) дал точную причину:

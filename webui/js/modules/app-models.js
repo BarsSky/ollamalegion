@@ -30,6 +30,16 @@
         var renderLogs = ctx.renderLogs;
         var renderProxyLogs = ctx.renderProxyLogs;
         var showToast = ctx.showToast;
+        // R675 (2026-11-21), найдено scripts/webui_ctx_contract_check.js.
+        //
+        // ЖИВОЙ ДЕФЕКТ ТОГО ЖЕ КЛАССА, ЧТО R671/R672. R673 прокинул имя в ctx со
+        // стороны вызывающего (app.js:955 — ленивая обёртка), но в САМОЙ фабрике
+        // строку привязки забыли. Тело зовёт `fetchClusterState()` в двух местах —
+        // после переключения «не использовать бэкенд» (:77) и после сохранения
+        // лимитов бэкенда (:175) — то есть браузер получал ReferenceError ровно
+        // после успешного ответа API: тост «saved» уже показан, а панель не
+        // обновлена, и оператор видит устаревшие данные.
+        var fetchClusterState = ctx.fetchClusterState;
 
     function restartAgent(backendId) {
         if (!confirm((window.I18N ? I18N.t('agents.confirm_restart') : 'Restart agent on backend') + ' ' + backendId + '?')) return;

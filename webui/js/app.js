@@ -326,7 +326,13 @@ const ui = (function () {
             // если пакет переводов не поднялся.
             reference: 'Reference & Templates',
             settings: 'Settings',
-            agents: 'Agents'
+            agents: 'Agents',
+            // R675 (2026-11-21): страница «Виртуальные модели» (data-page=
+            // "virtual-models"). В этой карте её не было, поэтому при
+            // неработающем пакете переводов заголовок молча схлопывался в
+            // 'Dashboard' — то есть подменял раздел чужим именем. Ключ
+            // header.virtual-models для i18n добавлен в ru.js/en.js.
+            'virtual-models': 'Virtual models'
         };
         return titles[page] || 'Dashboard';
     }

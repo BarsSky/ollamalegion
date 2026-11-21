@@ -2741,6 +2741,11 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          function` (файл падал на первом же использовании, строка 1300), панель
          настроек GGUF не инициализировалась, а весь модуль после падения строки
          не определял ничего — «мышь не работает» на странице моделей. -->
+    <!-- R669 (2026-11-21): фабрика параметров модели (window.GgufDetailParams) тоже не
+         подключалась — gguf-detail-settings.js падал на ней следующей строкой после
+         исправления R668. Тот же корень: при выделении фабрик из монолита теги
+         подключения не добавили. Порядок обязателен: params → settings → render. -->
+    <script defer src="js/modules/gguf-detail-params.js?v=R669"></script>
     <script defer src="js/modules/gguf-detail-settings.js?v=R668"></script>
     <!-- R57.5f (2026-09-03): right panel render functions (renderDetailPanel, 4 sub-panes, settings, backend options). -->
     <script defer src="js/modules/gguf-renderer-detail-render.js?v=R425"></script>

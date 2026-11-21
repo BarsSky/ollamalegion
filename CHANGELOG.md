@@ -1,3 +1,27 @@
+## [0.7.472 - R668/R669: страница моделей GGUF больше не падает на загрузке модулей, 2026-11-21]
+
+**Живая жалоба:** «после Ctrl+Shift+R сбрасывается нормальная работа с мышью». Проверено снимком консоли
+безголового браузера (`msedge --headless=new --enable-logging --virtual-time-budget=12000`): на каждой загрузке
+панель падала до инициализации части модулей —
+
+```
+Uncaught TypeError: window.GgufDetailSettings is not a function   js/modules/gguf-renderer-detail-render.js:1300
+Uncaught TypeError: window.GgufDetailParams  is not a function   js/modules/gguf-detail-settings.js:516
+```
+
+**Корень:** при выделении фабрик из монолита `gguf-renderer-detail-render.js` в `index.html` вместо тегов
+`gguf-detail-settings.js` и `gguf-detail-params.js` остался ВТОРОЙ тег `gguf-renderer-detail-render.js`. Модуль
+вычислялся дважды, на строке 1300 обращался к несуществующей фабрике и падал — то есть после этой строки не
+определял ничего. На страницах моделей GGUF обработчики мыши так и не привязывались: страница нарисована, но
+клики по панелям ничего не делают. Дубль существовал до правок R665–R667 (проверено `git show HEAD~3`).
+
+**Что изменено (`webui/index.html`):** дубль заменён на `js/modules/gguf-detail-settings.js` (R668), добавлен
+`js/modules/gguf-detail-params.js` перед ним (R669). Итог: 70 тегов скриптов, дублей 0, порядок
+`cppworker-params → gguf-detail-params → gguf-detail-settings → gguf-renderer-detail-render`.
+
+**Проверено:** образ `webui:r261120-r668` — `gguf-detail-settings.js` отдаётся, `Uncaught TypeError` про
+`GgufDetailSettings` исчез (осталась следующая зависимость, закрытая в R669); `node --test webui/tests` — 35/35.
+
 ## [0.7.471 - R667: выбор «работаю без входа» переживает Ctrl+Shift+R, 2026-11-21]
 
 **Живая жалоба:** «после сброса через Ctrl+Shift+R сбрасывается нормальная работа с мышью на странице опять».

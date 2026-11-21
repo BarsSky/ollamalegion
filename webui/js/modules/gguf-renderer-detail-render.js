@@ -475,6 +475,15 @@
         _: _,
         state: state,
         Utils: Utils,
+        // R672 (2026-11-21): ctx фабрики не содержал двух имён, которые её тело
+        // использует bare-именами — `formatFileSize` (gguf-detail-models.js:56) и
+        // `stripGGUF` (:68,74,79). Живой дефект оператора: таб «Модели» не
+        // прожимается — обработчик срабатывает, но renderModelsPane падает на
+        // ReferenceError, панель не перерисовывается, а `state.detailPane` уже
+        // равен "models": таб «залипает» на старой вкладке. Оба имени объявлены
+        // выше в этом файле (строки 55-56).
+        stripGGUF: stripGGUF,
+        formatFileSize: formatFileSize,
         loadedHandleFor: loadedHandleFor,
         renderInventoryNote: renderInventoryNote,
         showToast: (typeof window !== 'undefined' ? window.showToast : undefined),

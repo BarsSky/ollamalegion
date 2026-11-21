@@ -207,6 +207,99 @@ check('R513/4: без ввода таблица лимитов обновляе�
     assert.ok(/backend-limit-input/.test(tbody.innerHTML), 'таблица лимитов перестала обновляться');
 });
 
+// --- R676: пересборка таблицы лимитов НЕ теряет ввод после blur -------------
+//
+// Живой сценарий жалобы: набрал число в таблице → кликнул мимо (фокус ушёл) →
+// пришёл тик → `tbody.innerHTML = …` уничтожил строку вместе с числом. Заслон
+// R513 спасает только «курсор ещё в таблице». Здесь поднимается настоящий
+// loadBackendLimits + настоящий SafeForm над таблицей, которая пересоздаёт поля
+// так же, как браузер после подмены innerHTML.
+
+function helpersFromModels(...names) {
+    return names.map(function (name) {
+        const fn = extractFnIndented(modelsJs, name);
+        return fn.head + '{' + fn.body + '}';
+    }).join('\n') + '\n';
+}
+
+/** Мини-таблица: подмена innerHTML пересоздаёт поля по разметке строк. */
+function buildLimitsTable() {
+    const inputs = [];
+    const el = {
+        tagName: 'TBODY',
+        contains: function () { return false; },
+        querySelectorAll: function () { return inputs.slice(); }
+    };
+    let html = '';
+    Object.defineProperty(el, 'innerHTML', {
+        get: function () { return html; },
+        set: function (v) {
+            html = String(v);
+            inputs.length = 0;
+            const re = /<input[^>]*data-backend-id="([^"]*)"[^>]*data-limit-type="([^"]*)"[^>]*value="([^"]*)"[^>]*>/g;
+            let m;
+            while ((m = re.exec(html)) !== null) {
+                const bid = m[1], limitType = m[2], value = m[3];
+                inputs.push({
+                    tagName: 'INPUT', type: 'number', value: value, checked: false,
+                    parentNode: { id: 'settings-page', tagName: 'DIV', parentNode: null },
+                    getAttribute: function (n) {
+                        if (n === 'data-backend-id') return bid;
+                        if (n === 'data-limit-type') return limitType;
+                        return null;
+                    }
+                });
+            }
+        }
+    });
+    return { el: el, inputs: inputs };
+}
+
+/** runLimitsRebuild — один проход refresh-а таблицы на настоящих модулях. */
+function makeLimitsRebuild(table) {
+    const load = extractFnIndented(modelsJs, 'loadBackendLimits');
+    const repl = extractFnIndented(modelsJs, 'replaceRowsPreserving');
+    const doc = {
+        activeElement: null, // оператор уже кликнул мимо
+        getElementById: function (id) { return id === 'backendLimitsBody' ? table.el : null; }
+    };
+    const sandbox = { window: {}, document: doc };
+    vm.createContext(sandbox);
+    vm.runInContext(guardSrc, sandbox, { filename: 'refresh-guard.js' });
+    vm.runInContext(safeFormSrc, sandbox, { filename: 'safe-form.js' });
+    const replaceFn = new Function('tbody', 'rowsHtml', 'window',
+        helpersFromModels('limitRowKey') + repl.body + '\nreturn true;');
+    const runner = new Function('window', 'document', 'data', 'Utils', 'I18N', 'replaceRowsPreserving',
+        load.body + '\nreturn null;');
+    return function rebuild(backends) {
+        runner(sandbox.window, doc, { backends: backends },
+            { escapeHtml: function (s) { return String(s); } }, { t: function (k) { return k; } },
+            function (tb, html) { return replaceFn(tb, html, sandbox.window); });
+    };
+}
+
+check('R676: набранное в таблице лимитов переживает пересборку (blur, потом тик)', () => {
+    const table = buildLimitsTable();
+    const rebuild = makeLimitsRebuild(table);
+    rebuild([{ id: 'b1', host: 'h', status: 'healthy', maxConcurrentRequests: 3, maxModels: 2 }]);
+
+    const conc = table.inputs.filter(function (i) { return i.getAttribute('data-limit-type') === 'maxConcurrent'; })[0];
+    assert.ok(conc, 'в таблице нет поля maxConcurrent — проверка потеряла точку отсчёта');
+    assert.strictEqual(conc.value, '3', 'предпосылка: поле заполнено серверным значением');
+
+    conc.value = '77'; // оператор набрал 77 и ушёл из поля
+    rebuild([{ id: 'b1', host: 'h', status: 'warning', maxConcurrentRequests: 5, maxModels: 4 }]);
+
+    const after = table.inputs.filter(function (i) { return i.getAttribute('data-limit-type') === 'maxConcurrent'; })[0];
+    const models = table.inputs.filter(function (i) { return i.getAttribute('data-limit-type') === 'maxModels'; })[0];
+    assert.strictEqual(after.value, '77',
+        'пересборка таблицы стёрла набранное число — «обновление стирает формы» живая жалоба');
+    assert.strictEqual(models.value, '4',
+        'соседнее поле не обновилось: защита одного поля остановила рендер');
+    assert.ok(/badge-warning/.test(table.el.innerHTML),
+        'статус бэкенда не обновился: данные таблицы перестали обновляться');
+});
+
 // --- статические проверки остальных трёх панелей ----------------------------
 
 // guardBefore — guard стоит ДО перерисовки в указанной функции.

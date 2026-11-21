@@ -251,16 +251,18 @@ check('SafeForm: markBase объявляет базу для разметки, �
     assert.strictEqual(el2.value, '777', 'ввод оператора потерян');
 });
 
+// Поле панели реестра/таблицы лимитов: значение + ключ в data-атрибуте.
+function keyedInput(key, value) {
+    return {
+        id: '', tagName: 'INPUT', type: 'number', value: value, checked: false,
+        parentNode: { id: 'settings-page', tagName: 'DIV', parentNode: null },
+        getAttribute(n) { return n === 'data-hot-input' ? key : null; }
+    };
+}
+
 check('SafeForm: collect/restore сохраняют ввод оператора при пересборке innerHTML', () => {
     const { api } = buildSafeForm();
-    const page = { id: 'settings-page', tagName: 'DIV', parentNode: null };
-    function input(key, value) {
-        return {
-            id: '', tagName: 'INPUT', type: 'number', value: value, checked: false, parentNode: page,
-            getAttribute(n) { return n === 'data-hot-input' ? key : null; }
-        };
-    }
-    const oldEl = input('LB_ADMISSION_WAIT_SEC', '10');
+    const oldEl = keyedInput('LB_ADMISSION_WAIT_SEC', '10');
     api.setValue(oldEl, '10');      // база 10 (серверное значение)
     oldEl.value = '30';             // оператор набрал 30
     const oldRoot = { querySelectorAll() { return [oldEl]; } };
@@ -269,12 +271,29 @@ check('SafeForm: collect/restore сохраняют ввод оператора 
     assert.strictEqual(pending.LB_ADMISSION_WAIT_SEC, '30');
 
     // Панель перерисована: новый узел нарисован серверным значением 10.
-    const newEl = input('LB_ADMISSION_WAIT_SEC', '10');
+    const newEl = keyedInput('LB_ADMISSION_WAIT_SEC', '10');
     const newRoot = { querySelectorAll() { return [newEl]; } };
     assert.strictEqual(api.restoreInputs(newRoot, pending, 'data-hot-input'), 1);
     assert.strictEqual(newEl.value, '30', 'ввод оператора не вернулся в новую разметку');
     assert.strictEqual(api.baseOf(newEl), '10', 'базой нового узла обязано остаться СЕРВЕРНОЕ значение');
     assert.strictEqual(api.setValue(newEl, '10'), false, 'после пересборки ввод оператора снова затирается');
+});
+
+check('SafeForm: после пересборки у нетронутых полей тоже появляется база', () => {
+    // Таблица лимитов и панель реестра рисуются через innerHTML — их поля никогда
+    // не проходят через setValue. Без adopt в restoreInputs коллектор не увидел бы
+    // правку оператора в них, и следующая пересборка стёрла бы её молча.
+    const { api } = buildSafeForm();
+    const a = keyedInput('A', '10');
+    const b = keyedInput('B', '20');
+    const root = { querySelectorAll() { return [a, b]; } };
+    api.restoreInputs(root, Object.create(null), 'data-hot-input');
+    assert.strictEqual(api.baseOf(a), '10', 'нетронутое поле не получило базу');
+    assert.strictEqual(api.baseOf(b), '20', 'нетронутое поле не получило базу');
+
+    b.value = '99'; // оператор правит второе поле
+    assert.deepStrictEqual(Object.keys(api.collectInputs(root, 'data-hot-input')), ['B'],
+        'правка оператора в поле, которое рисовалось через innerHTML, не обнаружена');
 });
 
 // --- (5) CI-чекер контракта фабрик остаётся зелёным -------------------------

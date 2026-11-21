@@ -262,25 +262,32 @@
     /**
      * restoreInputs — вернуть значения оператора в свежеотрисованные поля.
      *
-     * База нового узла = то, что в нём нарисовано (серверное значение), а значение
-     * поля = ввод оператора. Именно это и нужно: следующий проход снова увидит
-     * расхождение и не перетрёт набранное; вернул поле к серверному — расхождения
-     * нет, SafeForm снова управляет.
+     * Делает ДВЕ вещи, и обе нужны:
+     *   1) КАЖДОМУ полю поддерева объявляет базой то, что в нём нарисовано
+     *      (серверное значение). Без этого у полей, которые SafeForm никогда не
+     *      писал (таблица лимитов, панель реестра рисуются через innerHTML),
+     *      базы не было бы вовсе, и первая же правка оператора не попала бы в
+     *      следующий collectInputs — то есть терялась бы при пересборке.
+     *   2) Тем, чьё значение оператор менял, возвращает ЕГО значение. База
+     *      остаётся серверной: следующий проход снова увидит расхождение и не
+     *      перетрёт набранное, а вернул поле к серверному — расхождения нет,
+     *      SafeForm снова управляет.
      *
      * @returns {number} сколько полей сохранило значение оператора.
      */
     function restoreInputs(root, values, keySpec, selector) {
         var moved = 0;
-        if (!root || !values || typeof root.querySelectorAll !== 'function') { return moved; }
+        if (!root || typeof root.querySelectorAll !== 'function') { return moved; }
         var nodes = root.querySelectorAll(selectorOf(keySpec, selector));
         for (var i = 0; i < nodes.length; i++) {
             var node = nodes[i];
-            var key = keyOf(node, keySpec);
-            if (!key || !Object.prototype.hasOwnProperty.call(values, key)) { continue; }
             var serverValue = readValue(node);
-            if (isCheckable(node)) { node.checked = values[key] === true; } else { node.value = String(values[key]); }
+            var key = keyOf(node, keySpec);
+            if (key && values && Object.prototype.hasOwnProperty.call(values, key)) {
+                if (isCheckable(node)) { node.checked = values[key] === true; } else { node.value = String(values[key]); }
+                moved++;
+            }
             bases.set(node, serverValue);
-            moved++;
         }
         return moved;
     }

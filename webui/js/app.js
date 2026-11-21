@@ -825,6 +825,14 @@ const ui = (function () {
     var resetSettings = settingsUi.resetSettings;
     var resetLlamaCppOverride = settingsUi.resetLlamaCppOverride;
     var autoSaveSettings = settingsUi.autoSaveSettings;
+    // R671 (2026-11-21): те же пять имён, что фабрика теперь возвращает. Без этих
+    // алиасов `App.context` (строка 66) падал на `ReferenceError`, потому что
+    // bare-имена fetchClusterState/fetchQueue/... в этом файле нигде не объявлены.
+    var fetchClusterState = settingsUi.fetchClusterState;
+    var fetchQueue = settingsUi.fetchQueue;
+    var fetchQueueDetails = settingsUi.fetchQueueDetails;
+    var fetchQueueHistory = settingsUi.fetchQueueHistory;
+    var fetchSessions = settingsUi.fetchSessions;
 
     // ---- Periodic Refresh ----
 
@@ -873,6 +881,20 @@ const ui = (function () {
         init: init,
         initLogsStream: initLogsStream,
         loadSettings: loadSettings,
+        // R671 (2026-11-21): зависимости, которые app-data.js зовёт bare-именами и
+        // которые НЕ передавались в фабрику (часть потеряна при выносе R652-R655,
+        // часть объявлена ниже — поэтому ленивые обёртки, как и у остальных
+        // циклических зависимостей этого литерала).
+        fetchClusterState: fetchClusterState,
+        fetchQueue: fetchQueue,
+        fetchQueueDetails: fetchQueueDetails,
+        fetchQueueHistory: fetchQueueHistory,
+        fetchSessions: fetchSessions,
+        fetchAgents: fetchAgents,
+        fetchProxyLogs: function () { return fetchProxyLogs.apply(null, arguments); },
+        loadBackendLimits: function () { return loadBackendLimits.apply(null, arguments); },
+        startOpsAutoRefresh: function () { return startOpsAutoRefresh.apply(null, arguments); },
+        stopOpsAutoRefresh: function () { return stopOpsAutoRefresh.apply(null, arguments); },
         modelsPage: modelsPage,
         predictionAlerts: predictionAlerts,
         queuePage: queuePage,

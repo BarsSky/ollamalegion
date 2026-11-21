@@ -968,7 +968,19 @@
             applyBackendConfig: applyBackendConfig,
             updateLlamaCppOverridesPanel: updateLlamaCppOverridesPanel,
             verifySync: verifySync,
-            mergeBackendConfig: mergeBackendConfig
+            mergeBackendConfig: mergeBackendConfig,
+            // R671 (2026-11-21): пять сборщиков данных, ПОТЕРЯННЫХ при выносе в
+            // фабрику (R652-R655). Они определены выше в этом же файле, но не
+            // возвращались, а `app.js` продолжал звать их bare-именами — панель
+            // падала на `ReferenceError: fetchClusterState is not defined` в первой
+            // строке `ui.init()` (app.js:66) и не запускала НИЧЕГО: ни навигацию,
+            // ни WebSocket, ни первый запрос данных. Отсюда «—», «Загрузка…» и
+            // «Подключение…» у залогиненного оператора.
+            fetchClusterState: fetchClusterState,
+            fetchQueue: fetchQueue,
+            fetchQueueDetails: fetchQueueDetails,
+            fetchQueueHistory: fetchQueueHistory,
+            fetchSessions: fetchSessions
         };
     };
 })();

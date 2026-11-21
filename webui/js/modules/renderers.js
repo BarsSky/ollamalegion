@@ -252,6 +252,12 @@ const Renderers = (function () {
     // R651 (2026-11-20): дашборд и GPU-кластер вынесены в renderers-cluster.js.
     // Список зависимостей посчитан scripts/webui_extract_deps.js — не «на глаз».
     var clusterRenderers = window.RenderersCluster({
+        // R671b (2026-11-21): `badge` объявлен в этом файле (строка 108) и
+        // используется в renderers-cluster.js:284,700, но в ctx фабрики кластера
+        // не передавался — `ReferenceError: badge is not defined` обрывал
+        // refreshPage('dashboard'), и таблица бэкендов навсегда оставалась с
+        // заглушкой «Загрузка…» (index.html:342).
+        badge: badge,
         Utils: Utils,
         _t: _t,
         computeMemorySplit: computeMemorySplit,

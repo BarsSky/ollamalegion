@@ -20,6 +20,8 @@
 
     window.RenderersCluster = function (ctx) {
         var Utils = ctx.Utils;
+        // R671b: без этой строки рендер дашборда падал (см. renderers.js).
+        var badge = ctx.badge;
         var _t = ctx._t;
         var computeMemorySplit = ctx.computeMemorySplit;
         var donorBadgeHtml = ctx.donorBadgeHtml;

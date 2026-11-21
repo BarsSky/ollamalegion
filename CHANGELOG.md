@@ -1,3 +1,35 @@
+﻿## [0.7.474 - R671/R671b: панель снова инициализируется (потерянные экспорты R652-R655) + badge, 2026-11-21]
+
+**Живая жалоба:** у залогиненного оператора карточки «—», панели «Загрузка…», внизу «Подключение…», таблица
+бэкендов пуста. Полный анализ (CDP, реальный вход skyadmin) дал точную причину:
+
+```
+ReferenceError: fetchClusterState is not defined
+    at Object.init (webui/js/app.js:66:36)
+```
+
+`app.js:66` строит `App.context` и берёт `fetchClusterState` bare-именем, но после выноса в фабрику
+R652-R655 функция осталась в `app-settings.js:146` и НЕ возвращалась из неё (`app-settings.js:960-972`).
+Падение в первой строке `ui.init()` отменяло всё: `setupNavigation` (меню не работало), `setupWebSocketEvents`
+(отсюда «Подключение…» — это дефолт разметки `index.html:163`, `connect()` не вызывался ни разу: `wsAttempts:0`),
+`fetchClusterState`, `startPeriodicRefresh`, `SettingsUI.*`. `App.context` оставался `undefined`.
+
+Вторая, самостоятельная причина той же картины (R649-R651): `renderers-cluster.js:284,700` зовут `badge(...)`,
+но в ctx фабрики кластера (`renderers.js:254-274`) его не было — `ReferenceError: badge is not defined` обрывал
+`refreshPage('dashboard')`, и `backendsTableBody` навсегда оставался с заглушкой «Загрузка…» (`index.html:342`).
+
+**Почему прошлые проверки «в консоли 0 ошибок» были слепы:** это был гость, а `app.js:1063` для гостя делает
+ранний `return` до `ui.init()` — исключения нет, панель при этом так же пуста.
+
+**Изменено:** `app-settings.js` возвращает `fetchClusterState`, `fetchQueue`, `fetchQueueDetails`,
+`fetchQueueHistory`, `fetchSessions`; `app.js` объявляет эти пять алиасов и передаёт в `AppData` ещё
+`fetchAgents`, `fetchProxyLogs`, `loadBackendLimits`, `startOpsAutoRefresh`, `stopOpsAutoRefresh` (ленивыми
+обёртками — часть объявлена ниже литерала); `app-data.js` принимает их из ctx и получает локальный `_t`
+(в этом файле он никогда не был объявлен) через `I18N.t` с fallback; `renderers.js` передаёт `badge`,
+`renderers-cluster.js` читает его из ctx.
+
+**Проверено:** `node --check` по всем пяти файлам — чисто; `node --test webui/tests/*.test.js` — 35/35;
+образ `webui:r261120-r671` собран и раскатан.
 ## [0.7.473 - R670: скрытый слой входа больше не блокирует отрисовку данных, 2026-11-21]
 
 **Живая жалоба (скриншот панели):** карточки «—», панели Ollama Runtime / GPU Кластер / Ресурсы бэкендов —

@@ -46,6 +46,31 @@
         var renderProxyLogs = ctx.renderProxyLogs;
         var sessionsPage = ctx.sessionsPage;
         var setupNotificationsUI = ctx.setupNotificationsUI;
+        // R671 (2026-11-21): сборщики данных и вспомогательные функции, которые в
+        // этом файле вызываются bare-именами. Раньше они не приходили в ctx вовсе —
+        // первый же тик/рендер падал на ReferenceError, а init() умирал ещё раньше
+        // (см. app.js:66). Отсутствие значения теперь не роняет файл молча.
+        var fetchClusterState = ctx.fetchClusterState;
+        var fetchQueue = ctx.fetchQueue;
+        var fetchQueueDetails = ctx.fetchQueueDetails;
+        var fetchQueueHistory = ctx.fetchQueueHistory;
+        var fetchSessions = ctx.fetchSessions;
+        var fetchAgents = ctx.fetchAgents;
+        var fetchProxyLogs = ctx.fetchProxyLogs;
+        var loadBackendLimits = ctx.loadBackendLimits;
+        var startOpsAutoRefresh = ctx.startOpsAutoRefresh;
+        var stopOpsAutoRefresh = ctx.stopOpsAutoRefresh;
+        // R671: `_t` в этом файле никогда не был объявлен (он есть только локально в
+        // app-modals.js). Заменяем на перевод через I18N с честным fallback.
+        var _t = ctx._t || function (key, fallback) {
+            try {
+                if (I18N && typeof I18N.t === 'function') {
+                    var v = I18N.t(key);
+                    if (v && v !== key) { return v; }
+                }
+            } catch (e) { /* нет i18n — fallback */ }
+            return fallback;
+        };
 
         let refreshTimer = null;
 

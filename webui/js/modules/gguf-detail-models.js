@@ -26,6 +26,16 @@
         var unloadingElapsedMs = ctx.unloadingElapsedMs;
         var unloadingItemFor = ctx.unloadingItemFor;
         var renderModelParamsEditor = ctx.renderModelParamsEditor;
+        // R674 (2026-11-21): ВТОРАЯ ПОЛОВИНА фикса. R672 добавил эти два ключа в
+        // литерал вызывающего (gguf-renderer-detail-render.js:485-486), но фабрика
+        // их не читала — тело продолжало видеть bare-имена, и таб «Модели» падал на
+        // `ReferenceError: formatFileSize is not defined` (gguf-detail-models.js:56),
+        // затем на `stripGGUF` (:68,74,79). Панель не перерисовывалась, а
+        // `state.detailPane` уже был "models" — таб «залипал» на старой вкладке.
+        // Без stripGGUF деградируют молча и обе ветки поиска значений профиля
+        // (:532-534, :629-631): там стоит `typeof stripGGUF === 'function'`.
+        var stripGGUF = ctx.stripGGUF;
+        var formatFileSize = ctx.formatFileSize;
 
     function renderModelsPane() {
         const models = state.localModels || [];

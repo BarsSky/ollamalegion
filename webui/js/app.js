@@ -223,6 +223,13 @@ const ui = (function () {
         if (targetNav) targetNav.classList.add('active');
 
         currentPage = page;
+        // R666 (2026-11-21): переход по разделам — это осознанный уход со старой
+        // страницы, поэтому защита от перерисовки снимается. Без сброса флаг
+        // «несохранённая правка» пережил бы переход, и первый же рендер страницы
+        // был бы пропущен (пустой раздел на 2 минуты TTL).
+        if (window.FormDirty && typeof window.FormDirty.clearAll === 'function') {
+            window.FormDirty.clearAll();
+        }
         // R513 (2026-11-19): страница попадает в адрес, иначе F5 возвращает не
         // туда (см. syncPageURL и обработчики popstate/hashchange в init).
         syncPageURL(page);

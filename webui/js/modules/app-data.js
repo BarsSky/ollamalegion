@@ -70,7 +70,28 @@
         return BackendTypeFilter.filterBackends(filtered, type);
     }
 
-    function refreshPage(page) {
+    function refreshPage(page, options) {
+        // R666 (2026-11-21): ЗАЩИТА ОТ ПЕРЕРИСОВКИ — В ЕДИНСТВЕННОЙ ТОЧКЕ ВХОДА.
+        //
+        // Живая жалоба (продолжение R512/R662): «постоянный сброс обновлением форм
+        // остался». Причина: R662 защитил ТОЛЬКО тик автообновления, а refreshPage
+        // зовут ещё и обработчики WebSocket-снапшотов (app-listeners.js:213 и др.) и
+        // межвкладочная рассылка. Балансер шлёт кластерное состояние каждые
+        // несколько секунд, значит форма перезаполнялась мимо любого тика.
+        // Теперь правило одно: пока оператор правит поля страницы (фокус — R512)
+        // или у страницы есть свежая несохранённая правка (form-dirty, TTL 2 мин),
+        // перерисовка этой страницы не выполняется НИ ОДНИМ вызывающим.
+        // Обходной путь для осознанных случаев (первый рендер) — {force:true}.
+        if (!(options && options.force) && page === currentPage) {
+            if (window.RefreshGuard && typeof window.RefreshGuard.isEditingIn === 'function' &&
+                window.RefreshGuard.isEditingIn(document.getElementById(page + '-page'))) {
+                return;
+            }
+            if (window.FormDirty && typeof window.FormDirty.isDirtyPage === 'function' &&
+                window.FormDirty.isDirtyPage(page)) {
+                return;
+            }
+        }
         switch (page) {
             case 'dashboard':
                 var filteredBackends = filterBackendsForUI(data.backends);

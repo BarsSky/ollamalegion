@@ -70,6 +70,9 @@
         return BackendTypeFilter.filterBackends(filtered, type);
     }
 
+    // R670: какие страницы уже отрисованы хотя бы раз (ключ — имя страницы).
+    var renderedPages = Object.create(null);
+
     function refreshPage(page, options) {
         // R666 (2026-11-21): ЗАЩИТА ОТ ПЕРЕРИСОВКИ — В ЕДИНСТВЕННОЙ ТОЧКЕ ВХОДА.
         //
@@ -82,7 +85,16 @@
         // или у страницы есть свежая несохранённая правка (form-dirty, TTL 2 мин),
         // перерисовка этой страницы не выполняется НИ ОДНИМ вызывающим.
         // Обходной путь для осознанных случаев (первый рендер) — {force:true}.
-        if (!(options && options.force) && page === currentPage) {
+        // R670 (2026-11-21): ЗАЩИТА НЕ ОТМЕНЯЕТ ПЕРВЫЙ РЕНДЕР.
+        //
+        // Живая жалоба: «на странице всё висит „Загрузка…“, метрики — прочерки, внизу
+        // „Подключение…“» — то есть данные так и не нарисовались ни разу. Причина:
+        // R666 поставил защиту в единственную точку входа refreshPage, и если на
+        // момент загрузки страницы в документе уже есть редактируемое поле с фокусом
+        // (экран входа, поле в шапке) или свежая правка, первый рендер пропускался —
+        // а второго без данных не будет. Теперь защита включается только ПОСЛЕ того,
+        // как страница хотя бы раз отрисована: первая отрисовка неприкосновенна.
+        if (!(options && options.force) && page === currentPage && renderedPages[page] === true) {
             if (window.RefreshGuard && typeof window.RefreshGuard.isEditingIn === 'function' &&
                 window.RefreshGuard.isEditingIn(document.getElementById(page + '-page'))) {
                 return;
@@ -92,6 +104,7 @@
                 return;
             }
         }
+        renderedPages[page] = true;
         switch (page) {
             case 'dashboard':
                 var filteredBackends = filterBackendsForUI(data.backends);

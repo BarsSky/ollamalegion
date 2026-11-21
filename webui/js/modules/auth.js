@@ -369,6 +369,16 @@
   function hideOverlay() {
     var el = document.getElementById('authOverlay');
     if (el) { el.style.display = 'none'; }
+    // R670 (2026-11-21): слой прячется, а ФОКУС оставался в его поле пароля —
+    // невидимый, но редактируемый input. Защита от перерисовки (refresh-guard)
+    // считала, что оператор «печатает прямо сейчас», и не давала панели
+    // отрисоваться: карточки «—», панели «Загрузка…». Снимаем фокус вместе со слоем.
+    try {
+      if (document.activeElement && typeof document.activeElement.blur === 'function' &&
+          el && el.contains(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    } catch (e) { /* не критично */ }
   }
 
   // R222: вход не настроен на сервере (нет пользователей). Блокировать панель

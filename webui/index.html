@@ -2735,7 +2735,13 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script defer src="js/modules/gguf-renderer-detail.js?v=R425"></script>
     <!-- R656: таб Models правой панели GGUF — фабрика; до gguf-renderer-detail-render.js. -->
     <script defer src="js/modules/gguf-detail-models.js?v=R656"></script>
-    <script defer src="js/modules/gguf-renderer-detail-render.js?v=R425"></script>
+    <!-- R668 (2026-11-21): здесь стоял ВТОРОЙ тег gguf-renderer-detail-render.js, а
+         фабрика gguf-detail-settings.js не подключалась вовсе. Итог в консоли на
+         каждой загрузке: `Uncaught TypeError: window.GgufDetailSettings is not a
+         function` (файл падал на первом же использовании, строка 1300), панель
+         настроек GGUF не инициализировалась, а весь модуль после падения строки
+         не определял ничего — «мышь не работает» на странице моделей. -->
+    <script defer src="js/modules/gguf-detail-settings.js?v=R668"></script>
     <!-- R57.5f (2026-09-03): right panel render functions (renderDetailPanel, 4 sub-panes, settings, backend options). -->
     <script defer src="js/modules/gguf-renderer-detail-render.js?v=R425"></script>
     <script defer src="js/modules/gguf-renderer.js?v=R425"></script>

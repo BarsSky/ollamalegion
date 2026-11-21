@@ -186,7 +186,7 @@ check('R676: «грязная» страница с SafeForm не глушит �
     assert.ok(/var page = getCurrentPage\(\)/.test(tick),
         'страница тика обязана читаться геттером getCurrentPage() (R676: контракт страницы)');
     assert.ok(/SAFE_FORM_PAGES\s*=\s*\{\s*settings:\s*true/.test(appDataJs),
-        'в SAFE_FORM_PAGES нет «Настроек» — страница из жалобы не покрыта побезопасной записью');
+        'в SAFE_FORM_PAGES нет «Настроек» — страница из жалобы не покрыта безопасной записью полей');
 });
 
 // --- (4) модуль подключён в index.html ---

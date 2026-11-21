@@ -941,7 +941,12 @@ const ui = (function () {
         filterBackendsForUI: filterBackendsForUI,
         renderLogs: renderLogs,
         renderProxyLogs: renderProxyLogs,
-        showToast: showToast
+        showToast: showToast,
+        // R673 (2026-11-21): saveBackendLimits (app-models.js:160) после сохранения
+        // зовёт fetchClusterState() — в фабрике этого имени нет, падение после
+        // тоста «saved»: оператор видит «сохранено», данные не обновляются.
+        // Ленивая обёртка, как у соседних циклических зависимостей.
+        fetchClusterState: function () { return fetchClusterState.apply(null, arguments); }
     });
     var restartAgent = modelUi.restartAgent;
     var viewAgentLogs = modelUi.viewAgentLogs;

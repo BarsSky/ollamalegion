@@ -505,7 +505,11 @@
       if (pendingInit) { return pendingInit; }
       pendingInit = fetchJSON('/api/v1/auth/me').then(function (r) {
         applyMe((r && r.body) || {});
-        var guestRole = state.tokenAuth ? 'admin' : 'guest';
+        // R673 (2026-11-21): класс роли считается по ФАКТИЧЕСКИМ правам, а не только
+        // по аварийному токену: авторизованный администратор получал
+        // `auth-role-guest`. Сегодня класс никто не читает (влияния нет), но любой
+        // CSS/JS, начавший читать auth-role-*, скрыл бы админские действия у админа.
+        var guestRole = isAdminNow() ? 'admin' : 'guest';
         if (document.body && document.body.classList) {
           document.body.classList.add('auth-role-' + guestRole);
         }

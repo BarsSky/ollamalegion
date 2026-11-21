@@ -189,12 +189,44 @@ func decideWindowR493(in windowInputR493) windowDecisionR493 {
 	// обрыв чужого процесса), ни отказа (503 на вопрос в три токена).
 	// Растим только по требованию самого запроса: промпт не влезает ИЛИ клиент
 	// явно попросил окно больше загруженного.
-	if need, why := growthNeedR447(in.Estimated, in.Loaded, in.Requested); !need {
+	//
+	// R664 (2026-11-20): у решения теперь ЧЕТЫРЕ исхода, а не «расти / не расти».
+	// Явно заявленное клиентом окно — по-прежнему повод растить (R385), но если
+	// данные влезают в текущее окно, запрос обслуживается СРАЗУ с окном слота, а
+	// рост уходит в фон (growthBackgroundR664 → R385). Именно поэтому вид здесь
+	// windowServeR493, а не windowNoopR493: тело надо привести к загруженному
+	// окну, иначе воркер увидит чужой num_ctx (R301/R83). Такой же вид даёт
+	// исторический вердикт (growthVerdictLegacyR301) — паритет путей сохранён.
+	//
+	// Заявка выше физического потолка остаётся отказом (R83/R68): это требование
+	// клиента, которого модель выполнить не может; молча отдать меньшее окно —
+	// то самое «тихое понижение», против которого заведены R68/R140/R519.
+	action, actionWhy := growthActionForR664(in.Estimated, in.Loaded, in.Requested)
+	switch action {
+	case growthNoneR664:
 		// Делать нечего: клиент больше загруженного окна не просил, промпт с
 		// запасом под ответ влезает. Подменять num_ctx не нужно — он и так не
 		// больше загруженного.
 		d.Kind = windowNoopR493
-		d.Why = why
+		d.Why = actionWhy
+		return d
+	case growthBackgroundR664:
+		if ceilingPerClient > 0 && in.Requested > ceilingPerClient {
+			d.Kind = windowRefuseR493
+			d.Why = fmt.Sprintf(
+				"клиент заявил окно %d выше потолка на клиента %d (%s): рост невозможен, тихое меньшее окно недопустимо (R83)",
+				in.Requested, ceilingPerClient, actionWhy)
+			return d
+		}
+		d.Kind = windowServeR493
+		d.Why = "обслуживаем как есть, окно растим в фоне: " + actionWhy
+		return d
+	case growthRefuseR664:
+		// Шаг B (пока не включён): данные не влезают, роста клиент не просил —
+		// отказ с числами без перезагрузки.
+		d.Kind = windowDeferR493
+		d.RetryAfterSec = growthDeferRetryAfterSecR447
+		d.Why = "рост окна не запускаем (нет заявки клиента): " + actionWhy
 		return d
 	}
 

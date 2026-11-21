@@ -150,18 +150,18 @@ func TestR301_NonStreamingPathUnchanged(t *testing.T) {
 	p := newGrowthGuardProxyR299()
 
 	body := []byte(strings.Replace(r301StreamBody, `"stream":true`, `"stream":false`, 1))
-	if v := p.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", false); v.decided() {
-		t.Fatalf("без стримов и без перезагрузки рост возможен: verdict=%+v", v)
+	// R664: заявка клиента при влезающих данных обслуживается сразу (тело к окну
+	// слота), окно растёт в фоне — ожидания/отказа нет.
+	if v := p.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", false); v.Grow || v.Defer || !v.Served {
+		t.Fatalf("R664: ожидалось «обслужить сразу + рост в фоне», получено %+v", v)
 	}
 
 	stop := beginClientStreamR271(p, "bk-1", "m")
 	defer stop()
 	v := p.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", false)
-	if !v.Defer {
-		t.Fatal("при активном стриме рост отложен guard'ом R271 — нужен отказ (правило R299)")
-	}
-	if v.Active < 1 {
-		t.Fatalf("activeStreams = %d, want >= 1", v.Active)
+	// R664: обслуживаем сразу, рост — в фоне; активный стрим не повод отказать.
+	if v.Defer || v.Grow {
+		t.Fatalf("R664: ожидалось «обслужить сразу + рост в фоне», получено %+v", v)
 	}
 }
 

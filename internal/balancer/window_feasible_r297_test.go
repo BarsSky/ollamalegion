@@ -103,9 +103,15 @@ func TestR297_ContextGrowthNumbersRequestedFloor(t *testing.T) {
 	}
 }
 
-// TestR297_BlockerWhenReloadPending — «нет стримов» ≠ «рост возможен»: если
-// перезагрузка уже идёт, запрос всё равно откладывается (живой факт: 40.9 с
-// ожидания и тело с `active streams=0`).
+// TestR297_BlockerWhenReloadPending — «нет стримов» ≠ «рост возможен», но и
+// «перезагрузка идёт» ≠ «отказать обслуживаемому запросу» (R664).
+//
+// Живой факт R297 (до R664): при идущей перезагрузке второй запрос ждал 40.9 с и
+// получал 503 с `active streams=0` — счётчик уже обнулился, а окно вырасти не
+// могло. R664: если данные влезают в текущее окно, ждать нечего — запрос
+// обслуживается сразу, рост (в т.ч. уже идущий) поднимет окно между ходами.
+// Блокировка (ожидание слота) остаётся только тому, что без роста физически не
+// обслужить: промпт не влезает (R301/R447).
 func TestR297_BlockerWhenReloadPending(t *testing.T) {
 	p := &Proxy{
 		backends: map[string]*BackendState{
@@ -124,18 +130,29 @@ func TestR297_BlockerWhenReloadPending(t *testing.T) {
 		t.Fatal("не должны блокировать, когда рост возможен")
 	}
 
-	// Помечаем перезагрузку как идущую — теперь блокируем даже без стримов.
+	// R664: перезагрузка идёт, но данные (100 токенов) влезают в окно 16384 —
+	// запрос обслуживается сразу; блокировать нечего.
 	release, ok := p.nctxReload.BeginExternalReload("bk-1", "m")
 	if !ok {
 		t.Fatal("не удалось пометить перезагрузку идущей")
 	}
 	defer release()
-	blocked, needed, loaded := p.contextGrowthBlocker("bk-1", "m", meta)
-	if !blocked {
-		t.Fatal("при идущей перезагрузке запрос обязан откладываться, а не ждать слот")
+	if blocked, _, _ := p.contextGrowthBlocker("bk-1", "m", meta); blocked {
+		t.Fatal("R664: идущая перезагрузка не повод отложить запрос, который влезает в окно")
 	}
-	if needed != 32768 || loaded != 16384 {
-		t.Fatalf("числа отказа: needed=%d loaded=%d, want 32768/16384", needed, loaded)
+
+	// А вот данные, которые НЕ влезают, по-прежнему блокируются даже без стримов:
+	// «активных стримов нет» ≠ «рост возможен» (урок R297).
+	big := &RequestMeta{EstimatedPromptTokens: 20000, RequestedNCtxOverride: 0}
+	blocked, needed, loaded := p.contextGrowthBlocker("bk-1", "m", big)
+	if !blocked {
+		t.Fatal("промпт не влезает и перезагрузка идёт: ожидалась блокировка до старта потока")
+	}
+	if loaded != 16384 {
+		t.Fatalf("loaded = %d, want 16384", loaded)
+	}
+	if needed <= loaded {
+		t.Fatalf("needed = %d, loaded = %d: без роста обслужить нельзя, число обязано быть больше окна", needed, loaded)
 	}
 }
 

@@ -297,6 +297,54 @@ func (p *Proxy) growthVerdictLegacyR301(rid, backendID, model string, body []byt
 		return v
 	}
 
+	// R664 (2026-11-20): РАЗБИЕНИЕ «расти» на «в фоне» / «немедленно» / «отказ».
+	//
+	// Живые факты стенда (2026-11-20): (а) заявка клиента 16384 при окне 8192 и
+	// промпте 15 токенов давала перезагрузку модели и 59.7 с ожидания, хотя данные
+	// влезали; (б) промпт 13023 при окне 8192 и БЕЗ заявленного окна давал
+	// перезагрузку и 503 — рост запускался «потому что не хватает», без указания
+	// клиента. Правило: обслужить как есть, если данные влезают (рост — в фоне,
+	// когда клиент заявил больше); немедленный рост — только если данные не
+	// влезают И клиент заявил покрывающее окно; иначе отказ с числами без
+	// перезагрузки.
+	action, actionWhy := growthActionForR664(estimated, loaded, meta.RequestedNCtxOverride)
+	switch action {
+	case growthBackgroundR664:
+		// Запрос обслуживается немедленно; окно поднимаем между ходами.
+		v.Active, v.ReloadPending = growthBlockersR288(p, backendID, model)
+		if active, pending := v.Active, v.ReloadPending; active == 0 && !pending {
+			p.triggerBackgroundGrowthR664(backendID, model, meta.RequestedNCtxOverride)
+		} else {
+			logger.Get().Infow("R664: фоновый рост отложен — идут активные стримы или уже идёт перезагрузка",
+				"backend", backendID, "model", model,
+				"active_streams", active, "reload_pending", pending,
+				"requested_n_ctx", meta.RequestedNCtxOverride, "loaded_window_tokens", loaded)
+		}
+		// Тело приводим к окну слота — ровно так же, как это делал прежний путь
+		// «обслужить загруженным окном» (R301): воркер не должен получить num_ctx
+		// больше, чем у слота есть. Без этого ожидания (рост больше не блокирует)
+		// приведение всё равно нужно.
+		if meta.RequestedNCtxOverride > loaded {
+			if patched := patchNumCtxInBody(body, loaded); patched != nil {
+				v.Served = true
+				v.Body = patched
+			}
+		}
+		logger.Get().Infow("R664: рост окна не блокирует запрос — обслуживаем как есть, окно растим в фоне",
+			"backend", backendID, "model", model, "path", path,
+			"estimated_prompt_tokens", estimated, "loaded_window_tokens", loaded,
+			"requested_n_ctx", meta.RequestedNCtxOverride, "reason", actionWhy)
+		return v
+	case growthNoneR664:
+		logger.Get().Debugw("R447: рост окна не нужен — обслуживаем загруженным окном",
+			"backend", backendID, "model", model, "path", path, "streaming", streaming,
+			"estimated_prompt_tokens", estimated, "loaded_window_tokens", loaded,
+			"required_tokens", needed, "reason", actionWhy)
+		return v
+	}
+	// action == growthRequiredR664: данные не влезают И клиент заявил покрывающее
+	// окно — рост немедленный, ниже прежняя ветка R447/R385.
+
 	// R447 (2026-11-06): «окна мало» ≠ «окно надо растить».
 	//
 	// needed = оценка промпта + бюджет вывода, и бюджет — не требование модели:

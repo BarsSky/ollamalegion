@@ -61,41 +61,65 @@ func TestR299_GrowthDeferVerdict(t *testing.T) {
 		}
 	})
 
-	t.Run("идёт стрим — отвечаем сразу", func(t *testing.T) {
+	t.Run("идёт стрим, данные влезают — не откладываем", func(t *testing.T) {
 		p := newGrowthGuardProxyR299()
 		stop := beginClientStreamR271(p, "bk-1", "m")
 		defer stop()
-		deferNow, _, _, needed, active, pending := p.growthDeferR299("bk-1", "m", body, path)
-		if !deferNow {
-			t.Fatal("при активном стриме рост окна отложен guard'ом R271 — ждать preflight бессмысленно")
+		deferNow, _, loaded, needed, _, _ := p.growthDeferR299("bk-1", "m", body, path)
+		// R664 (шаг A): заявка клиента на большее окно при влезающих данных —
+		// не повод ждать перезагрузку. Guard отвечает «не откладываем»: запрос
+		// обслуживается сразу, окно уходит в фон. Прежний контракт (R299/R301)
+		// здесь отказывал 503 и требовал activeStreams в теле отказа — это ровно
+		// то ожидание, которое R664 убрал.
+		if deferNow {
+			t.Fatal("R664: активный стрим не повод отложить запрос, который влезает в окно")
 		}
-		if active < 1 {
-			t.Fatalf("activeStreams = %d, want >= 1: в отказе должно быть живое число", active)
+		if loaded != 8192 || needed != 32768 {
+			t.Fatalf("числа: loaded=%d needed=%d, want 8192/32768 (явно запрошенное окно, R330)", loaded, needed)
 		}
-		if pending {
+		// Решение «обслужить сразу + рост в фоне» и живые числа для лога теперь
+		// называет вердикт R301 — единственное место, где видно и действие, и
+		// занятость (раньше число стримов ехало в теле отказа, которого больше нет).
+		v := p.growthVerdictR301("rid-test", "bk-1", "m", body, path, true)
+		if v.Grow || v.Defer {
+			t.Fatalf("R664: ожидалось «обслужить сразу + рост в фоне», получено %+v", v)
+		}
+		if !v.Served {
+			t.Fatalf("R664: тело обязано быть приведено к окну слота, получено %+v", v)
+		}
+		if v.Active < 1 {
+			t.Fatalf("activeStreams = %d, want >= 1: вердикт обязан назвать живой счётчик, а не «по умолчанию 0»", v.Active)
+		}
+		if v.ReloadPending {
 			t.Fatal("reloadPending = true, хотя перезагрузка не начиналась")
-		}
-		if needed != 32768 {
-			t.Fatalf("needed = %d, want 32768", needed)
 		}
 	})
 
-	t.Run("идёт перезагрузка без стримов — тоже отвечаем сразу", func(t *testing.T) {
+	t.Run("идёт перезагрузка без стримов — тоже не откладываем", func(t *testing.T) {
 		p := newGrowthGuardProxyR299()
 		release, ok := p.nctxReload.BeginExternalReload("bk-1", "m")
 		if !ok {
 			t.Fatal("не удалось пометить перезагрузку идущей")
 		}
 		defer release()
-		deferNow, _, _, _, active, pending := p.growthDeferR299("bk-1", "m", body, path)
-		if !deferNow {
-			t.Fatal("перезагрузка идёт — окно вырастет не раньше её конца")
+		deferNow, _, loaded, needed, _, _ := p.growthDeferR299("bk-1", "m", body, path)
+		// R664: идущая перезагрузка не держит запрос, который влезает в окно, —
+		// она доделается в фоне и поднимет окно между ходами.
+		if deferNow {
+			t.Fatal("R664: идущая перезагрузка не блокирует обслуживаемый запрос")
 		}
-		if !pending {
-			t.Fatal("reloadPending = false, хотя перезагрузка помечена идущей")
+		if loaded != 8192 || needed != 32768 {
+			t.Fatalf("числа: loaded=%d needed=%d, want 8192/32768", loaded, needed)
 		}
-		if active != 0 {
-			t.Fatalf("activeStreams = %d, want 0: стримов нет, и это ЧЕСТНЫЙ ноль рядом с reloadPending", active)
+		v := p.growthVerdictR301("rid-test", "bk-1", "m", body, path, true)
+		if v.Grow || v.Defer || !v.Served {
+			t.Fatalf("R664: ожидалось «обслужить сразу + рост в фоне», получено %+v", v)
+		}
+		if !v.ReloadPending {
+			t.Fatal("reloadPending = false, хотя перезагрузка помечена идущей: вердикт теряет живой факт")
+		}
+		if v.Active != 0 {
+			t.Fatalf("activeStreams = %d, want 0: стримов нет, и это ЧЕСТНЫЙ ноль рядом с reloadPending", v.Active)
 		}
 	})
 
@@ -111,11 +135,27 @@ func TestR299_GrowthDeferVerdict(t *testing.T) {
 }
 
 // TestR299_PreflightGuardAnswersBeforeWorkerCall — ЖИВОЙ СЦЕНАРИЙ (88.2 с):
-// guard обязан ответить ДО любого сетевого preflight.
+// решение об окне принимается ДО любого сетевого preflight.
 //
 // Проверяем именно поведение, а не порядок строк: фейковый воркер считает
-// запросы, и их ДОЛЖНО БЫТЬ НОЛЬ — если бы RunPreflight успел запуститься, счётчик
-// вырос бы (а на живом стенде это те самые 88 секунд).
+// запросы, и их ДОЛЖНО БЫТЬ НОЛЬ — если бы до сети дело дошло, счётчик вырос бы
+// (а на живом стенде это те самые 88 секунд).
+//
+// ЧТО ИЗМЕНИЛОСЬ ПОСЛЕ R664 (шаг A). Раньше guard на этом входе отвечал
+// 503 «перезагрузка идёт, повтори позже»: он видел «окно мало» (заявка 32768
+// при загруженных 8192) + активный стрим. R664 убрал это ожидание для запроса,
+// данные которого ВЛЕЗАЮТ в окно: ждать нечего — запрос обслуживается сразу,
+// рост уходит в фон (R301 → growthBackgroundR664 → R385). Поэтому guard больше
+// не отказывает, и запрос доходит до preflight-движка, а тот в этой фикстуре
+// отвечает 413: авто-reload ВЫКЛЮЧЕН (AutoReloadNCtx=false) — оператор запретил
+// рост, а по R83 явно заявленное клиентом окно — требование, а не пожелание,
+// молча обслужить меньшим окном нельзя. Это отказ ДО сети и ДО воркера; R299-
+// ожидания в нём нет: ни reload, ни 503+Retry-After не запускаются.
+//
+// То есть тест закрепляет ГЛАВНОЕ правило R299 (сеть и воркер — только ПОСЛЕ
+// решения; ответ мгновенный) на фактическом контракте R664: «отложить и
+// подождать» больше не ответ для влезающего запроса — ответ либо
+// «обслужить сразу + рост в фоне» (R301/R385), либо отказ без ожидания.
 func TestR299_PreflightGuardAnswersBeforeWorkerCall(t *testing.T) {
 	var workerCalls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +175,14 @@ func TestR299_PreflightGuardAnswersBeforeWorkerCall(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(r299ChatBody))
 
+	// Сценарий обязан быть ровно тем случаем, который R664 вывел из ожидания:
+	// данные влезают, клиент заявил больше загруженного → рост в фоне.
+	estimated, loaded, _ := p.contextGrowthNumbers("bk-1", "m", body, "/api/chat")
+	if action, _ := growthActionForR664(estimated, loaded, 32768); action != growthBackgroundR664 {
+		t.Fatalf("сценарий теста обязан быть growthBackgroundR664, получено %s (estimated=%d loaded=%d)",
+			action.String(), estimated, loaded)
+	}
+
 	start := time.Now()
 	handled, res := lr.runInferencePreflight(runInferencePreflightArgs{
 		w: rec, r: req, body: body, model: "m",
@@ -145,36 +193,34 @@ func TestR299_PreflightGuardAnswersBeforeWorkerCall(t *testing.T) {
 	if !handled {
 		t.Fatal("запрос не обработан: preflight пошёл в сеть, хотя решение уже известно")
 	}
-	if res == nil || res.Decision != PreflightAsyncReload {
-		t.Fatalf("decision = %v, want async reload (отложено, повтори позже)", res)
-	}
 	if n := atomic.LoadInt32(&workerCalls); n != 0 {
 		t.Fatalf("воркер получил %d запрос(ов): guard сработал ПОСЛЕ preflight (живой дефект 88.2 с)", n)
 	}
 	if elapsed > 3*time.Second {
 		t.Fatalf("ответ занял %v: guard не перед preflight'ом", elapsed)
 	}
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("код = %d, want 503 (запрос корректный, окно мало)", rec.Code)
+	// Отказ — от kill-switch'а авто-reload'а, а не R299-ожидание (не 503+Retry-After).
+	if res == nil || res.Decision != PreflightReject {
+		t.Fatalf("decision = %+v, want 413 reject (авто-reload выключен в фикстуре)", res)
+	}
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("код = %d, want 413", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("Retry-After = %q: это ответ «повтори позже» (R299-ожидание), которого после R664 быть не должно", got)
 	}
 	var respBody map[string]interface{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &respBody); err != nil {
 		t.Fatalf("тело не JSON: %v (%s)", err, rec.Body.String())
 	}
-	if respBody["deferredReason"] != "context_growth_pending" {
-		t.Fatalf("deferredReason = %v, want context_growth_pending (единый формат R291)", respBody["deferredReason"])
+	if _, ok := respBody["deferredReason"]; ok {
+		t.Fatalf("тело «отложено» (R291) вернулось: %v", respBody)
 	}
-	if respBody["requiredTokens"] != float64(32768) || respBody["loadedWindowTokens"] != float64(8192) {
-		t.Fatalf("числа в отказе: %v, want requiredTokens=32768 loadedWindowTokens=8192", respBody)
+	if reason, _ := respBody["reason"].(string); !strings.Contains(reason, "auto_reload_n_ctx is disabled") {
+		t.Fatalf("причина не называет kill-switch авто-reload'а: %v", respBody["reason"])
 	}
-	if respBody["activeStreams"] != float64(1) {
-		t.Fatalf("activeStreams = %v, want 1 (живой счётчик, а не «по умолчанию 0»)", respBody["activeStreams"])
-	}
-	if respBody["reloadPending"] != false {
-		t.Fatalf("reloadPending = %v, want false", respBody["reloadPending"])
-	}
-	if got := rec.Header().Get("Retry-After"); got == "" {
-		t.Fatal("нет Retry-After: клиент не знает, когда повторять")
+	if respBody["required_n_ctx"] != float64(32768) || respBody["current_n_ctx"] != float64(8192) {
+		t.Fatalf("числа в отказе: %v, want required_n_ctx=32768 current_n_ctx=8192", respBody)
 	}
 }
 

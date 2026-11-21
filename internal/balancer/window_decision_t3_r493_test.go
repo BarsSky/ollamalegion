@@ -80,12 +80,15 @@ func TestR493_DecideWindow_Kinds(t *testing.T) {
 			want: windowNoopR493,
 		},
 		{
-			// R385: клиент ЯВНО попросил окно больше загруженного — это и есть
-			// требование роста, даже если промпт короткий.
-			name: "клиент просит больше загруженного — рост",
+			// R664 (шаг A): клиент ЯВНО попросил окно больше загруженного — рост
+			// по-прежнему нужен (R385), но цена больше не ложится на этот запрос:
+			// данные влезают, поэтому обслуживаем сразу с окном слота, а окно
+			// поднимаем в фоне. Вид — «обслужить», а не «расти»: тело обязано
+			// получить num_ctx не больше загруженного (R301/R83).
+			name: "клиент просит больше загруженного — обслужить сразу, рост в фоне",
 			in: windowInputR493{Needed: 16384, Estimated: 900, Requested: 16384,
 				Loaded: 8192, Ceiling: 262144},
-			want: windowGrowR493,
+			want: windowServeR493,
 		},
 		{
 			// R447: промпт влезает, клиент больше не просил — обслуживаем как есть.
@@ -217,14 +220,19 @@ func TestR493_DecideWindow_NeverShrinkMapsToServe(t *testing.T) {
 
 // TestR493_VerdictMapping_Refuse — «рост невозможен» не значит «отказать»:
 // запрос обслуживается, если влезает сам промпт, и отказывается, если нет.
+//
+// R664 (шаг A): выключатель роста отменяет только РОСТ. Заявка клиента на
+// большее окно при влезающих данных — не отказ, а «обслужить сразу + рост в
+// фоне» (growthBackgroundR664); отказ остаётся тому, что окно обслужить не
+// может (промпт не влезает — R447/R301).
 func TestR493_VerdictMapping_Refuse(t *testing.T) {
 	blocked := windowInputR493{
 		Needed: 16384, Estimated: 900, Requested: 16384, Loaded: 8192,
 		GrowBlockedBy: "рост окна на стриминге выключен",
 	}
 	d := decideWindowR493(blocked)
-	if d.Kind != windowRefuseR493 {
-		t.Fatalf("вид = %q, ожидался отказ (%s)", d.Kind, d.Why)
+	if d.Kind != windowServeR493 {
+		t.Fatalf("вид = %q, ожидалось «обслужить» (%s)", d.Kind, d.Why)
 	}
 	if !d.PromptFits {
 		t.Fatal("промпт 900 в окне 8192 обязан влезать")
@@ -299,10 +307,14 @@ func TestR493_PathParity_SameVerdictOnAllPaths(t *testing.T) {
 		body   string
 		loaded int
 		want   windowKindR493
+		// planGrow — растёт ли ОКНО по плану R385. Для R664 это не то же самое,
+		// что действие с ЭТИМ запросом: заявка клиента обслуживается сразу
+		// (serve), а рост ставится в фон — план роста при этом есть.
+		planGrow bool
 	}{
-		{"окно достаточно", r301StreamBody, 16384, windowNoopR493},
-		{"клиент просит больше загруженного — рост (R385)", r301StreamBody, 8192, windowGrowR493},
-		{"длинный промпт, роста никто не мешает", r301LongStreamBody(), 8192, windowGrowR493},
+		{"окно достаточно", r301StreamBody, 16384, windowNoopR493, false},
+		{"клиент просит больше загруженного — обслужить сразу, рост в фоне (R664)", r301StreamBody, 8192, windowServeR493, true},
+		{"длинный промпт, роста никто не мешает", r301LongStreamBody(), 8192, windowGrowR493, true},
 	}
 
 	for _, tc := range cases {
@@ -352,13 +364,15 @@ func TestR493_PathParity_SameVerdictOnAllPaths(t *testing.T) {
 			}
 
 			// Путь 3: план роста R385 (исторический расчёт цели) обязан согласиться
-			// с единым решением о том, РАСТИМ ли (цель считает growthTargetR493).
+			// с единым решением о том, РАСТЁТ ли ОКНО (цель считает growthTargetR493).
+			// R664: расти и «обслужить этот запрос» — разные вопросы; для заявки
+			// клиента план роста есть, а действие с запросом — serve.
 			plan := p.streamGrowthPlanR385("b1", model, streamDecision.Needed)
-			if plan.Grow != (tc.want == windowGrowR493) {
+			if plan.Grow != tc.planGrow {
 				t.Fatalf("plan.Grow=%t при виде %q (refuse=%q note=%q)",
 					plan.Grow, tc.want, plan.Refuse, plan.Note)
 			}
-			if plan.Grow && plan.Target != streamDecision.Target {
+			if tc.want == windowGrowR493 && plan.Grow && plan.Target != streamDecision.Target {
 				t.Fatalf("цель R385 %d разошлась с целью решения %d", plan.Target, streamDecision.Target)
 			}
 		})

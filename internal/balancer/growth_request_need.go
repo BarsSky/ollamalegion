@@ -48,24 +48,92 @@ import "fmt"
 //
 // estimated <= 0 означает «оценки промпта нет»: сравнивать нечего, полагаемся
 // только на явно запрошенное окно.
+//
+// R664 (2026-11-20): функция отвечает только на вопрос «нужен ли НЕМЕДЛЕННЫЙ
+// рост» (иначе запрос не обслужить). Полное решение — growthActionForR664:
+// обслужить как есть / вырасти в фоне / вырасти немедленно / отказать с числами.
 func growthNeedR447(estimated, loaded, requested int) (need bool, why string) {
+	action, why := growthActionForR664(estimated, loaded, requested)
+	return action == growthRequiredR664, why
+}
+
+// growthActionR664 — что делать с окном по этому запросу.
+type growthActionR664 int
+
+const (
+	// growthNoneR664 — обслужить загруженным окном, окно не трогать.
+	growthNoneR664 growthActionR664 = iota
+	// growthBackgroundR664 — обслужить сейчас, окно поднять в фоне: клиент заявил
+	// больше загруженного, но текущие данные влезают (R664: проактивная просьба
+	// агента не должна держать его запрос минуты).
+	growthBackgroundR664
+	// growthRequiredR664 — обслужить нельзя: данные не влезают и клиент заявил
+	// покрывающее окно. Рост немедленный, запрос ждёт/повторяет.
+	growthRequiredR664
+	// growthRefuseR664 — обслужить нельзя, но роста клиент не просил: отказ с
+	// числами, модель НЕ перезагружаем.
+	growthRefuseR664
+)
+
+// String — человекочитаемое имя действия (для логов: оператор не должен
+// расшифровывать числа).
+func (a growthActionR664) String() string {
+	switch a {
+	case growthBackgroundR664:
+		return "grow_in_background"
+	case growthRequiredR664:
+		return "grow_now"
+	case growthRefuseR664:
+		return "refuse_with_numbers"
+	default:
+		return "none"
+	}
+}
+
+// growthActionForR664 — ОДНО правило «что делать с окном» (R664, шаг A).
+//
+// ЖИВОЙ РАЗБОР (двухузловой стенд, 2026-11-20). Клиент «сжал» контекст и заявил
+// окно меньше загруженного — балансер обслуживал как есть (и это правильно). А
+// когда клиент заявлял окно больше загруженного при промпте в 15 токенов,
+// балансер перезагружал модель (59.7 с на 4B, минуты на 27B) и держал запрос всё
+// это время — хотя данные влезали в текущее окно с запасом.
+//
+// ШАГ A (этот). Триггер роста прежний — ЗАЯВКА КЛИЕНТА (как и в старом
+// контракте). Меняется только ЦЕНА: если данные влезают в текущее окно, запрос
+// обслуживается СРАЗУ, а окно поднимается в фоне до заявленного значения.
+// Остальные ветки старого контракта сохранены: данные не влезают — рост, как и
+// было (шаг B, «отказ вместо роста без заявки», вынесен отдельно).
+//
+// ПРАВИЛО:
+//
+//	данные влезают с местом под ответ, заявки больше загруженного нет → ничего
+//	данные влезают, клиент заявил больше загруженного                    → ФОН
+//	данные влезают, но под ответ меньше минимума                        → рост (как было)
+//	данные не влезают                                                   → рост (как было)
+//
+// Цель роста — РОВНО заявленное клиентом окно (для фоновой ветки), а не оценка
+// промпта и не профиль: иначе окно уползало бы к числу, которого клиент не просил.
+func growthActionForR664(estimated, loaded, requested int) (growthActionR664, string) {
 	if loaded <= 0 {
-		// Загруженное окно неизвестно — спекулировать нечем, решение принимает
-		// прежний путь (R299/R301 по своим правилам).
-		return false, "загруженное окно неизвестно"
+		return growthNoneR664, "загруженное окно неизвестно"
 	}
-	if estimated > 0 {
-		if estimated > loaded {
-			return true, fmt.Sprintf("промпт (%d) не влезает в окно слота (%d)", estimated, loaded)
+	dataFits := estimated <= 0 || estimated <= loaded
+	if dataFits {
+		if requested > loaded {
+			return growthBackgroundR664, fmt.Sprintf(
+				"клиент заявил окно %d больше загруженного %d, данные (%d) влезают — рост в фоне",
+				requested, loaded, estimated)
 		}
-		if room := loaded - estimated; room < agentOutputReserveMinTokens {
-			return true, fmt.Sprintf("под ответ остаётся %d токенов (промпт %d, окно %d), меньше минимума %d",
-				room, estimated, loaded, agentOutputReserveMinTokens)
+		if estimated > 0 {
+			if room := loaded - estimated; room < agentOutputReserveMinTokens {
+				return growthRequiredR664, fmt.Sprintf(
+					"под ответ остаётся %d токенов (промпт %d, окно %d), меньше минимума %d",
+					room, estimated, loaded, agentOutputReserveMinTokens)
+			}
 		}
+		return growthNoneR664, fmt.Sprintf(
+			"данные (%d) влезают в окно слота (%d) с местом под ответ, клиент больше не просил", estimated, loaded)
 	}
-	if requested > loaded {
-		return true, fmt.Sprintf("клиент попросил окно %d больше загруженного %d", requested, loaded)
-	}
-	return false, fmt.Sprintf("промпт (%d) влезает в окно слота (%d) с местом под ответ, клиент больше не просил",
-		estimated, loaded)
+	return growthRequiredR664, fmt.Sprintf(
+		"промпт (%d) не влезает в окно слота (%d)", estimated, loaded)
 }

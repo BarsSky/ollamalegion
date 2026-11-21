@@ -25,11 +25,9 @@ func TestR385_StreamingGrowsInsteadOfServing(t *testing.T) {
 	p := newGrowthGuardProxyR299()
 
 	v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
-	if !v.Grow {
-		t.Fatalf("ожидался рост окна (needed=%d loaded=%d), получено %+v", v.Needed, v.Loaded, v)
-	}
-	if v.Served || v.Defer {
-		t.Fatalf("рост несовместим с Served/Defer: %+v", v)
+	// R664: обслуживаем сразу, окно — в фоне (Served=true, без ожидания).
+	if v.Grow || v.Defer || !v.Served {
+		t.Fatalf("R664: ожидалось «обслужить сразу + рост в фоне», получено %+v", v)
 	}
 	if v.Needed <= v.Loaded {
 		t.Fatalf("нужное окно %d не больше загруженного %d — вердикт не про рост", v.Needed, v.Loaded)
@@ -55,21 +53,15 @@ func TestR385_PreflightStartsReloadAndAsksRetry(t *testing.T) {
 	body, needsProxy, msg, status := p.preflightNCtxReloadIfNeeded(
 		httptest.NewRequest(http.MethodPost, "/api/chat", nil).Context(),
 		"bk-1", "m", []byte(r301StreamBody), "/api/chat")
-	if needsProxy {
-		t.Fatal("рост окна требует перезагрузки: запрос нельзя пропускать дальше как есть")
+	// R664: заявка клиента при влезающих данных — запрос проксируется сразу,
+	// окно растёт в фоне (никакого 503 «перезагрузка идёт»).
+	if !needsProxy {
+		t.Fatalf("R664: запрос обязан идти дальше без ожидания перезагрузки (status=%d msg=%q)", status, msg)
 	}
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("HTTP %d, ожидался 503 (перезагрузка идёт)", status)
+	if string(body) == r301StreamBody {
+		t.Fatal("R664: тело должно быть приведено к окну слота (num_ctx ≤ загруженного)")
 	}
-	if !strings.Contains(msg, "started reloading") {
-		t.Fatalf("в причине нет факта начала перезагрузки: %q", msg)
-	}
-	if !strings.Contains(msg, "16384") || !strings.Contains(msg, "8192") {
-		t.Fatalf("в причине нет чисел нужно/загружено: %q", msg)
-	}
-	if string(body) != r301StreamBody {
-		t.Fatal("тело изменилось: при росте окна его нельзя подменять на меньшее")
-	}
+	_ = msg
 }
 
 // TestR385_NoGrowthWhileStreamActive — идёт стрим: рост НЕ запускаем (иначе

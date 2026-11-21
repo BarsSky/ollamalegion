@@ -74,9 +74,20 @@ func TestR294_OutputBudgetNeverZero(t *testing.T) {
 	}
 }
 
-// TestR294_ContextGrowthBlocksOnRequestedWindow — клиент просит окно больше
-// загруженного, и на бэкенде идёт чужой стрим: отказываем ДО стрима, а не
-// получаем кадр ошибки внутри потока (и зависание /v1).
+// TestR294_ContextGrowthBlocksOnRequestedWindow — блокировка (ожидание роста)
+// остаётся ТОЛЬКО там, где без роста запрос физически не обслужить.
+//
+// ЖИВОЕ ПРАВИЛО R294 НЕ МЕНЯЛОСЬ: окно никогда не уменьшается (пол — загруженное
+// окно слота), см. TestR294_LoadedWindowIsFloor и
+// TestR294_RequestedWindowIsLowerBound. Меняется ДРУГОЕ — цена заявки клиента.
+//
+// До R664 (шаг A) «клиент просит окно больше загруженного» при чужом стриме
+// означало отказ до старта потока. R664 + R447: если данные влезают в текущее
+// окно, запрос обслуживается СРАЗУ, а окно растёт в фоне до заявленного
+// (growthBackgroundR664 → R385) — держать его в очереди 900 с не за что.
+// Ожидание (блокировка) оправдано только когда данные НЕ влезают: тогда без
+// роста воркер ответил бы кадром ошибки, и запрос должен ждать освобождения
+// бэкенда, как и раньше (R288/R299/R301).
 func TestR294_ContextGrowthBlocksOnRequestedWindow(t *testing.T) {
 	p := &Proxy{
 		metricsMgr: NewMetricsManager(),
@@ -89,22 +100,38 @@ func TestR294_ContextGrowthBlocksOnRequestedWindow(t *testing.T) {
 	}
 	p.metricsMgr.mu.Unlock()
 
-	meta := &RequestMeta{ModelName: model, EstimatedPromptTokens: 20, RequestedNCtxOverride: 16384}
-
 	// Без активных стримов — не вмешиваемся: preflight может вырасти.
+	meta := &RequestMeta{ModelName: model, EstimatedPromptTokens: 20, RequestedNCtxOverride: 16384}
 	if blocked, _, _ := p.contextGrowthBlocker(backendID, model, meta); blocked {
 		t.Fatal("без активных стримов блокировать нельзя: рост окна возможен")
 	}
 
-	// С активным стримом — рост отложен, значит отказ с числами.
 	stop := beginClientStreamR271(p, backendID, model)
 	defer stop()
+
+	// R664: данные влезают (20 токенов при окне 8192) — не блокируем: обслуживаем
+	// сразу, окно поднимаем в фоне. Числа для лога/отказа остаются прежними.
 	blocked, needed, loaded := p.contextGrowthBlocker(backendID, model, meta)
-	if !blocked {
-		t.Fatal("активный стрим + запрос большего окна: ожидался отказ до старта потока")
+	if blocked {
+		t.Fatal("R664: активный стрим + влезающие данные — запрос обслуживается сразу, блокировки нет")
 	}
 	if needed != 16384 {
 		t.Errorf("needed = %d, want 16384 (запрошенное клиентом окно)", needed)
+	}
+	if loaded != 8192 {
+		t.Errorf("loaded = %d, want 8192", loaded)
+	}
+
+	// А вот данные, которые НЕ влезают, по-прежнему ждут: без роста обслужить
+	// физически нельзя (воркер ответит кадром ошибки — R301), и занимать слот
+	// под заведомо невыполнимый запрос нельзя (R288/R299).
+	big := &RequestMeta{ModelName: model, EstimatedPromptTokens: 20000, RequestedNCtxOverride: 0}
+	blocked, needed, loaded = p.contextGrowthBlocker(backendID, model, big)
+	if !blocked {
+		t.Fatal("данные не влезают и рост отложен стримом: ожидалась блокировка до старта потока")
+	}
+	if needed <= loaded {
+		t.Errorf("needed = %d, loaded = %d: без роста обслужить нельзя, число обязано быть больше окна", needed, loaded)
 	}
 	if loaded != 8192 {
 		t.Errorf("loaded = %d, want 8192", loaded)

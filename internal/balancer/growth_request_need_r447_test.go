@@ -82,13 +82,22 @@ func TestR447_SmallPromptOnSmallWindowIsNotRefused(t *testing.T) {
 	}
 }
 
-// TestR447_ClientAskedWindowStillGrows — требование клиента (R385) не отменено.
-func TestR447_ClientAskedWindowStillGrows(t *testing.T) {
+// TestR664_ClientAskedWindowGrowsInBackground — R664 (шаг A): заявка клиента на
+// большее окно НЕ отменена, но и не блокирует запрос: обслуживаем сразу, окно —
+// в фоне. Старый контракт: Grow=true и ожидание (живой факт: 59.7 с на запрос с
+// промптом 15 токенов).
+func TestR664_ClientAskedWindowGrowsInBackground(t *testing.T) {
 	p := newGrowthGuardProxyR299() // окно 8192, в теле num_ctx=16384
 
 	v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
-	if !v.Grow {
-		t.Fatalf("клиент попросил 16384 при загруженных 8192 — рост обязателен, получено %+v", v)
+	if v.Grow {
+		t.Fatalf("R664: рост по заявке не блокирует запрос (Grow=true), получено %+v", v)
+	}
+	if v.Defer {
+		t.Fatalf("R664: заявка клиента — не повод отказать, получено %+v", v)
+	}
+	if !v.Served {
+		t.Fatalf("R664: тело обязано быть приведено к окну слота, получено %+v", v)
 	}
 }
 
@@ -115,10 +124,10 @@ func TestR447_GrowthNeedRule(t *testing.T) {
 		{"промпт влезает, но под ответ меньше минимума", 2000, 2048, 0, true},
 		{"промпт съел окно целиком", 2048, 2048, 0, true},
 		{"промпт не влезает", 4096, 2048, 0, true},
-		{"клиент попросил больше загруженного", 3, 2048, 32768, true},
+		{"клиент попросил больше загруженного (R664: рост в фоне, не немедленный)", 3, 2048, 32768, false},
 		{"клиент попросил ровно загруженное", 3, 2048, 2048, false},
 		{"оценки нет, окно не просили", 0, 2048, 0, false},
-		{"оценки нет, клиент попросил больше", 0, 2048, 4096, true},
+		{"оценки нет, клиент попросил больше (R664: рост в фоне)", 0, 2048, 4096, false},
 		{"загруженное окно неизвестно", 3, 0, 16384, false},
 	}
 	for _, tc := range cases {

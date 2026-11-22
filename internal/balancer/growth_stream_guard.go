@@ -82,6 +82,12 @@ type growthVerdictR301 struct {
 	// запрос больше не «довольствуется» загруженным окном, если модель можно
 	// перезагрузить: это требование оператора (см. stream_growth.go).
 	Grow bool
+	// Background — R664 (исправление живого прогона r679): рост по заявке клиента
+	// нужен, но его нельзя исполнять под текущим ходом — заявка уходит в очередь
+	// отложенного роста (growth_deferral.go) и исполняется после хода.
+	// BackgroundTarget — окно НА КЛИЕНТА (ровно заявленное клиентом).
+	Background       bool
+	BackgroundTarget int
 	// Refuse — R664 (шаг B): данные не влезают, а окно клиент НЕ заявил. Роста не
 	// будет (основание — только заявка, R83/R68), поэтому ответ окончательный:
 	// 413 context_window_exhausted_no_growth_request с числами (Required —
@@ -177,6 +183,18 @@ func (p *Proxy) growthVerdictUnifiedR493(rid, backendID, model string, body []by
 		}
 	}
 	logWindowDecisionR493("growth-verdict", backendID, model, path, d)
+	// R664 (исправление живого прогона r679): «обслужить сейчас + поднять окно»
+	// ставит заявку в очередь отложенного роста. Исполнится она ПОСЛЕ хода
+	// (growth_deferral.go), а не здесь: preflight не имеет права запускать
+	// unload+load под обслуживаемым запросом.
+	if v.Background {
+		p.deferGrowthAfterTurnR664(queuedGrowthR664{
+			backendID: backendID,
+			model:     model,
+			target:    v.BackgroundTarget,
+			streaming: streaming,
+		})
+	}
 	return v, true
 }
 
@@ -222,6 +240,12 @@ func windowVerdictFromDecisionR493(rid string, d windowDecisionR493, streaming b
 		return v, false
 	case windowServeR493:
 		v.Served = true
+		// R664 (исправление живого прогона r679): «обслужить и вырасти в фоне» —
+		// это два разных действия, и второе нельзя исполнять под текущим ходом.
+		// Решение только помечает заявку; в очередь её ставит вызывающий
+		// (growthVerdictUnifiedR493 — тот же путь, что и у исторического вердикта).
+		v.Background = d.Background
+		v.BackgroundTarget = d.BackgroundTarget
 		return v, true
 	case windowDeferR493:
 		if streaming {
@@ -337,29 +361,43 @@ func (p *Proxy) growthVerdictLegacyR301(rid, backendID, model string, body []byt
 	switch action {
 	case growthBackgroundR664:
 		// Запрос обслуживается немедленно; окно поднимаем между ходами.
+		//
+		// ИСПРАВЛЕНО ПО ЖИВОМУ ПРОГОНУ `balancer:r261120-r679` (2026-11-20).
+		// Здесь стоял СИНХРОННЫЙ вызов triggerBackgroundGrowthR664, то есть
+		// перезагрузка запускалась прямо из preflight — ДО того, как текущий
+		// запрос зарегистрируется стримом (beginClientStreamR271 стоит в
+		// транспорте, после admission и после ответа апстрима). Проверка
+		// занятости видела 0 стримов, deferDestructiveOpR291 — тоже, и unload+load
+		// шёл под обслуживаемым запросом: первый байт клиента приходил через
+		// 46.9 с (`load_duration=46.925 s`), а лог утверждал «запрос
+		// обслуживается сейчас, окно растим в фоне».
+		//
+		// ТЕПЕРЬ preflight только СТАВИТ ЗАЯВКУ В ОЧЕРЕДЬ (growth_deferral.go):
+		// исполняет её тот, кто завершил ход, и только когда на бэкенде нет ни
+		// одного хода клиента и ни одного стрима. Числа занятости при этом
+		// по-прежнему попадают в вердикт и в лог — для живого разбора.
 		v.Active, v.ReloadPending = growthBlockersR288(p, backendID, model)
-		if active, pending := v.Active, v.ReloadPending; active == 0 && !pending {
-			p.triggerBackgroundGrowthR664(backendID, model, meta.RequestedNCtxOverride)
-		} else {
-			logger.Get().Infow("R664: фоновый рост отложен — идут активные стримы или уже идёт перезагрузка",
-				"backend", backendID, "model", model,
-				"active_streams", active, "reload_pending", pending,
-				"requested_n_ctx", meta.RequestedNCtxOverride, "loaded_window_tokens", loaded)
-		}
+		queued := p.deferGrowthAfterTurnR664(queuedGrowthR664{
+			backendID: backendID,
+			model:     model,
+			target:    meta.RequestedNCtxOverride,
+			streaming: streaming,
+		})
 		// Тело приводим к окну слота — ровно так же, как это делал прежний путь
 		// «обслужить загруженным окном» (R301): воркер не должен получить num_ctx
-		// больше, чем у слота есть. Без этого ожидания (рост больше не блокирует)
-		// приведение всё равно нужно.
+		// больше, чем у слота есть. Без этого отложенный рост всё равно оставил бы
+		// запрос необслуженным (воркер ответил бы кадром ошибки).
 		if meta.RequestedNCtxOverride > loaded {
 			if patched := patchNumCtxInBody(body, loaded); patched != nil {
 				v.Served = true
 				v.Body = patched
 			}
 		}
-		logger.Get().Infow("R664: рост окна не блокирует запрос — обслуживаем как есть, окно растим в фоне",
+		logger.Get().Infow("R664: рост окна не блокирует запрос — обслуживаем как есть, окно растим после хода",
 			"backend", backendID, "model", model, "path", path,
 			"estimated_prompt_tokens", estimated, "loaded_window_tokens", loaded,
-			"requested_n_ctx", meta.RequestedNCtxOverride, "reason", actionWhy)
+			"requested_n_ctx", meta.RequestedNCtxOverride, "reason", actionWhy,
+			"growth_queued", queued, "active_streams", v.Active, "reload_pending", v.ReloadPending)
 		return v
 	case growthNoneR664:
 		logger.Get().Debugw("R447: рост окна не нужен — обслуживаем загруженным окном",

@@ -154,6 +154,92 @@ func makeWindowTooBigReject(
 // понятно, что заявить»).
 const contextWindowExhaustedCodeR664 = "context_window_exhausted_no_growth_request"
 
+// windowCeilingNumbersR664 — ПОТОЛКИ окна для тела отказа шага B.
+//
+// ЗАЧЕМ ОТДЕЛЬНЫЙ ТИП (живой дефект прогона r679). Сборщик тела принимал
+// одиннадцать ПОЗИЦИОННЫХ чисел, и стриминговый путь передавал на месте трёх
+// потолков «0, 0, 0». Компилятор такой пропуск не видит, читатель — тоже, а
+// клиент получал отказ, в котором `physical_ceiling_tokens`/`gguf_max_context`/
+// `auto_reload_max_n_ctx` равны нулю при реальных 65536/131072/65536. Ноль в этих
+// полях читается как «потолок неизвестен», то есть «заявить больше нельзя» —
+// ровно противоположное тому, что нужно сказать.
+//
+// Теперь потолки — ИМЕНОВАННЫЕ поля, и заполняет их одна из двух функций сборки,
+// каждая из своего источника. Формула одна на обе: `resolvePhysicalMaxContext`
+// (R265) — вторая не заводится.
+type windowCeilingNumbersR664 struct {
+	// Physical — СУММАРНЫЙ физический потолок модели
+	// (min(GGUF, contextLengthMax профиля, операторский потолок)). 0 = неизвестен.
+	Physical int
+	// GGUF — потолок обучения модели из метаданных GGUF (0 = воркер не сообщил).
+	GGUF int
+	// AutoReload — операторский потолок авто-роста (LB_NCTX_RELOAD_MAX_N_CTX).
+	AutoReload int
+}
+
+// ceilingNumbersFromStateR664 — потолки из СОБРАННОГО состояния preflight-движка.
+//
+// Источник — NCtxBackendState: он собран один раз и на момент решения
+// зафиксирован (R265: повторный поход в метрики посреди решения менял бы картину).
+func ceilingNumbersFromStateR664(state *NCtxBackendState) windowCeilingNumbersR664 {
+	if state == nil {
+		return windowCeilingNumbersR664{}
+	}
+	return windowCeilingNumbersR664{
+		Physical:   state.physicalCeiling(),
+		GGUF:       state.GGUFMaxContext,
+		AutoReload: state.AutoReloadMaxNCtx,
+	}
+}
+
+// ceilingNumbersForR664 — те же потолки для путей, у которых нет состояния
+// preflight-движка (транспортный вердикт R301 на стриминге).
+//
+// Источники ТЕ ЖЕ, что у сборки состояния: GGUF именно этой модели
+// (ggufMaxContextForModel), потолок профиля (profileCapCtx с fold — как у
+// physicalNumCtxCeiling) и операторский потолок (preflightAutoReloadMaxNCtx), и
+// одна формула resolvePhysicalMaxContext. Именно поэтому тела отказа двух путей
+// совпадают, а не «примерно похожи».
+//
+// Physical берётся у physicalNumCtxCeiling — той же функции, которой вердикт
+// считает available_context_tokens: иначе два числа одного тела могли бы
+// разойтись (available больше физического потолка — абсурд для клиента).
+func (p *Proxy) ceilingNumbersForR664(backendID, model string) windowCeilingNumbersR664 {
+	if p == nil {
+		return windowCeilingNumbersR664{}
+	}
+	return windowCeilingNumbersR664{
+		Physical:   p.physicalNumCtxCeiling(model, backendID),
+		GGUF:       p.ggufMaxContextForModel(backendID, model),
+		AutoReload: preflightAutoReloadMaxNCtx(p),
+	}
+}
+
+// windowRejectNumbersR664 — ВСЕ числа тела отказа шага B.
+//
+// Одна структура вместо одиннадцати позиционных аргументов: живой дефект r679
+// состоял ровно в том, что три из них были переданы нулями, и заметить это можно
+// было только на стенде — по ответу клиенту. Теперь пропустить поле нельзя
+// незаметно: его видно и в месте вызова, и в имени структуры.
+type windowRejectNumbersR664 struct {
+	BackendID string
+	Model     string
+	// PromptTokens — сколько токенов в промпте по нашей оценке.
+	PromptTokens int
+	// LoadedWindow — окно ОДНОГО слота сейчас (столько дадут клиенту).
+	LoadedWindow int
+	// RequiredWindow — МИНИМУМ, который нужно заявить, чтобы промпт обслужился
+	// (промпт + нижняя граница ответа + slack, выровнено по 256).
+	RequiredWindow int
+	// Requested — что заявил клиент (0 — не заявил ничего).
+	Requested int
+	// AvailablePerClient — потолок НА КЛИЕНТА (0 = неизвестен): больше заявить
+	// нельзя, и совет «заявите больше» был бы ложью.
+	AvailablePerClient int
+	Slots              int
+	Ceilings           windowCeilingNumbersR664
+}
+
 // contextWindowExhaustedBodyR664 — ОДНО тело отказа шага B, собранное из чисел.
 //
 // ПОЧЕМУ ИЗ ЧИСЕЛ, А НЕ ИЗ СОСТОЯНИЯ. Тело нужно двум путям: preflight-движку (у
@@ -171,30 +257,32 @@ const contextWindowExhaustedCodeR664 = "context_window_exhausted_no_growth_reque
 //	requested_n_ctx          что заявил клиент (0 — не заявил ничего);
 //	available_context_tokens потолок НА КЛИЕНТА (0 = неизвестен): больше заявить
 //	                         нельзя, и совет «заявите больше» был бы ложью;
-//	physical_ceiling_tokens  суммарный физический потолок модели (0 = неизвестен).
-func contextWindowExhaustedBodyR664(
-	backendID, model string,
-	promptTokens, loadedWindow, requiredWindow, requested,
-	availablePerClient, physicalCeiling, slots, ggufMax, autoReloadMax int,
-) string {
+//	physical_ceiling_tokens  суммарный физический потолок модели (0 = неизвестен);
+//	gguf_max_context         потолок обучения из GGUF (0 = воркер не сообщил);
+//	auto_reload_max_n_ctx    операторский потолок авто-роста.
+//
+// R679 (2026-11-20): последние три поля стриминговый путь передавал нулями.
+// Теперь оба пути заполняют их явно (windowCeilingNumbersR664) и проверяются на
+// совпадение телом (context_window_reject_parity_test.go).
+func contextWindowExhaustedBodyR664(n windowRejectNumbersR664) string {
 	body := map[string]interface{}{
 		"error": contextWindowExhaustedCodeR664,
 		"reason": i18n.T("balancer.preflight_nctx.context_window_exhausted_reason",
-			promptTokens, loadedWindow, requiredWindow),
-		"model":                    model,
-		"backend_id":               backendID,
-		"prompt_tokens":            promptTokens,
-		"loaded_window_tokens":     loadedWindow,
-		"required_window_tokens":   requiredWindow,
-		"requested_n_ctx":          requested,
-		"available_context_tokens": availablePerClient,
-		"physical_ceiling_tokens":  physicalCeiling,
-		"slots":                    normalizedSlotsR504(slots),
-		"context_per_seq":          loadedWindow,
-		"gguf_max_context":         ggufMax,
-		"auto_reload_max_n_ctx":    autoReloadMax,
+			n.PromptTokens, n.LoadedWindow, n.RequiredWindow),
+		"model":                    n.Model,
+		"backend_id":               n.BackendID,
+		"prompt_tokens":            n.PromptTokens,
+		"loaded_window_tokens":     n.LoadedWindow,
+		"required_window_tokens":   n.RequiredWindow,
+		"requested_n_ctx":          n.Requested,
+		"available_context_tokens": n.AvailablePerClient,
+		"physical_ceiling_tokens":  n.Ceilings.Physical,
+		"slots":                    normalizedSlotsR504(n.Slots),
+		"context_per_seq":          n.LoadedWindow,
+		"gguf_max_context":         n.Ceilings.GGUF,
+		"auto_reload_max_n_ctx":    n.Ceilings.AutoReload,
 		"what_to_do": i18n.T("balancer.preflight_nctx.context_window_exhausted_what_to_do",
-			requiredWindow, availablePerClient),
+			n.RequiredWindow, n.AvailablePerClient),
 	}
 	encoded, _ := json.Marshal(body)
 	return string(encoded)
@@ -220,12 +308,18 @@ func makePromptExceedsWindowRejectR664(
 	promptTokens, loadedWindow, requiredWindow int,
 ) *PreflightResult {
 	slots := state.effectiveSlots()
-	ceiling := state.physicalCeiling()
-	body := contextWindowExhaustedBodyR664(
-		state.BackendID, meta.ModelName,
-		promptTokens, loadedWindow, requiredWindow, meta.RequestedNCtxOverride,
-		derivedWindowCapR466(ceiling, slots), ceiling, slots,
-		state.GGUFMaxContext, state.AutoReloadMaxNCtx)
+	ceilings := ceilingNumbersFromStateR664(state)
+	body := contextWindowExhaustedBodyR664(windowRejectNumbersR664{
+		BackendID:          state.BackendID,
+		Model:              meta.ModelName,
+		PromptTokens:       promptTokens,
+		LoadedWindow:       loadedWindow,
+		RequiredWindow:     requiredWindow,
+		Requested:          meta.RequestedNCtxOverride,
+		AvailablePerClient: derivedWindowCapR466(ceilings.Physical, slots),
+		Slots:              slots,
+		Ceilings:           ceilings,
+	})
 	return &PreflightResult{
 		Decision:     PreflightReject,
 		RejectStatus: http.StatusRequestEntityTooLarge,

@@ -241,8 +241,19 @@ func TestR447_RefusalBodyUsesVerdictNumbers(t *testing.T) {
 	}
 	p.metricsMgr.mu.Unlock()
 
-	raw := contextWindowExhaustedBodyR664("bk-1", "m", v.Estimated, v.Loaded, v.Required, 0,
-		v.Available, 0, 1, 0, 0)
+	// R679: тело собирается из ИМЕНОВАННЫХ чисел (windowRejectNumbersR664), а не
+	// из одиннадцати позиционных аргументов — в позиционном вызове пропуск
+	// значений (как три нуля на стриминговом пути) не виден ни компилятору, ни
+	// читателю.
+	raw := contextWindowExhaustedBodyR664(windowRejectNumbersR664{
+		BackendID:          "bk-1",
+		Model:              "m",
+		PromptTokens:       v.Estimated,
+		LoadedWindow:       v.Loaded,
+		RequiredWindow:     v.Required,
+		AvailablePerClient: v.Available,
+		Slots:              1,
+	})
 	var out map[string]interface{}
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		t.Fatalf("тело не JSON: %v (%s)", err, raw)

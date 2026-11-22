@@ -127,6 +127,12 @@ type windowDecisionR493 struct {
 	PromptFits bool
 	// Capped — R466 сработал: выведенное окно урезано до потолка.
 	Capped bool
+	// Background — R664 шаг A (исправление живого прогона r679): рост нужен, но
+	// исполнять его под текущим ходом нельзя — заявка уходит в очередь
+	// отложенного роста (growth_deferral.go) и исполняется после хода.
+	// BackgroundTarget — окно НА КЛИЕНТА (ровно заявленное клиентом).
+	Background       bool
+	BackgroundTarget int
 	// ReloadPending — перезагрузка этой модели шла на момент решения.
 	ReloadPending bool
 }
@@ -232,6 +238,11 @@ func decideWindowR493(in windowInputR493) windowDecisionR493 {
 			return d
 		}
 		d.Kind = windowServeR493
+		// R664 шаг A: цель роста — РОВНО заявленное клиентом окно, а исполнять
+		// его будет очередь отложенного роста после текущего хода (живой дефект
+		// r679: перезагрузка под ходом = 46.9 с до первого байта).
+		d.Background = true
+		d.BackgroundTarget = in.Requested
 		d.Why = "обслуживаем как есть, окно растим в фоне: " + actionWhy
 		return d
 	case growthRefuseR664:

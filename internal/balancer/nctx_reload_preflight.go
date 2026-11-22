@@ -90,10 +90,26 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 			// 413 с МАШИННЫМ кодом и числами вместо 503 «повторите позже».
 			// Тело собирает общий сборщик (то же, что у preflight-движка), поэтому
 			// клиент видит один формат на всех путях.
+			//
+			// R679 (2026-11-20, живой прогон матрицы): ПОТОЛКИ тоже обязаны быть
+			// настоящими. Здесь стояли три нуля — и клиент получал отказ, в
+			// котором `physical_ceiling_tokens`, `gguf_max_context` и
+			// `auto_reload_max_n_ctx` равны 0 при реальных 65536/131072/65536.
+			// Ноль в этих полях читается как «потолок неизвестен», то есть
+			// «заявить больше нельзя», — противоположное смыслу отказа.
+			ceilings := p.ceilingNumbersForR664(backendID, modelName)
 			return bodyBuf, false,
-				contextWindowExhaustedBodyR664(backendID, modelName,
-					v.Estimated, v.Loaded, v.Required, ExtractNumCtxFromBody(bodyBuf),
-					v.Available, 0, p.loadedSlotsNCtx(backendID, modelName), 0, 0),
+				contextWindowExhaustedBodyR664(windowRejectNumbersR664{
+					BackendID:          backendID,
+					Model:              modelName,
+					PromptTokens:       v.Estimated,
+					LoadedWindow:       v.Loaded,
+					RequiredWindow:     v.Required,
+					Requested:          ExtractNumCtxFromBody(bodyBuf),
+					AvailablePerClient: v.Available,
+					Slots:              p.loadedSlotsNCtx(backendID, modelName),
+					Ceilings:           ceilings,
+				}),
 				http.StatusRequestEntityTooLarge
 		}
 		if v.Grow {

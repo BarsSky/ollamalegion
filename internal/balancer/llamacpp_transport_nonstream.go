@@ -21,6 +21,14 @@ import (
 // proxyRequestLlamaCppNonStream — проксирует запрос к llama.cpp с принудительным
 // отключением streaming (для совместимости с клиентами которые ломают streaming).
 func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Request, backendID string, bodyBuf []byte) error {
+	// R664 (шаг A, исправление живого прогона r261120-r679): ход клиента виден
+	// планировщику роста окна и на НЕ-стриминговом пути. Preflight этого пути
+	// тоже ставит заявку «расти в фоне» (growthBackgroundR664), и исполнять её
+	// под обслуживаемым запросом нельзя: unload+load ждёт клиент. endTurn
+	// разбирает очередь уже после ответа.
+	endTurn := p.beginClientTurnR664(backendID)
+	defer endTurn()
+
 	state, ok := p.backends[backendID]
 	if !ok {
 		return fmt.Errorf("backend %s not found", backendID)

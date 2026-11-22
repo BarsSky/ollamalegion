@@ -10,10 +10,19 @@
 // ПРАВИЛО R664. Если данные влезают в загруженное окно, а клиент заявил больше —
 // запрос обслуживается СРАЗУ, а окно поднимается между ходами. Модель
 // перезагружается только когда её не читает ни один клиент:
-//   - идут активные стримы — рост откладывается (перезагрузка поверх живого
-//     ответа оборвала бы его, R271/R292);
+//   - идут активные стримы или идёт ход клиента — рост откладывается (перезагрузка
+//     поверх живого ответа оборвала бы его, R271/R292);
 //   - уже идёт перезагрузка — второй не запускаем (dedup координатора);
 //   - заявленное окно не больше загруженного — расти некуда.
+//
+// ИСПРАВЛЕНО ПО ЖИВОМУ ПРОГОНУ `balancer:r261120-r679` (2026-11-20). Раньше эта
+// функция вызывалась СИНХРОННО из preflight, и проверки занятости были неполны:
+// текущий запрос стримом ещё не учтён (beginClientStreamR271 — в транспорте,
+// после ответа апстрима), поэтому счётчик показывал 0, и unload+load запускался
+// под обслуживаемым запросом. Живая цена: первый байт 46.9 с,
+// `load_duration=46.925 s` — при логе «запрос обслуживается сейчас, окно растим в
+// фоне». Теперь заявку в очередь ставит growth_deferral.go, а исполняет её ЭТА
+// функция — только с завершения хода, когда на бэкенде нет ни одного хода.
 //
 // ЦЕЛЬ РОСТА — РОВНО ЗАЯВЛЕННОЕ КЛИЕНТОМ ОКНО. Не оценка промпта, не профиль и не
 // физический потолок: иначе окно уползало бы к числу, которого клиент не просил.
@@ -25,34 +34,49 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 )
 
-// triggerBackgroundGrowthR664 — запустить перезагрузку модели до окна,
-// заявленного клиентом, не блокируя текущий запрос.
-func (p *Proxy) triggerBackgroundGrowthR664(backendID, model string, targetPerClient int) {
-	if p == nil || backendID == "" || model == "" || targetPerClient <= 0 {
-		return
+// triggerBackgroundGrowthR664 — исполнить отложенную заявку на окно,
+// заявленное клиентом.
+//
+// Вызывается ТОЛЬКО из drainDeferredGrowthR664 (growth_deferral.go) — то есть с
+// завершения хода клиента. Прямых вызовов из preflight у неё быть не должно:
+// именно синхронный вызов из preflight и запускал перезагрузку под текущим
+// запросом (живой дефект r679).
+func (p *Proxy) triggerBackgroundGrowthR664(e queuedGrowthR664) growthRunR664 {
+	if p == nil || e.backendID == "" || e.model == "" || e.target <= 0 {
+		return growthNotNeededR664
 	}
-	loaded := p.loadedPerSeqNCtx(backendID, model)
-	if loaded > 0 && targetPerClient <= loaded {
+	// Выключатель роста окна на стриминге (R385/R472) действует и на отложенное
+	// исполнение: оператор выключил рост — значит его нет ни в preflight, ни
+	// после хода.
+	if e.streaming && !streamGrowthEnabledR385() {
+		logger.Get().Infow("R664: отложенный рост отменён — рост окна на стриминге выключен (LB_NCTX_GROW_FOR_STREAM=0)",
+			"backend", e.backendID, "model", e.model, "requested_n_ctx", e.target)
+		return growthNotNeededR664
+	}
+	loaded := p.loadedPerSeqNCtx(e.backendID, e.model)
+	if loaded > 0 && e.target <= loaded {
 		// Расти некуда (или клиент заявил не больше загруженного) — это не ошибка:
 		// решение принимал вызывающий по числам, здесь только защита от лишней
 		// перезагрузки.
 		logger.Get().Debugw("R664: фоновый рост не требуется — заявленное окно не больше загруженного",
-			"backend", backendID, "model", model,
-			"requested_n_ctx", targetPerClient, "loaded_per_seq_n_ctx", loaded)
-		return
+			"backend", e.backendID, "model", e.model,
+			"requested_n_ctx", e.target, "loaded_per_seq_n_ctx", loaded)
+		return growthNotNeededR664
 	}
-	if active, pending := growthBlockersR288(p, backendID, model); active > 0 || pending {
+	if active, pending := growthBlockersR288(p, e.backendID, e.model); active > 0 || pending {
 		logger.Get().Infow("R664: фоновый рост отложен — перезагрузка поверх живого стрима недопустима",
-			"backend", backendID, "model", model,
+			"backend", e.backendID, "model", e.model,
 			"active_streams", active, "reload_pending", pending,
-			"requested_n_ctx", targetPerClient, "loaded_per_seq_n_ctx", loaded)
-		return
+			"requested_n_ctx", e.target, "loaded_per_seq_n_ctx", loaded)
+		return growthDeferredR664
 	}
-	logger.Get().Infow("R664: проактивная заявка клиента — поднимаем окно в фоне, запрос обслуживается сейчас",
-		"backend", backendID, "model", model,
-		"requested_n_ctx", targetPerClient, "loaded_per_seq_n_ctx", loaded,
-		"effect", "текущий ход клиента не ждёт перезагрузки; окно будет поднято между ходами")
+	logger.Get().Infow("R664: проактивная заявка клиента — поднимаем окно после его хода",
+		"backend", e.backendID, "model", e.model,
+		"requested_n_ctx", e.target, "loaded_per_seq_n_ctx", loaded,
+		"queued_for", e.since.Format("15:04:05.000"),
+		"effect", "текущий ход клиента уже обслужен; перезагрузка идёт между ходами")
 	// needed = заявленное окно: triggerStreamGrowthR385 пересчитает «на клиента» в
 	// суммарное по слотам и запустит асинхронную перезагрузку.
-	p.triggerStreamGrowthR385(backendID, model, targetPerClient, targetPerClient)
+	p.triggerStreamGrowthR385(e.backendID, e.model, e.target, e.target)
+	return growthStartedR664
 }

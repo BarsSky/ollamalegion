@@ -2753,6 +2753,10 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <!-- R57.5d-1 (2026-09-03): action handlers (load/unload/cancel/download/HF search). -->
     <script defer src="js/modules/gguf-renderer-actions.js?v=R425"></script>
     <!-- R57.5d-2 (2026-09-03): data refresh + active queries polling + downloads polling. -->
+    <!-- R688 (2026-11-22): до refresh — обе функции пересборки панели
+         (refreshDetailPanel/Pane) зовут window.GgufDetailFormState, чтобы не
+         стирать незавершённый ввод оператора в форме параметров загрузки. -->
+    <script defer src="js/modules/gguf-detail-form-state.js?v=R688"></script>
     <script defer src="js/modules/gguf-renderer-refresh.js?v=R425"></script>
     <script defer src="js/modules/gguf-page-provider.js?v=R425"></script>
     <!-- R57.5e (2026-09-03): delegated click handler + bindEvents + bindSettingsChange. -->

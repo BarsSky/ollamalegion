@@ -35,7 +35,9 @@
 //       пути данных раздела — SettingsRegistry.load() и loadSettings() → Api.config,
 //       не тронув поле оператора. Это ровно пункт «б) данные страницы обновляются
 //       тиками» живой приёмки (check-forms.js). Заодно фиксируется обратное:
-//       «грязная» страница БЕЗ SafeForm (gguf-*) по-прежнему глушит тик (R662).
+//       «грязная» страница БЕЗ SafeForm («Image-модели») по-прежнему глушит тик
+//       (R662). R688: GGUF в этот список больше не входит — у него своя защита
+//       правой панели (gguf-detail-form-state.js), и данные обязаны обновляться.
 //
 // Запуск: node webui/tests/form-dirty-guard.test.js
 'use strict';
@@ -193,6 +195,10 @@ check('R676: «грязная» страница с SafeForm не глушит �
         'страница тика обязана читаться геттером getCurrentPage() (R676: контракт страницы)');
     assert.ok(/SAFE_FORM_PAGES\s*=\s*\{\s*settings:\s*true/.test(appDataJs),
         'в SAFE_FORM_PAGES нет «Настроек» — страница из жалобы не покрыта безопасной записью полей');
+    // R688: GGUF обязан быть в списке: иначе тик снова глушит ВСЮ страницу, пока
+    // оператор заполняет параметры загрузки, и список моделей/статусы стоят.
+    assert.ok(/SAFE_FORM_PAGES\s*=\s*\{[^}]*\bgguf:\s*true/.test(appDataJs),
+        'GGUF не в SAFE_FORM_PAGES: «грязная» страница снова глушит обновление данных');
 });
 
 // --- (4) модуль подключён в index.html ---
@@ -613,21 +619,41 @@ const SERVER_2048 = {
             'SafeForm не защищал поле — ввод уцелел случайно, а не механизмом');
     });
 
-    // (е) R662 СОХРАНЁН: страница БЕЗ покрытия SafeForm («грязная») по-прежнему
-    // глушит тик целиком. Снятие заслона там стёрло бы ввод на gguf-*/image-*,
-    // поэтому расширение SAFE_FORM_PAGES обязано быть осознанным.
+    // (е) R662 СОХРАНЁН для страниц БЕЗ покрытия: «грязная» страница без
+    // SafeForm-защиты по-прежнему глушит тик целиком. R688 (2026-11-22): GGUF из
+    // этого примера УШЁЛ — у страницы появилась собственная защита панели
+    // (webui/js/modules/gguf-detail-form-state.js), и тик обязан продолжать
+    // обновлять её данные. Поэтому пример — «Image-модели» (покрытия нет).
     await acheck('R662(е): «грязная» страница без SafeForm по-прежнему глушит тик', async () => {
+        const stack = buildSettingsStack({ serverConfig: SERVER_2048, page: 'image' });
+        stack.markDirty('image');
+        assert.strictEqual(stack.formDirty().isDirtyPage('image'), true, 'предпосылка: страница «грязная»');
+        stack.startTicker();
+        stack.runTick();
+        await flush();
+
+        assert.deepStrictEqual(stack.drRefreshCalls(), [],
+            'тик дошёл до провайдеров «грязной» image-страницы: заслон R662 для страниц без SafeForm снят');
+        assert.strictEqual(stack.registryLoads(), 0, 'тик дёрнул реестр горячих настроек с чужой страницы');
+        assert.strictEqual(stack.counters.configGets, 0, 'тик перечитал серверный конфиг на защищённой странице');
+    });
+
+    // (ж) R688: GGUF больше не глушится целиком. Пока в форме есть несохранённая
+    // правка, данные страницы обязаны обновляться (список моделей, статусы), а
+    // DOM правой панели защищает gguf-detail-form-state.js.
+    await acheck('R688: «грязная» gguf-страница продолжает обновлять данные', async () => {
         const stack = buildSettingsStack({ serverConfig: SERVER_2048, page: 'gguf' });
+        let providerCalls = 0;
+        stack.window.DataRefresh.register('gguf', function () { providerCalls++; return Promise.resolve(); });
         stack.markDirty('gguf');
         assert.strictEqual(stack.formDirty().isDirtyPage('gguf'), true, 'предпосылка: страница «грязная»');
         stack.startTicker();
         stack.runTick();
         await flush();
 
-        assert.deepStrictEqual(stack.drRefreshCalls(), [],
-            'тик дошёл до провайдеров «грязной» gguf-страницы: заслон R662 для страниц без SafeForm снят');
-        assert.strictEqual(stack.registryLoads(), 0, 'тик дёрнул реестр горячих настроек с чужой страницы');
-        assert.strictEqual(stack.counters.configGets, 0, 'тик перечитал серверный конфиг на защищённой странице');
+        assert.deepStrictEqual(stack.drRefreshCalls(), ['gguf'],
+            'тик не дошёл до провайдера «грязной» gguf-страницы — данные раздела снова стоят на TTL');
+        assert.strictEqual(providerCalls, 1, 'провайдер gguf не вызван: список моделей и статусы не обновятся');
     });
 
     // (г) навигация снимает защиту только с покидаемой страницы (app.js).

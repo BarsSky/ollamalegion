@@ -67,8 +67,13 @@
             if (typeof M.refreshBackends === 'function') {
                 jobs.push(Promise.resolve(M.refreshBackends()));
             }
+            // R688 (2026-11-22): {auto:true} — проход автоматический. Данные
+            // (state) обновляются как обычно, но DOM панели деталей не
+            // пересобирается, пока оператор заполняет форму: иначе набранные
+            // параметры загрузки стирались каждым тиком. Решение и перенос
+            // значений — в js/modules/gguf-detail-form-state.js.
             if (typeof M.refreshDetail === 'function' && !_isTypingInDetail()) {
-                jobs.push(Promise.resolve(M.refreshDetail()));
+                jobs.push(Promise.resolve(M.refreshDetail({ auto: true })));
             }
             if (typeof M.refreshActiveDownloads === 'function') {
                 jobs.push(Promise.resolve(M.refreshActiveDownloads()));

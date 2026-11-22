@@ -33,6 +33,10 @@
         if (_diskFetchInFlight.has(backendId)) return;
         _diskFetchInFlight.add(backendId);
         const force = !!(opts && opts.force);
+        // R688: пересборка после ответа диска — автоматическая, если её затребовал
+        // автоматический проход (refreshDetail с {auto:true}). Иначе (явная
+        // проверка каталога кнопкой) — перерисовываем сразу.
+        const auto = !!(opts && opts.auto);
         const tick = (state && state._diskFetchTick) || 0;
         if (state) state._diskFetchTick = tick + 1;
         if (typeof window.GgufApi === 'undefined' || typeof window.GgufApi.listLocalModelsViaBackend !== 'function') {
@@ -112,7 +116,7 @@
                 };
                 // Force re-render detail pane.
                 if (typeof M.refreshDetailPanel === 'function') {
-                    M.refreshDetailPanel(backendId);
+                    M.refreshDetailPanel({ auto: auto });
                 }
             })
             .catch(function (err) {
@@ -173,7 +177,7 @@
                     fetchedAt: Date.now(),
                     error: ''
                 };
-                if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel(backendId);
+                if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel();
                 if (typeof M.showToast === 'function') {
                     const inv = state.diskInventory[backendId];
                     const msg = inv.dirError
@@ -262,7 +266,7 @@
                 // Показываем только если этот бэкенд всё ещё выбран.
                 if (state.selectedBackendId === backendId && state.workerInfo) {
                     state.workerInfo.version = String(version);
-                    if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel(backendId);
+                    if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel({ auto: true });
                 }
             })
             .catch(function () {
@@ -439,8 +443,13 @@
     // detail-render это маскировала).
     M.mergeModelRows = mergeModelRows;
 
-    M.refreshDetail = function() {
+    M.refreshDetail = function(opts) {
         const state = M.state;
+        // R688: автоматический проход (провайдер страницы, тик) передаёт
+        // {auto:true}; явные действия оператора — нет. Флаг доходит до
+        // refreshDetailPanel/Pane, где и решается «перерисовывать сейчас или
+        // отложить, чтобы не стереть заполняемую форму».
+        const auto = !!(opts && opts.auto);
         // R-MultiHost (2026-10-07): синхронизируем выбранный бэкенд с API-клиентом
         // ПЕРЕД любым действием с диском воркера. Выбор мог быть восстановлен не
         // через M.selectBackend (например, общим renderers.js), поэтому одной
@@ -533,7 +542,7 @@
                 // лежали на диске. Слияние с уже известными делает этот запрос
                 // безопасным (см. fetchDiskModelsAsync).
                 if (data.backendType === 'llama_cpp' && state.selectedBackendId) {
-                    fetchDiskModelsAsync(backend.id, state);
+                    fetchDiskModelsAsync(backend.id, state, { auto: auto });
                 }
                 // loadedModels: detailed objects (BackendMetrics.llamaCpp.loadedModels).
                 // For non-llama_cpp backends this is `ollama.runningModels` shape.
@@ -599,8 +608,8 @@
                 // header shows status pills that depend on workerInfo,
                 // and tabs may need to recompute their counts from
                 // loadedModels/localModels.
-                if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel();
-                else if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+                if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel({ auto: auto });
+                else if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane({ auto: auto });
             })
             .catch(function (err) {
                 // R91 (2026-10-08): НЕ молчим. Раньше здесь был только
@@ -615,8 +624,8 @@
                     ? I18N.t(isTimeout ? 'gguf.detail_load_timeout' : 'gguf.detail_load_failed')
                     : (isTimeout ? 'Backend data timed out' : 'Failed to load backend data')) +
                     ' — ' + msg;
-                if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel();
-                else if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+                if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel({ auto: auto });
+                else if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane({ auto: auto });
             })
             .finally(function () {
                 // R91 (2026-10-08): флаг снимается в finally. Это главная защита
@@ -666,7 +675,7 @@
                 // Перерисовываем только активную вкладку — не запускаем
                 // refreshDetail (иначе получим цикл запросов).
                 if (state.detailPane === 'models' && typeof M.refreshDetailPane === 'function') {
-                    M.refreshDetailPane();
+                    M.refreshDetailPane({ auto: true });
                 }
             })
             .catch(function (err) {
@@ -756,7 +765,7 @@
             };
             resolveDeviceLayers(state);
             if (state.detailPane === 'models' && typeof M.refreshDetailPane === 'function') {
-                M.refreshDetailPane();
+                M.refreshDetailPane({ auto: true });
             }
         }).catch(function () {
             // Без данных раскладки вкладка просто не показывает пометки.
@@ -790,7 +799,7 @@
                     state.activeQueries = next;
                     if (changed && state.detailPane === 'models') {
                         // busy badge changed — refresh detail pane
-                        if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+                        if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane({ auto: true });
                     }
                     // Switch to fast mode if any model has active queries
                     var hasActive = Object.values(next).some(function (n) { return n && n > 0; });
@@ -868,7 +877,7 @@ M.refreshActiveQueriesPolling = function() {
         const state = M.state;
         if (!state.activeDownloads || state.activeDownloads.length === 0) {
             if (_downloadsPollTimer) { clearInterval(_downloadsPollTimer); _downloadsPollTimer = null; }
-            if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+            if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane({ auto: true });
             return;
         }
         var api = window.GgufApi || window.Api;
@@ -901,7 +910,7 @@ M.refreshActiveQueriesPolling = function() {
                 });
         });
         Promise.all(promises).then(function () {
-            if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+            if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane({ auto: true });
         });
     };
 
@@ -924,13 +933,13 @@ M.refreshActiveQueriesPolling = function() {
                 // resp = { active: [], history: [], orphans: [] }
                 var arr = (resp && Array.isArray(resp.orphans)) ? resp.orphans : [];
                 state.orphanDownloads = arr;
-                if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+                if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane({ auto: true });
             })
             .catch(function () {
                 // Тихо игнорируем — это cosmetic, не критично
                 if (state.orphanDownloads && state.orphanDownloads.length) {
                     state.orphanDownloads = [];
-                    if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+                    if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane({ auto: true });
                 }
             });
     };
@@ -941,20 +950,41 @@ M.refreshActiveQueriesPolling = function() {
         if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel();
     };
 
-    M.refreshDetailPanel = function() {
-        const panel = document.getElementById('ggufDetailPanel');
-        if (!panel) return;
-        if (typeof M.renderDetailPanel === 'function') {
-            panel.innerHTML = M.renderDetailPanel();
+    // ---- Пересборка панели деталей (R688) ---------------------------------
+    //
+    // Обе функции заменяют DOM через innerHTML, поэтому каждая пересборка — это
+    // пересоздание полей формы вместе с набранными значениями. Правило одно:
+    // автоматические проходы передают {auto:true} (см. gguf-page-provider.js,
+    // опросы загрузок/запросов и refreshDetail), явные действия оператора —
+    // нет. Подробности и обоснование — в js/modules/gguf-detail-form-state.js.
+    function detailFormState() {
+        return (typeof window !== 'undefined' && window.GgufDetailFormState) || null;
+    }
+
+    function renderIntoDetail(node, renderFn, opts) {
+        var G = detailFormState();
+        if (G && typeof G.rebuild === 'function') {
+            return G.rebuild(node, renderFn, opts);
         }
+        // Модуль защиты не загружен (усечённая сборка/тест): прежнее поведение.
+        var html = renderFn();
+        if (html === null || html === undefined) { return false; }
+        node.innerHTML = String(html);
+        return true;
+    }
+
+    M.refreshDetailPanel = function(opts) {
+        const panel = document.getElementById('ggufDetailPanel');
+        if (!panel) return false;
+        if (typeof M.renderDetailPanel !== 'function') return false;
+        return renderIntoDetail(panel, function () { return M.renderDetailPanel(); }, opts);
     };
 
-    M.refreshDetailPane = function() {
+    M.refreshDetailPane = function(opts) {
         const pane = document.getElementById('ggufDetailContent');
-        if (!pane) return;
-        if (typeof M.renderDetailPane === 'function') {
-            pane.innerHTML = M.renderDetailPane();
-        }
+        if (!pane) return false;
+        if (typeof M.renderDetailPane !== 'function') return false;
+        return renderIntoDetail(pane, function () { return M.renderDetailPane(); }, opts);
     };
 
     // R118.16: отдельно — чтобы тест мог проверить приоритет «факт важнее

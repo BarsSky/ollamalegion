@@ -486,9 +486,15 @@
 
     // fillModelParamEditor — разложить значения профиля по форме и по колонке
     // «В профиле». Пустое значение профиля остаётся «не задано» (наследуется).
+    //
+    // R688 (2026-11-22): значения записывает ПРОГРАММА (гидратация профиля), а не
+    // оператор. После записи объявляем их базовыми (SafeForm.markBase): иначе
+    // следующая же пересборка панели считала бы любое подставленное значение
+    // «несохранённой правкой» и откладывала обновление данных навсегда.
     function fillModelParamEditor(editorEl, profile) {
         if (!editorEl) return;
         profile = profile || {};
+        var SF = (typeof window !== 'undefined' && window.SafeForm) || null;
         MODEL_PARAM_SPECS.forEach(function (spec) {
             var raw = profile[spec.field];
             var cell = editorEl.querySelector('[data-profile-field="' + spec.field + '"]');
@@ -507,6 +513,7 @@
             } else {
                 input.value = '';
             }
+            if (SF && typeof SF.markBase === 'function') SF.markBase(input);
         });
     }
 
@@ -588,6 +595,15 @@
                 return false;
             }
             await window.Api.cppworkerModelProfiles.upsert(modelName, body);
+            // R688: профиль сохранён — защита формы снимается штатно (как после
+            // «Сохранить» в параметрах бэкенда): значения оператора больше не
+            // считаются незавершённой правкой, авто-обновление снова управляет
+            // панелью и подставит свежий профиль.
+            var G = (typeof window !== 'undefined' && window.GgufDetailFormState) || null;
+            if (G && typeof G.noteSaved === 'function') {
+                G.noteSaved(document.getElementById('ggufDetailContent') ||
+                    document.getElementById('ggufDetailPanel') || 'gguf-page');
+            }
         } catch (e) {
             showToast(_('gguf.mp_save_failed', 'Не удалось сохранить профиль') + ': ' +
                 (e && e.message ? e.message : e), 'error');

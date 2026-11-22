@@ -136,6 +136,13 @@
 
     // ---- Backend options load/save ----
 
+    // formState — общий слой «пересборка панели не стирает ввод» (R688).
+    // Резолвится в момент вызова: модуль подключается отдельным тегом, а тесты
+    // поднимают фабрику без него — отсутствие не должно ронять рендер формы.
+    function formState() {
+        return (typeof window !== 'undefined' && window.GgufDetailFormState) || null;
+    }
+
     /**
      * Загрузить текущие llama.cpp-дефолты выбранного cppworker'а и отрендерить
      * редактируемую форму внутри #ggufBackendOptionsContainer.
@@ -164,6 +171,12 @@
             container.innerHTML = '<div class="gguf-empty-state">' + (window.I18N ? I18N.t('gguf.no_backend_selected') : '') + '</div>';
             return;
         }
+        // R688: спиннер ниже заменяет форму через innerHTML, поэтому раскрытые
+        // секции запоминаем ДО него, а применяем после отрисовки формы. Без этого
+        // каждое открытие/перечитывание формы схлопывало секции, которые оператор
+        // только что раскрыл.
+        var G = formState();
+        if (G && typeof G.rememberOpen === 'function') G.rememberOpen(container);
         const t0 = Date.now();
         // Spinner с elapsed-time обновлением каждые 2s. Если load >5s — пользователь
         // видит "Loading... (5s)" вместо "вечно крутящегося спиннера".
@@ -262,6 +275,11 @@
             if (!state._settingsFormHtmlByBackend) state._settingsFormHtmlByBackend = {};
             state._settingsFormHtmlByBackend[backend.id] = { html: formHtml, cfg: cfg, ts: Date.now() };
             container.innerHTML = formHtml;
+            // R688: свежая форма — новые узлы. Объявляем их значения базовыми
+            // (иначе первые же серверные значения выглядели бы «правкой
+            // оператора» и навсегда блокировали пересборку панели) и возвращаем
+            // раскрытые секции, запомненные до спиннера.
+            if (G && typeof G.afterRender === 'function') G.afterRender(container);
             // Round 35c+ (2026-08-13): init gpu_layers live badge (после render, чтобы
             // badge отражал текущее значение gpu, а не дефолт "AUTO" в HTML).
             if (Utils.updateGpuLayersBadge) {
@@ -1171,6 +1189,16 @@
             if (resp && resp.reload_started && resp.reload_started.length > 0) {
                 showToast('Reloading ' + resp.reload_started.length + ' model(s) with new defaults...', 'info');
             }
+            // R688: сохранение прошло — защита формы снимается ШТАТНО. Без этого
+            // страница осталась бы «грязной» до истечения TTL: авто-обновление
+            // продолжало бы откладывать пересборку панели, хотя сохранять больше
+            // нечего. noteSaved снимает отметку FormDirty и объявляет текущие
+            // значения базовыми.
+            var G = formState();
+            if (G && typeof G.noteSaved === 'function') {
+                G.noteSaved(document.getElementById('ggufDetailContent') ||
+                    document.getElementById('ggufDetailPanel') || 'gguf-page');
+            }
             // Перезагружаем форму с актуальными значениями из cppworker.
             await loadAndRenderBackendOptions();
             // R106b (2026-10-12): обновляем и блоки «что получат новые модели» /
@@ -1251,6 +1279,13 @@
             await api.cppworkerLoadDefaults.save(body);
             showToast(_('gguf.backend_options_promoted',
                 'Записано в «настройки по умолчанию для новых моделей» — теперь эти значения применяются при загрузке раньше настроек контейнера'), 'success');
+            // R688: значения формы сохранены (в слой по умолчанию) — снимаем
+            // защиту так же, как после «Сохранить»: оператор закончил действие.
+            var G = formState();
+            if (G && typeof G.noteSaved === 'function') {
+                G.noteSaved(document.getElementById('ggufDetailContent') ||
+                    document.getElementById('ggufDetailPanel') || 'gguf-page');
+            }
             if (window.CppWorkerParams && typeof window.CppWorkerParams.loadAndRender === 'function') {
                 window.CppWorkerParams.loadAndRender();
             }

@@ -312,12 +312,34 @@
     // («не задано»), хотя значения в профиле были, — и оператор не мог понять, что
     // же применится при загрузке. Профили запрашиваются ОДНИМ списком и раздаются
     // всем формам на странице.
+    //
+    // R691 (2026-11-23): ГИДРАТАЦИЯ ПЕРЕЖИВАЕТ ПЕРЕСБОРКУ ПАНЕЛИ. Пересборка
+    // уничтожает разметку редактора, а `data-hydrated` у нового узла нет; повторный
+    // клик по карточке — единственное, что запускало гидратацию, поэтому после
+    // пересборки карточка оставалась пустой, а «предел окна» (R319) исчезал вовсе
+    // (живой замер r690: 3 пометки → 0, и через 4 с без клика не возвращались).
+    // Теперь каждый успешный ответ кладётся в кэш страницы по МОДЕЛИ (ключ —
+    // страница+бэкенд+вкладка+модель), и при пересборке значения подставляются из
+    // него сразу, а фоновое обновление догружает свежие.
     function hydrateModelParamEditors() {
         if (typeof document === 'undefined' || !document.querySelectorAll) return;
         var editors = document.querySelectorAll('.gguf-mp-editor[data-model]:not([data-hydrated="1"])');
         if (!editors || !editors.length) return;
         var api = (typeof window !== 'undefined') && (window.Api || window.BalancerApi);
+        var C = asyncCache();
+        // Немедленно подставляем последнее отрисованное (если оно есть): до ответа
+        // сети редактор уже показывает значения профиля, а не «не задано».
+        if (C) {
+            Array.prototype.forEach.call(editors, function (el) {
+                var cached = cachedEditorPayload(el);
+                if (cached !== undefined) { paintModelEditor(el, cached); }
+            });
+        }
         if (!api || !api.cppworkerModelProfiles || typeof api.cppworkerModelProfiles.list !== 'function') return;
+        // Один запрос на все формы; второй вызов, пока ответ не пришёл, тикет не
+        // получит и останется при кэше (R691: дубли запросов не плодим).
+        var ticket = C ? C.begin('modelProfiles', {}) : null;
+        if (C && !ticket) return;
         Array.prototype.forEach.call(editors, function (el) { el.setAttribute('data-hydrated', '1'); });
         api.cppworkerModelProfiles.list().then(function (res) {
             var profiles = (res && (res.models || res.profiles)) || {};
@@ -337,15 +359,114 @@
                 M.state.modelEffectiveWindow = (res && res.effectiveContext) || {};
                 M.state.nctxCeiling = (res && res.nctxCeiling) || null;
             }
-            Array.prototype.forEach.call(editors, function (el) {
-                fillModelParamEditor(el, profiles[el.getAttribute('data-model')] || null);
-                paintWindowLimit(el);
+            // R691: ответ устарел (кэш инвалидировали / начался новый запрос) —
+            // не пишем его ни в кэш, ни в DOM: свежий ответ уже в пути.
+            if (C && ticket && !C.commit(ticket, res)) return;
+            // Панель могла пересобраться, пока шёл ответ: старые узлы уже
+            // выброшены, поэтому раздаём данные ЖИВЫМ редакторам (и только им).
+            // Без этого ответ, начатый до пересборки, попадал в мёртвые узлы —
+            // карточки оставались с содержимым из кэша.
+            var live = liveEditors();
+            var targets = live.length ? live : Array.prototype.slice.call(editors);
+            var painted = [];
+            targets.forEach(function (el) {
+                if (hasFocusInside(el)) { return; } // оператор печатает — не трогаем
+                var model = el.getAttribute('data-model') || '';
+                var payload = editorPayload(model, profiles, res);
+                if (C) { C.write('modelProfile', payload, { model: model }); }
+                paintModelEditor(el, payload);
+                painted.push(el);
             });
             // R229 (2026-10-22): подписать «наследуется» РЕАЛЬНЫМ значением.
-            applyInheritedDefaults(editors);
+            if (painted.length) { applyInheritedDefaults(painted); }
         }).catch(function () {
             // Профили не получены: формы остаются с тем, что уже известно.
+            if (C && ticket) C.abort(ticket);
         });
+    }
+
+    // ----- R691: кэш «параметров модели» --------------------------------------
+
+    function asyncCache() {
+        return (typeof window !== 'undefined' && window.GgufAsyncCache) || null;
+    }
+
+    /**
+     * editorPayload — всё, что нужно, чтобы нарисовать редактор БЕЗ запроса.
+     *
+     * Хранится ПО МОДЕЛИ: значения профиля, «предел окна» (effective) и значения
+     * по умолчанию (что именно унаследует пустое поле). Так пересборка панели
+     * возвращает ровно то, что оператор уже видел, а не пустую форму.
+     */
+    function editorPayload(model, profiles, res) {
+        var effective = (res && res.effectiveContext) || {};
+        var has = function (obj, key) {
+            return !!(obj && Object.prototype.hasOwnProperty.call(obj, key));
+        };
+        return {
+            model: String(model || ''),
+            profile: has(profiles, model) ? (profiles[model] || null) : null,
+            effective: modelEffectiveEntry(model, effective),
+            ceiling: (res && res.nctxCeiling) || null,
+            defaults: (M.state && M.state.loadDefaults) || null
+        };
+    }
+
+    /** cachedEditorPayload — последнее отрисованное содержимое редактора. */
+    function cachedEditorPayload(editorEl) {
+        var C = asyncCache();
+        if (!C || !editorEl) return undefined;
+        var model = editorEl.getAttribute('data-model') || '';
+        var data = C.read('modelProfile', { model: model });
+        if (data !== undefined) return data;
+        return C.read('modelProfile', { model: model }, { allowStale: true });
+    }
+
+    /** liveEditors — редакторы, которые СЕЙЧАС в документе (после пересборки — новые). */
+    function liveEditors() {
+        if (typeof document === 'undefined' || !document.querySelectorAll) return [];
+        var list = document.querySelectorAll('.gguf-mp-editor[data-model]');
+        return list ? Array.prototype.slice.call(list) : [];
+    }
+
+    /** hasFocusInside — оператор печатает внутри узла: фоновую подстановку откладываем. */
+    function hasFocusInside(el) {
+        if (typeof document === 'undefined' || !document.activeElement || !el) return false;
+        return typeof el.contains === 'function' && el.contains(document.activeElement);
+    }
+
+    /**
+     * paintModelEditor — разложить сохранённое содержимое по форме редактора.
+     *
+     * Вызывается и после ответа API, и при восстановлении из кэша — один и тот же
+     * путь, поэтому второе не может разойтись с первым.
+     */
+    function paintModelEditor(editorEl, payload) {
+        if (!editorEl) return false;
+        payload = payload || {};
+        fillModelParamEditor(editorEl, payload.profile || null);
+        paintWindowLimitNote(editorEl, payload.effective || null, payload.ceiling || null);
+        if (payload.defaults && payload.defaults.effective) {
+            applyInheritedLabels(editorEl, payload.defaults.effective);
+        }
+        editorEl.setAttribute('data-hydrated', '1');
+        return true;
+    }
+
+    /**
+     * refreshModelParamEditors — заново запросить профили для всех редакторов.
+     *
+     * Фоновое обновление после пересборки панели: снимаем отметку «уже
+     * гидратировано» и повторяем гидратацию (один запрос на все формы). Ошибка не
+     * стирает показанное: редакторы остаются с данными из кэша.
+     */
+    function refreshModelParamEditors() {
+        if (typeof document === 'undefined' || !document.querySelectorAll) return false;
+        var editors = document.querySelectorAll('.gguf-mp-editor[data-model]');
+        if (!editors || !editors.length) return false;
+        Array.prototype.forEach.call(editors, function (el) { el.removeAttribute('data-hydrated'); });
+        hydrateModelParamEditors();
+        return true;
     }
 
     // windowLimitNote — R319 (2026-10-30): ОДНО место, которое объясняет, ЧЕМ
@@ -416,13 +537,32 @@
     // Данные приходят асинхронно ПОСЛЕ отрисовки формы (hydrateModelParamEditors),
     // поэтому элемент создаётся здесь, а не в шаблоне. Несколько форм на странице
     // — у каждой свой data-model, поэтому ищем строго внутри своей формы.
+    //
+    // R691 (2026-11-23): тело вынесено в paintWindowLimitNote(editorEl, entry,
+    // ceiling) — тот же рисунок нужен и при восстановлении из кэша, где entry/
+    // ceiling берутся из последнего ответа, а не из state (state при смене
+    // модели/бэкенда уже описывает другое).
     function paintWindowLimit(editorEl) {
-        if (!editorEl || typeof document === 'undefined') return;
         var state = (M.state && typeof M.state === 'object') ? M.state : null;
-        if (!state || (!state.modelEffectiveWindow && !state.nctxCeiling)) return;
-        var modelName = editorEl.getAttribute('data-model') || '';
-        var entry = modelEffectiveEntry(modelName, state.modelEffectiveWindow);
-        var note = windowLimitNote(entry, state.nctxCeiling || null);
+        if (!state || (!state.modelEffectiveWindow && !state.nctxCeiling)) return false;
+        var modelName = (editorEl && editorEl.getAttribute) ? (editorEl.getAttribute('data-model') || '') : '';
+        return paintWindowLimitNote(editorEl,
+            modelEffectiveEntry(modelName, state.modelEffectiveWindow),
+            state.nctxCeiling || null);
+    }
+
+    /**
+     * paintWindowLimitNote — нарисовать «предел окна» из ГОТОВЫХ entry/ceiling.
+     *
+     * null/undefined в обоих аргументах означает «данных не было» — тогда блок не
+     * создаётся вовсе (пустая плашка «предел окна не задан» на каждой карточке
+     * была бы шумом, а не фактом).
+     */
+    function paintWindowLimitNote(editorEl, entry, ceiling) {
+        if (!editorEl || typeof document === 'undefined') return false;
+        if (!entry && !ceiling) return false;
+        var modelName = (editorEl.getAttribute) ? (editorEl.getAttribute('data-model') || '') : '';
+        var note = windowLimitNote(entry || null, ceiling || null);
         var box = editorEl.querySelector('.gguf-mp-limit');
         if (!box) {
             box = document.createElement('div');
@@ -438,6 +578,7 @@
         box.setAttribute('data-nctx-limit', modelName);
         box.setAttribute('title', note.text);
         box.textContent = note.text;
+        return true;
     }
 
     // applyInheritedDefaults — R229: значения по умолчанию (что именно унаследует
@@ -495,15 +636,25 @@
         if (!editorEl) return;
         profile = profile || {};
         var SF = (typeof window !== 'undefined' && window.SafeForm) || null;
+        var C = asyncCache();
         MODEL_PARAM_SPECS.forEach(function (spec) {
             var raw = profile[spec.field];
             var cell = editorEl.querySelector('[data-profile-field="' + spec.field + '"]');
             var input = editorEl.querySelector('.gguf-mp-field[data-field="' + spec.field + '"]');
             var known = !(raw === undefined || raw === null || raw === '');
             if (cell) {
-                cell.innerHTML = known
+                var cellHtml = known
                     ? Utils.escapeHtml(formatParamValue(spec, raw) || String(raw))
                     : '<span class="gguf-mp-none">' + Utils.escapeHtml(_('gguf.mp_not_in_profile', '— не задано —')) + '</span>';
+                // R691: ячейка «В профиле» обновляется только при реальном
+                // изменении значения. Иначе фоновое обновление (тот же ответ)
+                // пересоздавало бы содержимое ячейки — лишняя подмена DOM ровно
+                // там, где оператор читает значение.
+                if (C && typeof C.setRendered === 'function') {
+                    C.setRendered(cell, function (node) { node.innerHTML = cellHtml; });
+                } else {
+                    cell.innerHTML = cellHtml;
+                }
             }
             if (!input) return;
             if (input.type === 'checkbox') {
@@ -621,6 +772,30 @@
         return false;
     }
 
+        // ----- R691 (2026-11-23): блок «параметры модели» в кэше страницы -----
+        //
+        // РЕДАКТОР — ТОЖЕ АСИНХРОННЫЙ БЛОК. Карточка рисуется сразу, а значения
+        // профиля и «предел окна» приходят ответом GET model-profiles. До R691
+        // пересборка панели уничтожала и то и другое, а повторная гидратация
+        // запускалась только кликом по карточке: живой замер r690 — после
+        // пересборки 3 пометки «предел окна» → 0, и через 4 с без клика они не
+        // возвращались. Регистрируем блок с ключом ПО МОДЕЛИ (контекст кэша —
+        // страница+бэкенд+вкладка+модель): чужие значения не подставятся, а после
+        // пересборки последнее отрисованное вернётся сразу.
+        (function registerModelParamsBlock() {
+            var C = asyncCache();
+            if (!C || typeof C.register !== 'function') return;
+            C.register({
+                kind: 'modelProfile',
+                pane: '*',
+                scope: 'model',
+                selector: '.gguf-mp-editor[data-model]',
+                modelOf: function (el) { return el.getAttribute('data-model') || ''; },
+                render: function (el, data) { paintModelEditor(el, data); },
+                revalidate: function () { refreshModelParamEditors(); }
+            });
+        })();
+
         return {
             paramOrigin: paramOrigin,
             loadedParamsFor: loadedParamsFor,
@@ -634,11 +809,15 @@
             windowLimitNote: windowLimitNote,
             modelEffectiveEntry: modelEffectiveEntry,
             paintWindowLimit: paintWindowLimit,
+            paintWindowLimitNote: paintWindowLimitNote,
             applyInheritedDefaults: applyInheritedDefaults,
             hydrateOnOpen: hydrateOnOpen,
             fillModelParamEditor: fillModelParamEditor,
             collectModelParams: collectModelParams,
-            applyModelParams: applyModelParams
+            applyModelParams: applyModelParams,
+            // R691: восстановление из кэша и фоновое обновление редакторов.
+            paintModelEditor: paintModelEditor,
+            refreshModelParamEditors: refreshModelParamEditors
         };
     };
 })();

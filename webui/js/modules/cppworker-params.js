@@ -76,16 +76,45 @@
      *     загруженные) с эффективными настройками и кнопкой «Настроить».
      */
     async function loadAndRender() {
+        // R691: сначала возвращаем последнее отрисованное (пересборка панели не
+        // должна показывать заглушку), затем догружаем свежее.
+        paintCachedBlocks();
         const listEl = document.getElementById('cppProfilesList');
         if (!listEl) return;
 
-        listEl.innerHTML = '<div class="loading">' + (I18N.t('common.loading', 'Загрузка...')) + '</div>';
+        const C = asyncCache();
+        const ticket = C ? C.begin('cppProfiles', {}) : null;
+        if (C && !ticket) {
+            // Список профилей уже запрашивается. Блоки дефолтов/каталога всё
+            // равно догружаем: у них свои тикеты.
+            loadAndRenderDefaults();
+            loadAndRenderCatalog();
+            return;
+        }
+        if (cacheRead('cppProfiles') === undefined) {
+            listEl.innerHTML = '<div class="loading">' + (I18N.t('common.loading', 'Загрузка...')) + '</div>';
+        }
 
         try {
             const data = await PROFILES.list();
-            renderProfiles(data.models || {}, listEl);
+            if (C) {
+                if (ticket ? !C.commit(ticket, data) : false) return; // ответ устарел
+                if (!ticket) C.write('cppProfiles', data);
+                if (!stillCurrent(C, ticket, 'cppProfiles')) return; // сменился контекст
+            }
+            // R691: тот же «не моргать» — если ответ не изменил разметку, DOM
+            // списка не пересоздаётся (проверено замером: лишняя подмена при
+            // неизменном ответе давала «моргание» кнопок профилей).
+            paintInto(listEl, data, function (node, d) {
+                renderProfiles((d && d.models) || {}, node);
+            });
         } catch (e) {
-            listEl.innerHTML = '<div class="cpp-profiles-empty">' + escapeHtml(e.message || String(e)) + '</div>';
+            if (C && ticket) C.abort(ticket);
+            // Есть что показать — ошибка не затирает последнюю картинку, но
+            // блоки дефолтов/каталога всё равно догружаются (у них свои ошибки).
+            if (cacheRead('cppProfiles') === undefined) {
+                listEl.innerHTML = '<div class="cpp-profiles-empty">' + escapeHtml(e.message || String(e)) + '</div>';
+            }
         }
 
         // Блоки ниже независимы: их падение не должно ломать список профилей.
@@ -113,6 +142,120 @@
         return out;
     }
 
+    // ----- R691 (2026-11-23): блоки переживают пересборку панели ---------------
+    //
+    // ЖИВАЯ ЖАЛОБА (из отчёта R689, подтверждена замером на r690): при реальном
+    // изменении данных правая панель GGUF пересобирается, и ТРИ блока этого
+    // модуля снова оказываются заглушкой «Загрузка…» — потому что рисуются они
+    // ПОСЛЕ панели по ответам API, а пересборка их разметку уничтожает.
+    // Замер ДО правки: 2 блока в заглушке сразу после пересборки, 0 фоновых
+    // запросов за 20 с, содержимое не вернулось; высота панели 4268 → 1935 px.
+    //
+    // ЧТО ИЗМЕНЕНО. Последний успешно отрисованный ОТВЕТ каждого блока кладётся
+    // в общий кэш страницы (js/modules/gguf-async-cache.js) и подставляется
+    // обратно из него сразу после пересборки. Заглушка ставится только если в
+    // этом контексте (страница+бэкенд+вкладка) данных ещё не было — требование
+    // «Загрузка… только там, где данных ни разу не было». Устаревший ответ не
+    // применяется: перед запросом берётся тикет (`begin`), после ответа —
+    // `commit`; если пока запрос шёл, кэш инвалидировали или начался новый
+    // запрос, ответ отбрасывается.
+    function asyncCache() {
+        return (typeof window !== 'undefined' && window.GgufAsyncCache) || null;
+    }
+
+    /** cacheRead — последнее содержимое блока (мост: и помеченное устаревшим). */
+    function cacheRead(kind) {
+        const C = asyncCache();
+        if (!C || typeof C.read !== 'function') return undefined;
+        const fresh = C.read(kind, {});
+        if (fresh !== undefined) return fresh;
+        return C.read(kind, {}, { allowStale: true });
+    }
+
+    /**
+     * paintInto — нарисовать блок из данных, не трогая DOM, если разметка та же.
+     *
+     * Сравнение делает setRendered: рендерер блока навешивает обработчики на
+     * СВОИ узлы, поэтому нельзя рисовать «в никуда» и вставлять готовый HTML —
+     * кнопки «Изменить»/«Настроить» перестали бы работать. Два прохода
+     * (detached div → сравнение → живой узел) стоят дешевле одного мигания.
+     */
+    function paintInto(el, data, renderFn) {
+        const C = asyncCache();
+        if (!el || typeof renderFn !== 'function') return false;
+        if (C && typeof C.setRendered === 'function') {
+            return C.setRendered(el, function (node) { renderFn(node, data); });
+        }
+        renderFn(el, data);
+        return true;
+    }
+
+    /**
+     * paintCachedBlocks — мгновенно вернуть содержимое всех трёх блоков из кэша.
+     *
+     * Вызывается и после пересборки панели (через restore в refresh-модуле), и
+     * перед каждой перезагрузкой данных: пока идёт сеть, оператор видит
+     * последнее отрисованное, а не заглушку.
+     *
+     * @returns {number} сколько блоков получило содержимое.
+     */
+    function paintCachedBlocks() {
+        const C = asyncCache();
+        if (!C || typeof C.read !== 'function') return 0;
+        let painted = 0;
+        const profiles = cacheRead('cppProfiles');
+        const listEl = document.getElementById('cppProfilesList');
+        if (profiles !== undefined && listEl) {
+            paintInto(listEl, profiles, function (node, d) {
+                renderProfiles((d && d.models) || {}, node);
+            });
+            painted++;
+        }
+        const defaults = cacheRead('cppLoadDefaults');
+        if (defaults !== undefined) {
+            findTargets('cppLoadDefaults', 'cpp-load-defaults').forEach(function (t) {
+                paintInto(t, defaults, function (node, d) { renderLoadDefaults(d || {}, node); });
+            });
+            painted++;
+        }
+        const catalog = cacheRead('cppModelCatalog');
+        if (catalog !== undefined) {
+            findTargets('cppModelCatalog', 'cpp-model-catalog').forEach(function (t) {
+                paintInto(t, catalog, function (node, d) { renderModelCatalog(d || {}, node); });
+            });
+            painted++;
+        }
+        return painted;
+    }
+
+    /**
+     * invalidateCachedBlocks — после записи данных кэш блоков больше не свежий.
+     *
+     * R691: «сохранил» значит «показанное устарело». Помечаем записи устаревшими
+     * (не стираем): содержимое остаётся на экране, пока идёт запрос, — заглушка
+     * на месте только что показанных данных была бы регрессом того же дефекта.
+     * Первый же успешный ответ заменяет запись и перерисовывает блок.
+     */
+    function invalidateCachedBlocks(reason, kinds) {
+        const C = asyncCache();
+        if (!C || typeof C.invalidate !== 'function') return 0;
+        return C.invalidate(reason || 'saved', kinds ? { kinds: kinds } : undefined);
+    }
+
+    /**
+     * stillCurrent — контекст блока не сменился, пока шёл ответ.
+     *
+     * ЗАЧЕМ. Оператор мог переключить бэкенд/вкладку, пока запрос был в полёте.
+     * commit() отвергает устаревший ответ, но ответ, пришедший в ДРУГОЙ контекст
+     * (например, сразу после смены бэкенда), нельзя рисовать в текущую панель:
+     * данные описывают другой бэкенд. Рисуем только когда ключ контекста совпадает
+     * с тем, в котором запрос начинался.
+     */
+    function stillCurrent(C, ticket, kind) {
+        if (!C || !ticket || typeof C.keyOf !== 'function') return true;
+        return C.keyOf(kind, {}) === ticket.key;
+    }
+
     async function loadAndRenderDefaults() {
         const targets = findTargets('cppLoadDefaults', 'cpp-load-defaults');
         if (targets.length === 0) return;
@@ -120,12 +263,28 @@
             targets.forEach(function (t) { t.innerHTML = ''; });
             return;
         }
-        const loading = '<div class="loading">' + escapeHtml(I18N.t('common.loading', 'Загрузка...')) + '</div>';
-        targets.forEach(function (t) { t.innerHTML = loading; });
+        const C = asyncCache();
+        const ticket = C ? C.begin('cppLoadDefaults', {}) : null;
+        if (C && !ticket) return; // уже запрашивается — дубль не нужен
+        // Заглушка — ТОЛЬКО если данных ещё ни разу не было (R691).
+        if (cacheRead('cppLoadDefaults') === undefined) {
+            const loading = '<div class="loading">' + escapeHtml(I18N.t('common.loading', 'Загрузка...')) + '</div>';
+            targets.forEach(function (t) { t.innerHTML = loading; });
+        }
         try {
             const data = await LOAD_DEFAULTS.get();
-            targets.forEach(function (t) { renderLoadDefaults(data || {}, t); });
+            if (C) {
+                if (ticket ? !C.commit(ticket, data) : false) return; // ответ устарел
+                if (!ticket) C.write('cppLoadDefaults', data);
+                if (!stillCurrent(C, ticket, 'cppLoadDefaults')) return; // сменился контекст
+            }
+            targets.forEach(function (t) {
+                paintInto(t, data || {}, function (node, d) { renderLoadDefaults(d, node); });
+            });
         } catch (e) {
+            if (C && ticket) C.abort(ticket);
+            // Есть что показать — ошибка не должна затирать последнюю картинку.
+            if (cacheRead('cppLoadDefaults') !== undefined) return;
             const msg = '<div class="cpp-profiles-empty">' + escapeHtml(e.message || String(e)) + '</div>';
             targets.forEach(function (t) { t.innerHTML = msg; });
         }
@@ -378,6 +537,8 @@
                 showToast('success', I18N.t('settings.load_defaults.saved',
                     'Настройки по умолчанию сохранены'));
                 box.innerHTML = '';
+                // R691: значение записано — показанное в блоках устарело.
+                invalidateCachedBlocks('saved', ['cppLoadDefaults', 'cppModelCatalog']);
                 await loadAndRenderDefaults();
             } catch (err) {
                 showToast('error', err.message || String(err));
@@ -394,12 +555,26 @@
             targets.forEach(function (t) { t.innerHTML = ''; });
             return;
         }
-        const loading = '<div class="loading">' + escapeHtml(I18N.t('common.loading', 'Загрузка...')) + '</div>';
-        targets.forEach(function (t) { t.innerHTML = loading; });
+        const C = asyncCache();
+        const ticket = C ? C.begin('cppModelCatalog', {}) : null;
+        if (C && !ticket) return; // уже запрашивается
+        if (cacheRead('cppModelCatalog') === undefined) {
+            const loading = '<div class="loading">' + escapeHtml(I18N.t('common.loading', 'Загрузка...')) + '</div>';
+            targets.forEach(function (t) { t.innerHTML = loading; });
+        }
         try {
             const data = await LOAD_DEFAULTS.catalog();
-            targets.forEach(function (t) { renderModelCatalog(data || {}, t); });
+            if (C) {
+                if (ticket ? !C.commit(ticket, data) : false) return; // ответ устарел
+                if (!ticket) C.write('cppModelCatalog', data);
+                if (!stillCurrent(C, ticket, 'cppModelCatalog')) return; // сменился контекст
+            }
+            targets.forEach(function (t) {
+                paintInto(t, data || {}, function (node, d) { renderModelCatalog(d, node); });
+            });
         } catch (e) {
+            if (C && ticket) C.abort(ticket);
+            if (cacheRead('cppModelCatalog') !== undefined) return;
             const msg = '<div class="cpp-profiles-empty">' + escapeHtml(e.message || String(e)) + '</div>';
             targets.forEach(function (t) { t.innerHTML = msg; });
         }
@@ -639,6 +814,8 @@
                 }
                 await PROFILES.remove(name);
                 showToast('success', I18N.t('settings.profiles.deleted', 'Профиль удалён'));
+                // R691: профиль удалён — кэш списка и параметров модели устарел.
+                invalidateCachedBlocks('saved', ['cppProfiles', 'modelProfile']);
                 await loadAndRender();
             } else if (action === 'apply') {
                 await applyProfileWithProgress(name);
@@ -1072,6 +1249,10 @@
         try {
             await PROFILES.upsert(name, body);
             closeWizard();
+            // R691: профиль записан — кэш списка профилей, каталога и параметров
+            // моделей больше не свежий (заглушки не будет: последнее содержимое
+            // остаётся, пока идёт ответ).
+            invalidateCachedBlocks('saved', ['cppProfiles', 'cppModelCatalog', 'modelProfile']);
             await loadAndRender();
 
             // R83 (2026-09-29): «нажал Сохранить — ничего не изменилось».
@@ -1143,6 +1324,9 @@
         const applyFn = (typeof applier === 'function')
             ? applier
             : function () { return PROFILES.apply(modelName, undefined, backendID); };
+        // R691: применение профиля меняет эффективные значения модели — кэш
+        // параметров модели (и каталога, где видно «свой профиль») устарел.
+        invalidateCachedBlocks('saved', ['modelProfile', 'cppModelCatalog']);
         // Создаём modal
         const overlay = document.createElement('div');
         overlay.className = 'mode-wizard-overlay';
@@ -1421,9 +1605,53 @@
         init();
     }
 
+    // ----- R691: регистрация блоков в кэше страницы ---------------------------
+
+    // Регистрируем ОДИН раз на страницу (register идемпотентен по kind). Блоки
+    // живут на вкладке «Настройки» правой панели GGUF; selector намеренно
+    // включает и id (страница «Настройки»), и data-role (вкладка GGUF), потому
+    // что restore() ищет их ТОЛЬКО внутри пересобранной панели.
+    //
+    // revalidate — заново запросить данные блока. Вызывается после пересборки
+    // панели: кэш подставил последнее содержимое, ответ заменит его свежим.
+    (function registerAsyncBlocks() {
+        const C = asyncCache();
+        if (!C || typeof C.register !== 'function') return;
+        C.register({
+            kind: 'cppProfiles',
+            pane: 'settings',
+            selector: '#cppProfilesList',
+            render: function (el, data) {
+                renderProfiles((data && data.models) || {}, el);
+            },
+            revalidate: function () { loadAndRender(); }
+        });
+        C.register({
+            kind: 'cppLoadDefaults',
+            pane: 'settings',
+            selector: '[data-role="cpp-load-defaults"], #cppLoadDefaults',
+            render: function (el, data) {
+                renderLoadDefaults(data || {}, el);
+            },
+            revalidate: function () { loadAndRenderDefaults(); }
+        });
+        C.register({
+            kind: 'cppModelCatalog',
+            pane: 'settings',
+            selector: '[data-role="cpp-model-catalog"], #cppModelCatalog',
+            render: function (el, data) {
+                renderModelCatalog(data || {}, el);
+            },
+            revalidate: function () { loadAndRenderCatalog(); }
+        });
+    })();
+
     // Экспорт для тестов и debugging
     window.CppWorkerParams = {
         loadAndRender,
+        // R691: содержимое блоков из кэша (без сети) и пометка «устарело».
+        paintCachedBlocks,
+        invalidateCachedBlocks,
         openWizard,
         applyProfileWithProgress,
         profileToWizardState,

@@ -311,6 +311,18 @@
             // иначе ближайший авто-проход пересоберёт панель и снова превратит
             // профили/defaults/catalog в «Загрузка…» (см. rebaselinePanel).
             rebaselinePanel();
+            // R691 (2026-11-23): это же и ЯВНЫЙ Reload асинхронных блоков вкладки
+            // («Обновить параметры»/клик по табу). Кэш блоков больше не свежий, но
+            // содержимое не стирается (заглушки не будет), а данные догружаются
+            // заново — профили моделей, «что получат новые модели», каталог.
+            if (window.GgufAsyncCache && typeof window.GgufAsyncCache.invalidate === 'function') {
+                window.GgufAsyncCache.invalidate('reload', {
+                    kinds: ['cppProfiles', 'cppLoadDefaults', 'cppModelCatalog']
+                });
+            }
+            if (window.CppWorkerParams && typeof window.CppWorkerParams.loadAndRender === 'function') {
+                window.CppWorkerParams.loadAndRender();
+            }
             // Round 35c+ (2026-08-13): init gpu_layers live badge (после render, чтобы
             // badge отражал текущее значение gpu, а не дефолт "AUTO" в HTML).
             if (Utils.updateGpuLayersBadge) {

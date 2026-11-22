@@ -450,6 +450,16 @@
         // refreshDetailPanel/Pane, где и решается «перерисовывать сейчас или
         // отложить, чтобы не стереть заполняемую форму».
         const auto = !!(opts && opts.auto);
+        // R691 (2026-11-23): ЯВНОЕ «Обновить» — повод не доверять кэшу
+        // асинхронных блоков: помечаем записи устаревшими. Пересборка панели
+        // нарисует последнее отрисованное (заглушки не будет), а пришедшие
+        // ответы заменят его. Автоматический проход ({auto:true}) кэш не трогает:
+        // блоки всё равно перезапрашиваются после пересборки.
+        if (!auto && typeof window !== 'undefined' && window.GgufAsyncCache &&
+            typeof window.GgufAsyncCache.invalidate === 'function') {
+            try { window.GgufAsyncCache.invalidate('refresh'); }
+            catch (e) { console.warn('[gguf-renderer] async cache invalidate failed:', e); }
+        }
         // R-MultiHost (2026-10-07): синхронизируем выбранный бэкенд с API-клиентом
         // ПЕРЕД любым действием с диском воркера. Выбор мог быть восстановлен не
         // через M.selectBackend (например, общим renderers.js), поэтому одной
@@ -964,13 +974,42 @@ M.refreshActiveQueriesPolling = function() {
     function renderIntoDetail(node, renderFn, opts) {
         var G = detailFormState();
         if (G && typeof G.rebuild === 'function') {
-            return G.rebuild(node, renderFn, opts);
+            var rebuilt = G.rebuild(node, renderFn, opts);
+            // R691 (2026-11-23): пересборка РЕАЛЬНО произошла — вернуть
+            // асинхронные блоки (профили, «что получат новые модели», каталог,
+            // параметры моделей) из кэша СРАЗУ, синхронно, и поставить их
+            // фоновое обновление. Без этого в свежей разметке панели на их месте
+            // оставалась заглушка «Загрузка…» до повторного клика по вкладке
+            // (живой замер r690: 2 блока в заглушке, 0 фоновых запросов за 20 с).
+            if (rebuilt) { restoreAsyncBlocks(node); }
+            return rebuilt;
         }
         // Модуль защиты не загружен (усечённая сборка/тест): прежнее поведение.
         var html = renderFn();
         if (html === null || html === undefined) { return false; }
         node.innerHTML = String(html);
+        restoreAsyncBlocks(node);
         return true;
+    }
+
+    /**
+     * restoreAsyncBlocks — вернуть содержимое асинхронных блоков после подмены DOM.
+     *
+     * Кэш (js/modules/gguf-async-cache.js) отдаёт последнее успешно отрисованное
+     * содержимое и сам ставит в очередь фоновое обновление. Здесь только
+     * вызов: модуль кэша необязателен (усечённая сборка), поэтому любые ошибки
+     * глушим — пересборка панели важнее украшения.
+     */
+    function restoreAsyncBlocks(node) {
+        if (typeof window === 'undefined') { return null; }
+        var C = window.GgufAsyncCache;
+        if (!C || typeof C.restore !== 'function') { return null; }
+        try {
+            return C.restore(node);
+        } catch (e) {
+            console.warn('[gguf-renderer] async blocks restore failed:', e);
+            return null;
+        }
     }
 
     M.refreshDetailPanel = function(opts) {

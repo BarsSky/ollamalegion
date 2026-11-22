@@ -2787,8 +2787,14 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          обновлены N с назад · перерисовка приостановлена, пока вы вводите».
          Грузится ДО модуля защиты: тот зовёт её при отложенной пересборке. -->
     <script defer src="js/modules/gguf-refresh-status.js?v=R689"></script>
-    <script defer src="js/modules/gguf-detail-form-state.js?v=R688"></script>
-    <script defer src="js/modules/gguf-renderer-refresh.js?v=R425"></script>
+    <!-- R691 (2026-11-23): кэш содержимого асинхронных блоков правой панели
+         (профили моделей, «что получат новые модели», каталог, параметры модели).
+         Грузится ДО модуля защиты и ДО refresh-модуля: пересборка панели зовёт
+         window.GgufAsyncCache.restore(root), а модули блоков — register().
+         Без него пересборка снова оставляла бы блоки заглушкой «Загрузка…». -->
+    <script defer src="js/modules/gguf-async-cache.js?v=R691"></script>
+    <script defer src="js/modules/gguf-detail-form-state.js?v=R691"></script>
+    <script defer src="js/modules/gguf-renderer-refresh.js?v=R691"></script>
     <script defer src="js/modules/gguf-page-provider.js?v=R425"></script>
     <!-- R57.5e (2026-09-03): delegated click handler + bindEvents + bindSettingsChange. -->
     <script defer src="js/modules/gguf-renderer-detail.js?v=R425"></script>
@@ -2804,8 +2810,8 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          подключалась — gguf-detail-settings.js падал на ней следующей строкой после
          исправления R668. Тот же корень: при выделении фабрик из монолита теги
          подключения не добавили. Порядок обязателен: params → settings → render. -->
-    <script defer src="js/modules/gguf-detail-params.js?v=R669"></script>
-    <script defer src="js/modules/gguf-detail-settings.js?v=R668"></script>
+    <script defer src="js/modules/gguf-detail-params.js?v=R691"></script>
+    <script defer src="js/modules/gguf-detail-settings.js?v=R691"></script>
     <!-- R57.5f (2026-09-03): right panel render functions (renderDetailPanel, 4 sub-panes, settings, backend options). -->
     <script defer src="js/modules/gguf-renderer-detail-render.js?v=R425"></script>
     <script defer src="js/modules/gguf-renderer.js?v=R425"></script>
@@ -2823,7 +2829,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
      4 шага) спрашивал то, чего больше нет (режим, тип бэкенда), а писал три
      реально влияющих порога и один мёртвый (vramMaxUsage). -->
 <script defer src="js/modules/first-run-card.js?v=R596"></script>
-    <script defer src="js/modules/cppworker-params.js?v=R425"></script>
+    <script defer src="js/modules/cppworker-params.js?v=R691"></script>
     <script defer src="js/modules/bulk-models.js?v=R425"></script>
     <script defer src="js/modules/notifications.js?v=R425"></script>
     <script defer src="js/modules/logs-stream.js?v=R425"></script>

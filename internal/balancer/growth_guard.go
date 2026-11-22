@@ -109,6 +109,15 @@ func (p *Proxy) growthDeferR299(backendID, model string, body []byte, path strin
 	if served, _ := windowServeAsIsR447(estimated, loaded, meta.RequestedNCtxOverride); served {
 		return false, estimated, loaded, needed, 0, false
 	}
+	// R664 (2026-11-20) ШАГ B: «данные не влезают, окна клиент не заявил» —
+	// решение НЕ зависит от занятости. Окно без заявки не вырастет ни сейчас, ни
+	// через минуту (основание роста — только заявка, R83/R68), поэтому откладывать
+	// нечего: пусть preflight ответит 413 с числами. Прежнее поведение отдавало
+	// такому запросу 503 «подождите» на занятом узле и 413 на свободном — один и
+	// тот же вход получал разные ответы в зависимости от чужого трафика.
+	if action, _ := growthActionForR664(estimated, loaded, meta.RequestedNCtxOverride); action == growthRefuseR664 {
+		return false, estimated, loaded, needed, 0, false
+	}
 	active, reloadPending = growthBlockersR288(p, backendID, model)
 	if active == 0 && !reloadPending {
 		// Рост возможен — пусть preflight попробует.

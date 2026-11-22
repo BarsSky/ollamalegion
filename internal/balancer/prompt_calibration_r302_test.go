@@ -224,15 +224,18 @@ func TestR302_AcceptanceNoFalseRefusalOnRussian(t *testing.T) {
 	// 32768 — ровно та картина, в которой балансер отказывал живому запросу.
 	//
 	// R385 (2026-11-01): исход этого сценария ИЗМЕНИЛСЯ осознанно. Раньше здесь
-	// был отказ (Defer), потому что стриминговый путь окно не растил. Теперь
-	// запрос с большим окном поднимает модель: сценарий «ложный отказ» стал
-	// недостижим при свободной модели — балансер не отказывает, а растит окно.
-	// Отказ остаётся только когда рост запрещён/невозможен (см. R301-тесты с
-	// LB_NCTX_GROW_FOR_STREAM=0).
+	// был отказ (Defer), потому что стриминговый путь окно не растил. Дальше он
+	// стал ростом окна.
+	//
+	// R664 ШАГ B (2026-11-20): заявки клиента в этом теле НЕТ, поэтому роста тоже
+	// нет — ответ окончательный, 413 с числами. Ложный отказ на ЗАВЫШЕННОЙ оценке
+	// (66001 против фактических 17616) остаётся ровно тем дефектом, ради которого
+	// существует калибровка: поэтому «до R302» здесь ожидается именно отказ, а
+	// ниже — что с калибровкой его нет.
 	rawOnly := newPromptCalibProxyR302(32768, nil)
-	if v := rawOnly.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", true); !v.Grow || v.Defer {
-		t.Fatalf("до R302 должен быть рост окна (а не отказ): grow=%v defer=%v estimated=%d loaded=%d",
-			v.Grow, v.Defer, v.Estimated, v.Loaded)
+	if v := rawOnly.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", true); !v.Refuse || v.Grow {
+		t.Fatalf("до R302 на завышенной оценке ожидался отказ с числами (grow=%v refuse=%v "+
+			"estimated=%d loaded=%d)", v.Grow, v.Refuse, v.Estimated, v.Loaded)
 	}
 
 	// Запасного коэффициента одного уже достаточно, чтобы ЭТОТ отказ не
@@ -254,8 +257,8 @@ func TestR302_AcceptanceNoFalseRefusalOnRussian(t *testing.T) {
 	if v.Loaded != 32768 {
 		t.Fatalf("загруженное окно в вердикте = %d, want 32768", v.Loaded)
 	}
-	if v.Defer {
-		t.Fatalf("ЛОЖНЫЙ ОТКАЗ: estimated=%d raw=%d loaded=%d — запрос с фактическими 17616 не влезает по оценке",
+	if v.Defer || v.Refuse {
+		t.Fatalf("ЛОЖНЫЙ ОТКАЗ: estimated=%d raw=%d loaded=%d — запрос с фактическими 17616 влезает в окно",
 			v.Estimated, raw, v.Loaded)
 	}
 	if v.Estimated < 16000 || v.Estimated > 19500 {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -228,7 +229,15 @@ func (p *Proxy) applyPreflightOutcome(
 				"backend", backendID, "model", modelFromCtx, "msg", preflightMsg)
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-NCtx-Reload-Decision", "infeasible")
+			// R664 (2026-11-20) ШАГ B: у отказа может быть ГОТОВОЕ тело (машинный
+			// код + числа, см. makePromptExceedsWindowRejectR664). Тогда оно
+			// пишется как есть: обёртка `{"error":<текст>,"decision":...}` съела бы
+			// и код, и поля-числа, ради которых отказ и сделан.
 			body := []byte(fmt.Sprintf(`{"error":%q,"decision":"n_ctx_infeasible"}`, preflightMsg))
+			if trimmed := strings.TrimSpace(preflightMsg); strings.HasPrefix(trimmed, "{") &&
+				json.Valid([]byte(trimmed)) {
+				body = []byte(trimmed)
+			}
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			_, _ = w.Write(body)

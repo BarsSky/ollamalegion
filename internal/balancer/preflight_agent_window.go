@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 
+	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -182,4 +183,25 @@ func agentRequiredWindowAtLeast(meta *RequestMeta, floor int) int {
 		need = floor
 	}
 	return need
+}
+
+// minDeclarableWindowR664 — МИНИМАЛЬНОЕ окно НА КЛИЕНТА, которое надо заявить,
+// чтобы промпт был обслужен (R664, шаг B).
+//
+// Зачем отдельная функция. Это число уходит клиенту в теле отказа
+// `context_window_exhausted_no_growth_request` как required_window_tokens: по нему
+// клиент/оператор понимает, ЧТО заявить. Считать его вторым способом нельзя —
+// иначе отказ назовёт одно окно, а preflight по той же заявке потребует другое
+// (класс R267: «правка одного слоя не лечила другой»).
+//
+// Слагаемые те же, что у agentRequiredWindowAtLeast в режиме minimal (R451):
+// промпт + нижняя граница ответа (agentOutputReserveMinTokens, R502) + slack
+// шаблона. Выравнивание по 256 — потому что воркер отдаёт окно слота
+// выровненным (R493-12h), и «ровно 13599» в отказе было бы числом, которого у
+// модели не бывает.
+func minDeclarableWindowR664(promptTokens int) int {
+	if promptTokens <= 0 {
+		return 0
+	}
+	return cppbackend.PadContext(promptTokens + agentOutputReserveMinTokens + agentWindowSlackTokens)
 }

@@ -144,6 +144,95 @@ func makeWindowTooBigReject(
 	}
 }
 
+// contextWindowExhaustedCodeR664 — машинный код отказа «данные не влезают, а окно
+// клиент не заявил» (R664, шаг B).
+//
+// Один код на ВСЕ пути (preflight-движок и стриминговый вердикт R301): клиент и
+// оператор должны видеть одну причину, а не три разных текста. Код машинный,
+// потому что по нему клиент решает, что делать («заявить окно»), — человеческий
+// текст для этого не годится (R664: «отказать с конкретными числами, чтобы было
+// понятно, что заявить»).
+const contextWindowExhaustedCodeR664 = "context_window_exhausted_no_growth_request"
+
+// contextWindowExhaustedBodyR664 — ОДНО тело отказа шага B, собранное из чисел.
+//
+// ПОЧЕМУ ИЗ ЧИСЕЛ, А НЕ ИЗ СОСТОЯНИЯ. Тело нужно двум путям: preflight-движку (у
+// него есть NCtxBackendState: GGUF, операторский потолок, слоты) и стриминговому
+// вердикту R301 (у него только числа решения). Второе тело для второго пути —
+// ровно тот класс, из которого выросли «два мозга» (R493): один и тот же отказ,
+// записанный дважды, расходится на первой же правке.
+//
+// ЧИСЛА (все — в токенах; окно на клиента, единица llama.cpp при kv_unified=false):
+//
+//	prompt_tokens            сколько токенов в промпте по нашей оценке;
+//	loaded_window_tokens     окно ОДНОГО слота сейчас (столько дадут клиенту);
+//	required_window_tokens   МИНИМУМ, который нужно заявить (промпт + нижняя
+//	                         граница ответа + slack, выровнено по 256);
+//	requested_n_ctx          что заявил клиент (0 — не заявил ничего);
+//	available_context_tokens потолок НА КЛИЕНТА (0 = неизвестен): больше заявить
+//	                         нельзя, и совет «заявите больше» был бы ложью;
+//	physical_ceiling_tokens  суммарный физический потолок модели (0 = неизвестен).
+func contextWindowExhaustedBodyR664(
+	backendID, model string,
+	promptTokens, loadedWindow, requiredWindow, requested,
+	availablePerClient, physicalCeiling, slots, ggufMax, autoReloadMax int,
+) string {
+	body := map[string]interface{}{
+		"error": contextWindowExhaustedCodeR664,
+		"reason": i18n.T("balancer.preflight_nctx.context_window_exhausted_reason",
+			promptTokens, loadedWindow, requiredWindow),
+		"model":                    model,
+		"backend_id":               backendID,
+		"prompt_tokens":            promptTokens,
+		"loaded_window_tokens":     loadedWindow,
+		"required_window_tokens":   requiredWindow,
+		"requested_n_ctx":          requested,
+		"available_context_tokens": availablePerClient,
+		"physical_ceiling_tokens":  physicalCeiling,
+		"slots":                    normalizedSlotsR504(slots),
+		"context_per_seq":          loadedWindow,
+		"gguf_max_context":         ggufMax,
+		"auto_reload_max_n_ctx":    autoReloadMax,
+		"what_to_do": i18n.T("balancer.preflight_nctx.context_window_exhausted_what_to_do",
+			requiredWindow, availablePerClient),
+	}
+	encoded, _ := json.Marshal(body)
+	return string(encoded)
+}
+
+// makePromptExceedsWindowRejectR664 — HTTP 413: промпт не влезает в загруженное
+// окно, а окно клиент НЕ заявил (R664, шаг B).
+//
+// ЖИВОЙ ДЕФЕКТ, ради которого этот отказ существует. Запрос без num_ctx на
+// промпт 13023 при загруженном окне 8192 заставлял балансер вывести окно из
+// СОБСТВЕННОЙ оценки (оценка + бюджет + slack), выгрузить модель и загрузить её
+// заново — минуты простоя ради числа, которого клиент не просил, — и всё равно
+// не гарантировал обслуживание. После шага B рост идёт ТОЛЬКО под заявку
+// (R83/R68), а без заявки ответ — этот 413: модель остаётся работать (R294:
+// окно не уменьшаем, чужой ход не рвём), а клиент получает три числа и точное
+// действие.
+//
+// ЧЕМ ЭТО НЕ ЯВЛЯЕТСЯ. Это не отказ по потолку (makeWindowTooBigReject): там
+// клиент заявил окно, которого модель не даст; здесь — не заявил ничего, и
+// отказ ровно об этом (код отличается, потому что действие клиента другое).
+func makePromptExceedsWindowRejectR664(
+	state *NCtxBackendState, meta *RequestMeta,
+	promptTokens, loadedWindow, requiredWindow int,
+) *PreflightResult {
+	slots := state.effectiveSlots()
+	ceiling := state.physicalCeiling()
+	body := contextWindowExhaustedBodyR664(
+		state.BackendID, meta.ModelName,
+		promptTokens, loadedWindow, requiredWindow, meta.RequestedNCtxOverride,
+		derivedWindowCapR466(ceiling, slots), ceiling, slots,
+		state.GGUFMaxContext, state.AutoReloadMaxNCtx)
+	return &PreflightResult{
+		Decision:     PreflightReject,
+		RejectStatus: http.StatusRequestEntityTooLarge,
+		RejectBody:   body,
+	}
+}
+
 // nctxPreflightWaitDefaultSec — исторический дефолт 240 c (R68). Оставлен как
 // документация: R83/v67 убрал его из поведения — ждать нужно терминального
 // состояния reload, а не 240 секунд по часам.

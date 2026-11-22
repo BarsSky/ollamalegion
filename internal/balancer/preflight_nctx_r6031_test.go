@@ -14,6 +14,7 @@
 package balancer
 
 import (
+	"net/http"
 	"testing"
 
 	"ollama-loadbalancer/pkg/types"
@@ -118,32 +119,28 @@ func TestPreflight_R6031_NoExplicitClientOverride(t *testing.T) {
 		AutoReloadMaxNCtx: 131072,
 	}
 	res := DecidePreflight(meta, state, cfg)
-	// R253 (2026-10-28): КОНТРАКТ ИЗМЕНЁН. Раньше здесь ожидался NoOp («клиент не
-	// указал окно — не гадаем»), из-за чего Cline (он num_ctx не шлёт никогда) жил
-	// с неизменным окном и получал обрезанный вывод от cppworker. Теперь окно
-	// выводится из оценки промпта и растёт, когда промпт не влезает.
+	// R664 (2026-11-20) ШАГ B: КОНТРАКТ ИЗМЕНЁН. R253 выводил окно из оценки
+	// промпта и перезагружал модель — то есть растил под число, которого клиент не
+	// просил (оценка по символам завышает в 2–3 раза, R466), и платил за это
+	// минутами простоя. Теперь основание роста одно — заявка клиента (R83/R68), и
+	// без неё ответ: 413 context_window_exhausted_no_growth_request с числами.
 	//
-	// R451 (2026-11-06): таргет считается БЕЗ бюджета вывода клиента. Раньше
-	// ожидалось 5000+3000+64 = 8064, и второй ход Cline уезжал в unload+load на
-	// 243 с, хотя промпт в окно влезал (живой дефект: max_tokens 15393 раздувал
-	// «нужное окно» до 40134 при загруженных 32768). Закладывается только нижняя
-	// граница осмысленного вывода.
-	//
-	// R502 / аудит N-9: граница — 512, а не 256, и она ОБЩАЯ с воркером
-	// (types.ContextBudgetMinAnswerTokensR502): ниже 512 воркер не опускает
-	// n_predict и отвечает 413. При 256 балансер для остатка 300…511 решал
-	// «обслужить» — и клиент получал отказ при живом запасе окна.
-	wantTarget := 5000 + agentOutputReserveMinTokens + 64
-	if res.Decision != PreflightReload {
+	// Границы минимума те же, что закрепляли R451/R502 (промпт + 512 общего с
+	// воркером минимума ответа + 64 slack, выровнено по 256), — они теперь живут
+	// в minDeclarableWindowR664.
+	wantRequired := 5000 + agentOutputReserveMinTokens + 64
+	if res.Decision != PreflightReject || res.RejectStatus != http.StatusRequestEntityTooLarge {
 		t.Fatalf("промпт по оценке не влезает в загруженное окно 2048 — ожидался "+
-			"PreflightReload, получено %v", res.Decision)
+			"отказ 413 с числами, получено %v (status=%d)", res.Decision, res.RejectStatus)
 	}
-	if res.TargetNCtx != wantTarget {
-		t.Errorf("TargetNCtx=%d, ожидалось %d (промпт 5000 + минимальный вывод %d + 64)",
-			res.TargetNCtx, wantTarget, agentOutputReserveMinTokens)
+	out := assertWindowExhaustedR664(t, []byte(res.RejectBody), 5000)
+	if got := toIntR447(out["required_window_tokens"]); got < wantRequired || got > wantRequired+255 {
+		t.Fatalf("required_window_tokens = %d, ожидалось %d..%d (промпт 5000 + минимальный "+
+			"вывод %d + 64, выровнено по 256)", got, wantRequired, wantRequired+255,
+			agentOutputReserveMinTokens)
 	}
-	if !res.AgentDerivedWindow {
-		t.Error("ожидалась пометка AgentDerivedWindow (окно выведено из промпта)")
+	if res.AgentDerivedWindow {
+		t.Error("отказ не выводит окно — AgentDerivedWindow обязан быть false")
 	}
 
 	// Старое поведение (промпт + весь бюджет клиента) остаётся доступным
@@ -152,7 +149,8 @@ func TestPreflight_R6031_NoExplicitClientOverride(t *testing.T) {
 		t.Setenv("LB_AGENT_WINDOW_BUDGET", "client")
 		legacyCfg := DecidePreflight(meta, state, cfg)
 		if legacyCfg.Decision != PreflightReload {
-			t.Fatalf("в режиме client ожидался PreflightReload, получено %v", legacyCfg.Decision)
+			t.Fatalf("в режиме client ожидался PreflightReload, получено %v (%s)",
+				legacyCfg.Decision, legacyCfg.RejectBody)
 		}
 		if legacyCfg.TargetNCtx != 8064 {
 			t.Errorf("TargetNCtx=%d, ожидалось 8064 (промпт 5000 + вывод 3000 + 64)", legacyCfg.TargetNCtx)

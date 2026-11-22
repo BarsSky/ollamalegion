@@ -101,58 +101,27 @@ func TestR664_ClientAskedWindowGrowsInBackground(t *testing.T) {
 	}
 }
 
-// TestR447_OversizedPromptStillGrows — промпт, который не влезает, тоже растит.
-func TestR447_OversizedPromptStillGrows(t *testing.T) {
-	p := newGrowthGuardProxyR299()
-
-	v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301LongStreamBody()), "/api/chat", true)
-	if !v.Grow {
-		t.Fatalf("промпт не влезает в окно — рост обязателен, получено %+v", v)
-	}
-}
-
-// TestR447_GrowthNeedRule — правило «нужен ли рост» отдельно от прокси.
-func TestR447_GrowthNeedRule(t *testing.T) {
-	cases := []struct {
-		name              string
-		estimated, loaded int
-		requested         int
-		wantNeed          bool
-	}{
-		{"крошечный промпт, окно не просили", 3, 2048, 0, false},
-		{"промпт влезает с запасом, окно не просили", 1000, 2048, 0, false},
-		{"промпт влезает, но под ответ меньше минимума", 2000, 2048, 0, true},
-		{"промпт съел окно целиком", 2048, 2048, 0, true},
-		{"промпт не влезает", 4096, 2048, 0, true},
-		{"клиент попросил больше загруженного (R664: рост в фоне, не немедленный)", 3, 2048, 32768, false},
-		{"клиент попросил ровно загруженное", 3, 2048, 2048, false},
-		{"оценки нет, окно не просили", 0, 2048, 0, false},
-		{"оценки нет, клиент попросил больше (R664: рост в фоне)", 0, 2048, 4096, false},
-		{"загруженное окно неизвестно", 3, 0, 16384, false},
-	}
-	for _, tc := range cases {
-		need, why := growthNeedR447(tc.estimated, tc.loaded, tc.requested)
-		if need != tc.wantNeed {
-			t.Fatalf("%s: need = %v, want %v (причина: %s)", tc.name, need, tc.wantNeed, why)
-		}
-		if why == "" {
-			t.Fatalf("%s: причина не названа — оператор не поймёт решения", tc.name)
-		}
-	}
-}
-
-// TestR447_DeferredBodyUsesVerdictNumbers — тело отказа описывает ТО ЖЕ
-// состояние, что и его текст, даже если метрики успели измениться.
+// TestR447_DeferredBodyUsesVerdictNumbers — тело «отложено» (R291/R299) описывает
+// ТО ЖЕ состояние, что и решение, даже если метрики успели измениться.
+//
+// Вход — заявка клиента, которую путь выполнить не может (рост на стриминге
+// выключен выключателем, R472): тут отказ остаётся «повтори позже» с числами. Случай
+// «заявки нет вовсе» проверяется рядом (TestR447_RefusalBodyUsesVerdictNumbers) —
+// там отказ окончательный, 413.
 func TestR447_DeferredBodyUsesVerdictNumbers(t *testing.T) {
-	// Рост выключен принудительно: тест про ТЕЛО отказа, а не про то, можно ли
-	// поднять окно на этой машине (иначе исход зависел бы от свободной VRAM).
 	t.Setenv("LB_NCTX_GROW_FOR_STREAM", "0")
 	p := newGrowthGuardProxyR299()
-	body := []byte(r301LongStreamBody())
+	// Длинный промпт + явная заявка клиента: данные не влезают, но основание роста
+	// у запроса есть — значит это не шаг B, а «рост невозможен на этом пути».
+	body := []byte(strings.Replace(r301LongStreamBody(), `"stream":true`,
+		`"stream":true,"options":{"num_ctx":131072}`, 1))
 
 	v := p.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", true)
 	if !v.Defer {
-		t.Fatalf("ожидался отказ (промпт не влезает), получено %+v", v)
+		t.Fatalf("ожидался отказ «подождите» с числами, получено %+v", v)
+	}
+	if v.Refuse {
+		t.Fatalf("заявка у запроса ЕСТЬ — это не отказ шага B: %+v", v)
 	}
 
 	// Пока клиенту писали ответ, балансер «перезагрузил» модель: метрики уже
@@ -189,6 +158,104 @@ func TestR447_DeferredBodyUsesVerdictNumbers(t *testing.T) {
 	}
 	if got := toIntR447(out["retryAfterSec"]); got != growthDeferRetryAfterSecR447 {
 		t.Fatalf("retryAfterSec = %d, want %d", got, growthDeferRetryAfterSecR447)
+	}
+}
+
+// TestR447_OversizedPromptRefusedWithoutDeclaration — R664 (шаг B): промпт,
+// который не влезает в окно, больше НЕ растит его сам: без заявки клиента это
+// был бы рост под нашу же оценку промпта. Ответ — 413 с числами (сколько в
+// промпте, сколько загружено, сколько нужно заявить), модель не трогаем.
+func TestR447_OversizedPromptRefusedWithoutDeclaration(t *testing.T) {
+	p := newGrowthGuardProxyR299()
+
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301LongStreamBody()), "/api/chat", true)
+	if !v.Refuse {
+		t.Fatalf("промпт не влезает и окно не заявлено — ожидался отказ с числами, получено %+v", v)
+	}
+	if v.Grow || v.Defer {
+		t.Fatalf("рост/«подождите» на этот вход запрещены: окно без заявки не вырастет (получено %+v)", v)
+	}
+	if v.Estimated <= v.Loaded {
+		t.Fatalf("тест обязан воспроизводить «не влезает»: estimated=%d loaded=%d", v.Estimated, v.Loaded)
+	}
+	if v.Required < v.Estimated || v.Required <= v.Loaded {
+		t.Fatalf("required=%d: заявка меньше промпта (%d) или не больше загруженного (%d) бесполезна",
+			v.Required, v.Estimated, v.Loaded)
+	}
+}
+
+// TestR447_GrowthNeedRule — правило «нужен ли рост» отдельно от прокси.
+func TestR447_GrowthNeedRule(t *testing.T) {
+	cases := []struct {
+		name              string
+		estimated, loaded int
+		requested         int
+		wantNeed          bool
+	}{
+		{"крошечный промпт, окно не просили", 3, 2048, 0, false},
+		{"промпт влезает с запасом, окно не просили", 1000, 2048, 0, false},
+		{"промпт влезает, но под ответ меньше минимума", 2000, 2048, 0, true},
+		{"промпт съел окно целиком", 2048, 2048, 0, true},
+		// ШАГ B: «данные не влезают без заявки» — не немедленный рост, а отказ.
+		{"промпт не влезает, окна не просили (шаг B: отказ)", 4096, 2048, 0, false},
+		{"промпт не влезает, окно заявлено (рост по заявке)", 4096, 2048, 8192, true},
+		{"клиент попросил больше загруженного (R664: рост в фоне, не немедленный)", 3, 2048, 32768, false},
+		{"клиент попросил ровно загруженное", 3, 2048, 2048, false},
+		{"оценки нет, окно не просили", 0, 2048, 0, false},
+		{"оценки нет, клиент попросил больше (R664: рост в фоне)", 0, 2048, 4096, false},
+		{"загруженное окно неизвестно", 3, 0, 16384, false},
+	}
+	for _, tc := range cases {
+		need, why := growthNeedR447(tc.estimated, tc.loaded, tc.requested)
+		if need != tc.wantNeed {
+			t.Fatalf("%s: need = %v, want %v (причина: %s)", tc.name, need, tc.wantNeed, why)
+		}
+		if why == "" {
+			t.Fatalf("%s: причина не названа — оператор не поймёт решения", tc.name)
+		}
+	}
+}
+
+// TestR447_RefusalBodyUsesVerdictNumbers — тело отказа описывает ТО ЖЕ состояние,
+// что и решение, даже если метрики успели измениться.
+//
+// R664 (шаг B): когда окна клиент не заявил, отказ окончательный (413 с числами),
+// а не «отложено». Здесь проверяется ТЕЛО: три числа и код берутся из вердикта, а
+// не пересчитываются после перезагрузки (иначе клиент увидит окно, которого ещё
+// нет, — живой дефект R447).
+func TestR447_RefusalBodyUsesVerdictNumbers(t *testing.T) {
+	t.Setenv("LB_NCTX_GROW_FOR_STREAM", "0")
+	p := newGrowthGuardProxyR299()
+	body := []byte(r301LongStreamBody())
+
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", true)
+	if !v.Refuse {
+		t.Fatalf("ожидался отказ с числами (промпт не влезает, заявки нет), получено %+v", v)
+	}
+
+	// Пока клиенту писали ответ, балансер «перезагрузил» модель: метрики уже
+	// показывают 32768. Прежний writer пересчитал бы числа — и соврал бы.
+	p.metricsMgr.mu.Lock()
+	p.metricsMgr.llamaMetrics["bk-1"] = &types.LlamaCppMetrics{
+		LoadedModels: []types.LlamaCppModel{{Name: "m", ContextLength: 32768, State: "loaded"}},
+	}
+	p.metricsMgr.mu.Unlock()
+
+	raw := contextWindowExhaustedBodyR664("bk-1", "m", v.Estimated, v.Loaded, v.Required, 0,
+		v.Available, 0, 1, 0, 0)
+	var out map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("тело не JSON: %v (%s)", err, raw)
+	}
+	if got := toIntR447(out["loaded_window_tokens"]); got != v.Loaded {
+		t.Fatalf("loaded_window_tokens = %d, want %d (число решения) — тело разошлось с причиной",
+			got, v.Loaded)
+	}
+	if got := toIntR447(out["prompt_tokens"]); got != v.Estimated {
+		t.Fatalf("prompt_tokens = %d, want %d", got, v.Estimated)
+	}
+	if got := toIntR447(out["required_window_tokens"]); got != v.Required {
+		t.Fatalf("required_window_tokens = %d, want %d", got, v.Required)
 	}
 }
 

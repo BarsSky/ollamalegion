@@ -198,7 +198,28 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 			// этим режимом возвращает ПОЛНОСТЬЮ прежнее поведение (и решение, и
 			// таргет), иначе «откат» возвращал бы только половину правила.
 			if loaded > 0 && agentWindowBudgetMode() != "client" {
-				if need, why := growthNeedR447(meta.EstimatedPromptTokens, loaded, meta.RequestedNCtxOverride); !need {
+				// R664 (2026-11-20) ШАГ B: ДАННЫЕ НЕ ВЛЕЗАЮТ + ЗАЯВКИ НЕТ — ОТКАЗ
+				// С ЧИСЛАМИ, а не рост под НАШУ оценку промпта.
+				//
+				// ЖИВОЙ ДЕФЕКТ. Cline num_ctx не присылает никогда, поэтому «окно
+				// выведем сами» превращалось в перезагрузку модели на каждый
+				// длинный промпт: 13023 токена мимо окна 8192 → unload+load и
+				// минуты ожидания, причём выведенное окно считалось по эвристике
+				// (завышает в 2–3 раза, R466), то есть обслуживание не
+				// гарантировалось даже после перезагрузки.
+				//
+				// Правило одно на все пути — growthActionForR664:
+				//   growthNoneR664     → делать нечего (обслуживаем загруженным);
+				//   growthRefuseR664   → 413 context_window_exhausted_no_growth_request;
+				//   growthRequiredR664 → рост как раньше (запас под ответ меньше
+				//                        минимума — R447 п.3: промпт влезает).
+				//
+				// «Запас под ответ меньше минимума» остаётся причиной РАСТИ, а не
+				// отказа: такой запрос воркер обслуживает укороченным ответом, и
+				// отказ отнял бы у клиента работающий ход (window_serve_as_is.go).
+				action, why := growthActionForR664(meta.EstimatedPromptTokens, loaded, meta.RequestedNCtxOverride)
+				switch action {
+				case growthNoneR664:
 					logger.Get().Infow("preflight: рост окна под агентский ход не нужен (R451)",
 						"backend_id", state.BackendID,
 						"model", meta.ModelName,
@@ -208,6 +229,22 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 						"window_budget_mode", agentWindowBudgetMode(),
 						"reason", why)
 					return &PreflightResult{Decision: PreflightNoOp}
+				case growthRefuseR664:
+					// Модель НЕ перезагружаем (R294: окно не уменьшаем; чужой ход не
+					// рвём). Клиент получает числа: промпт, загруженное окно, минимум
+					// к заявке и доступный потолок.
+					required := minDeclarableWindowR664(meta.EstimatedPromptTokens)
+					logger.Get().Warnw(i18n.T("balancer.preflight_nctx.context_window_exhausted_warn"),
+						"backend_id", state.BackendID,
+						"model", meta.ModelName,
+						"request_id", meta.RequestID,
+						"prompt_tokens", meta.EstimatedPromptTokens,
+						"loaded_window_tokens", loaded,
+						"required_window_tokens", required,
+						"available_context_tokens", derivedWindowCapR466(state.physicalCeiling(), state.effectiveSlots()),
+						"reason", why)
+					return makePromptExceedsWindowRejectR664(state, meta,
+						meta.EstimatedPromptTokens, loaded, required)
 				}
 			}
 			derived = agentRequiredWindowAtLeast(meta, loaded)

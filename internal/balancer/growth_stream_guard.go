@@ -82,6 +82,11 @@ type growthVerdictR301 struct {
 	// запрос больше не «довольствуется» загруженным окном, если модель можно
 	// перезагрузить: это требование оператора (см. stream_growth.go).
 	Grow bool
+	// Refuse — R664 (шаг B): данные не влезают, а окно клиент НЕ заявил. Роста не
+	// будет (основание — только заявка, R83/R68), поэтому ответ окончательный:
+	// 413 context_window_exhausted_no_growth_request с числами (Required —
+	// минимум к заявке, Available — потолок на клиента).
+	Refuse bool
 
 	Estimated int // оценка промпта
 	Loaded    int // окно ОДНОГО слота загруженной модели
@@ -94,6 +99,10 @@ type growthVerdictR301 struct {
 	Active        int // сколько стримов идёт сейчас
 	ReloadPending bool
 	Streaming     bool
+	// Required — R664 шаг B: окно НА КЛИЕНТА, которое надо заявить (заполняется
+	// вместе с Refuse); Available — потолок на клиента (0 = неизвестен).
+	Required  int
+	Available int
 	// RetryAfterSec — срок повтора, НАЗВАННЫЙ в тексте причины (R447). Writer
 	// тела обязан писать это же значение: иначе клиент читает «retry in 60
 	// seconds» рядом с `retryAfterSec: 30`.
@@ -101,7 +110,7 @@ type growthVerdictR301 struct {
 }
 
 // decided — вердикт что-то предписывает (отказ или подмена тела).
-func (v growthVerdictR301) decided() bool { return v.Defer || v.Served }
+func (v growthVerdictR301) decided() bool { return v.Defer || v.Served || v.Refuse }
 
 // growthVerdictR301 — единственное место, где решается «растим / обслуживаем /
 // отказываем» для запроса, которому нужно больше окна, чем загружено.
@@ -228,6 +237,18 @@ func windowVerdictFromDecisionR493(rid string, d windowDecisionR493, streaming b
 		v.Grow = streaming
 		return v, true
 	default: // windowRefuseR493
+		// R664 (2026-11-20) ШАГ B: «данные не влезают, окна клиент не заявил» —
+		// это НЕ «ждите»: окно само не вырастет, поэтому отказ окончательный
+		// (413 context_window_exhausted_no_growth_request с числами). Стриминговый
+		// путь отдаёт тело сам (preflight-транспорт), не-стриминговому его отдаёт
+		// preflight-движок — у него есть состояние для полного тела (GGUF,
+		// операторский потолок, слоты).
+		if d.NoGrowthRequest {
+			v.Refuse = true
+			v.Required = d.Required
+			v.Available = d.Available
+			return v, streaming
+		}
 		if streaming {
 			return serveOrDeferR493()
 		}
@@ -242,6 +263,11 @@ func windowVerdictFromDecisionR493(rid string, d windowDecisionR493, streaming b
 // для сравнения в режиме «тень» и в логе расхождений.
 func windowVerdictKindLegacyR493(v growthVerdictR301) windowKindR493 {
 	switch {
+	case v.Refuse:
+		// R664 (шаг B): окончательный отказ с числами — это вид «отказ», а не
+		// «отложено»: иначе «тень» (LB_WINDOW_UNIFIED=2) показала бы расхождение
+		// там, где поведение совпадает, а лог врал бы о виде вердикта.
+		return windowRefuseR493
 	case v.Grow:
 		return windowGrowR493
 	case v.Defer:
@@ -341,6 +367,27 @@ func (p *Proxy) growthVerdictLegacyR301(rid, backendID, model string, body []byt
 			"estimated_prompt_tokens", estimated, "loaded_window_tokens", loaded,
 			"required_tokens", needed, "reason", actionWhy)
 		return v
+	case growthRefuseR664:
+		// R664 (2026-11-20) ШАГ B: данные не влезают, окно клиент НЕ заявил.
+		//
+		// ДО этой правки здесь начинался РОСТ: промпт 13023 при окне 8192 без
+		// num_ctx поднимал модель под НАШУ выведенную оценку — минуты простоя и
+		// без гарантии обслуживания (оценка по символам завышает в 2–3 раза,
+		// R466). Основание роста одно — заявка клиента (R83/R68), и без неё ответ
+		// окончательный: 413 с числами (сколько в промпте, сколько загружено,
+		// сколько нужно заявить и сколько вообще доступно на клиента).
+		v.Refuse = true
+		v.Required = minDeclarableWindowR664(estimated)
+		v.Available = derivedWindowCapR466(p.physicalNumCtxCeiling(model, backendID),
+			p.loadedSlotsNCtx(backendID, model))
+		logger.Get().Warnw("R664: данные не влезают, окно клиент не заявил — отказ с числами (шаг B)",
+			"request_id", v.RID, "backend", backendID, "model", model, "path", path,
+			"streaming", streaming,
+			"estimated_prompt_tokens", estimated, "loaded_window_tokens", loaded,
+			"required_window_tokens", v.Required,
+			"available_context_tokens", v.Available,
+			"reason", actionWhy)
+		return v
 	}
 	// action == growthRequiredR664: данные не влезают И клиент заявил покрывающее
 	// окно — рост немедленный, ниже прежняя ветка R447/R385.
@@ -362,6 +409,11 @@ func (p *Proxy) growthVerdictLegacyR301(rid, backendID, model string, body []byt
 	//
 	// Растим окно только по требованию самого запроса: промпт не влезает ИЛИ
 	// клиент явно попросил окно больше загруженного (R385).
+	//
+	// R664 (шаг B): сюда попадает ТОЛЬКО growthRequiredR664 (остальные три исхода
+	// вернулись выше), поэтому проверка всегда истинна — оставлена сторожем:
+	// если однажды growthActionForR664 назовёт иначе, путь обслужит запрос, а не
+	// перезагрузит модель (безопасное направление ошибки).
 	if needGrowth, needWhy := growthNeedR447(estimated, loaded, meta.RequestedNCtxOverride); !needGrowth {
 		logger.Get().Debugw("R447: рост окна не нужен — обслуживаем загруженным окном",
 			"backend", backendID, "model", model, "path", path, "streaming", streaming,
@@ -494,6 +546,11 @@ func logGrowthVerdictR301(where, backendID, model, path string, v growthVerdictR
 		"backend", backendID, "model", model, "path", path,
 		"streaming", v.Streaming,
 		"defer", v.Defer, "grow", v.Grow, "served_with_loaded_window", v.Served,
+		// R664 (шаг B): окончательный отказ «заявки нет» и числа к заявке — иначе
+		// в логе видно отказ, но не видно, что клиенту заявить.
+		"refuse_with_numbers", v.Refuse,
+		"required_window_tokens", v.Required,
+		"available_context_tokens", v.Available,
 		"estimated_prompt_tokens", v.Estimated,
 		"required_tokens", v.Needed,
 		"loaded_window_tokens", v.Loaded,

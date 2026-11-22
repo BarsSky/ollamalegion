@@ -58,6 +58,15 @@ func windowTestProxyR493(t *testing.T, model string, loaded, ceiling int, parall
 
 // ── 1. Чистая таблица ────────────────────────────────────────────────────────
 
+// declaredLongBodyR493 — длинный стриминговый промпт (не влезает в 8192) С
+// заявкой клиента num_ctx. Нужен, чтобы паритет путей проверялся и на «росте»:
+// после R664 шаг B основание роста — заявка, и без неё тот же промпт получает
+// отказ с числами, а не рост.
+func declaredLongBodyR493() string {
+	return strings.Replace(r301LongStreamBody(), `"stream":true`,
+		`"stream":true,"options":{"num_ctx":131072}`, 1)
+}
+
 func TestR493_DecideWindow_Kinds(t *testing.T) {
 	cases := []struct {
 		name string
@@ -97,29 +106,37 @@ func TestR493_DecideWindow_Kinds(t *testing.T) {
 			want: windowNoopR493,
 		},
 		{
-			name: "промпт не влезает, помех нет — рост",
+			// R664 (шаг B): рост идёт ТОЛЬКО под заявку клиента. Данные не влезают
+			// и заявки нет — отказ с числами, а не перезагрузка под нашу оценку.
+			name: "промпт не влезает, заявки нет — отказ с числами",
 			in: windowInputR493{Needed: 40000, Estimated: 39000, Loaded: 8192,
 				Ceiling: 262144},
+			want: windowRefuseR493,
+		},
+		{
+			name: "промпт не влезает, клиент заявил окно — рост",
+			in: windowInputR493{Needed: 40000, Estimated: 39000, Requested: 40000,
+				Loaded: 8192, Ceiling: 262144},
 			want: windowGrowR493,
 		},
 		{
 			// R288: чужой стрим — ждать, а не перезагружать поверх него.
 			name: "идёт стрим — отложить",
-			in: windowInputR493{Needed: 40000, Estimated: 39000, Loaded: 8192,
-				Active: 1, Ceiling: 262144},
+			in: windowInputR493{Needed: 40000, Estimated: 39000, Requested: 40000,
+				Loaded: 8192, Active: 1, Ceiling: 262144},
 			want: windowDeferR493,
 		},
 		{
 			name: "перезагрузка уже идёт — отложить",
-			in: windowInputR493{Needed: 40000, Estimated: 39000, Loaded: 8192,
-				ReloadPending: true, Ceiling: 262144},
+			in: windowInputR493{Needed: 40000, Estimated: 39000, Requested: 40000,
+				Loaded: 8192, ReloadPending: true, Ceiling: 262144},
 			want: windowDeferR493,
 		},
 		{
 			// R385/R472: выключатель роста обязан быть ПРИЧИНОЙ отказа.
 			name: "рост запрещён путём — отказ с причиной",
-			in: windowInputR493{Needed: 40000, Estimated: 39000, Loaded: 8192,
-				GrowBlockedBy: "рост окна на стриминге выключен", Ceiling: 262144},
+			in: windowInputR493{Needed: 40000, Estimated: 39000, Requested: 40000,
+				Loaded: 8192, GrowBlockedBy: "рост окна на стриминге выключен", Ceiling: 262144},
 			want: windowRefuseR493,
 		},
 		{
@@ -146,10 +163,11 @@ func TestR493_DecideWindow_Kinds(t *testing.T) {
 	}
 }
 
-// TestR493_DecideWindow_R466Cap — завышенная НАША оценка урезается до потолка и
-// рост не отменяет, а требование клиента сверх потолка — не урезается.
+// TestR493_DecideWindow_R466Cap — завышенная НАША оценка урезается до потолка
+// (значит отказом «по физике» она быть не может), а требование клиента сверх
+// потолка — не урезается, а отказывается.
 func TestR493_DecideWindow_R466Cap(t *testing.T) {
-	t.Run("выведенное окно урезано до потолка и рост разрешён", func(t *testing.T) {
+	t.Run("выведенное окно урезано до потолка, но без заявки не растёт", func(t *testing.T) {
 		d := decideWindowR493(windowInputR493{
 			Needed: 300000, Estimated: 290000, Requested: 0, Loaded: 8192, Ceiling: 262144,
 		})
@@ -157,8 +175,27 @@ func TestR493_DecideWindow_R466Cap(t *testing.T) {
 			t.Fatalf("ожидалось урезание до 262144 (capped=true), получено needed=%d capped=%t (%s)",
 				d.Needed, d.Capped, d.Why)
 		}
+		// R664 (шаг B): урезанное «наше» окно больше НЕ повод перезагружать модель —
+		// заявки нет, значит расти не под что. Отказ при этом называет и минимум к
+		// заявке, и потолок, чтобы клиент не заявил недостижимое.
+		if d.Kind != windowRefuseR493 || !d.NoGrowthRequest {
+			t.Fatalf("вид = %q (no_growth_request=%t), ожидался отказ шага B (%s)",
+				d.Kind, d.NoGrowthRequest, d.Why)
+		}
+		if d.Required < d.Estimated || d.Available != 262144 {
+			t.Fatalf("required=%d available=%d: в отказе обязаны быть минимум к заявке и потолок",
+				d.Required, d.Available)
+		}
+	})
+	t.Run("заявка до потолка растёт, а не отказывается", func(t *testing.T) {
+		d := decideWindowR493(windowInputR493{
+			Needed: 262144, Estimated: 260000, Requested: 262144, Loaded: 8192, Ceiling: 262144,
+		})
 		if d.Kind != windowGrowR493 {
-			t.Fatalf("урезанное до потолка окно обязано расти, вид = %q (%s)", d.Kind, d.Why)
+			t.Fatalf("вид = %q, ожидался рост по заявке до потолка (%s)", d.Kind, d.Why)
+		}
+		if d.Target != 262144 {
+			t.Fatalf("цель %d, ожидалась ровно заявленная 262144", d.Target)
 		}
 	})
 	t.Run("явно запрошенное сверх потолка не урезается, а отказывается", func(t *testing.T) {
@@ -171,6 +208,9 @@ func TestR493_DecideWindow_R466Cap(t *testing.T) {
 		if d.Kind != windowRefuseR493 {
 			t.Fatalf("вид = %q, ожидался отказ (%s)", d.Kind, d.Why)
 		}
+		if d.NoGrowthRequest {
+			t.Fatal("это отказ ПО ПОТОЛКУ (заявка есть), а не отказ «заявки нет»")
+		}
 	})
 }
 
@@ -180,7 +220,8 @@ func TestR493_DecideWindow_TargetFromOnePlace(t *testing.T) {
 	for loaded := 0; loaded <= 131072; loaded += 8192 {
 		for _, needed := range []int{8193, 16384, 40000, 131073, 149809, 160674} {
 			d := decideWindowR493(windowInputR493{
-				Needed: needed, Estimated: needed, Loaded: loaded, Ceiling: 262144,
+				Needed: needed, Estimated: needed, Requested: needed,
+				Loaded: loaded, Ceiling: 262144,
 			})
 			if d.Kind != windowGrowR493 {
 				continue
@@ -309,12 +350,15 @@ func TestR493_PathParity_SameVerdictOnAllPaths(t *testing.T) {
 		want   windowKindR493
 		// planGrow — растёт ли ОКНО по плану R385. Для R664 это не то же самое,
 		// что действие с ЭТИМ запросом: заявка клиента обслуживается сразу
-		// (serve), а рост ставится в фон — план роста при этом есть.
+		// (serve), а рост ставится в фон — план роста при этом есть. Так же и
+		// отказ шага B: окно поднять МОЖНО (план есть), но запрос не заявил,
+		// насколько — и получает 413 с числами.
 		planGrow bool
 	}{
 		{"окно достаточно", r301StreamBody, 16384, windowNoopR493, false},
 		{"клиент просит больше загруженного — обслужить сразу, рост в фоне (R664)", r301StreamBody, 8192, windowServeR493, true},
-		{"длинный промпт, роста никто не мешает", r301LongStreamBody(), 8192, windowGrowR493, true},
+		{"длинный промпт с заявкой, роста никто не мешает", declaredLongBodyR493(), 8192, windowGrowR493, true},
+		{"длинный промпт БЕЗ заявки — отказ с числами (R664 шаг B)", r301LongStreamBody(), 8192, windowRefuseR493, true},
 	}
 
 	for _, tc := range cases {
@@ -381,12 +425,15 @@ func TestR493_PathParity_SameVerdictOnAllPaths(t *testing.T) {
 
 // TestR493_PathParity_CapabilityIsTheOnlyDifference — когда путь НЕ умеет расти,
 // вид вердикта отличается ровно на «отказ вместо роста», причина названа.
+//
+// R664 (шаг B): заявка у запроса ЕСТЬ (иначе оба пути одинаково отказывают —
+// «заяви окно», и способность пути расти уже не важна).
 func TestR493_PathParity_CapabilityIsTheOnlyDifference(t *testing.T) {
 	t.Setenv("LB_WINDOW_UNIFIED", "1")
 	t.Setenv("LB_NCTX_GROW_FOR_STREAM", "0")
 	const model = "m"
 	p := windowTestProxyR493(t, model, 8192, 262144, 1)
-	body := []byte(r301LongStreamBody())
+	body := []byte(declaredLongBodyR493())
 
 	blocked, _ := p.windowDecisionForR493("b1", model, body, "/api/chat", true)
 	free, _ := p.windowDecisionForR493("b1", model, body, "/api/chat", false)
@@ -395,6 +442,9 @@ func TestR493_PathParity_CapabilityIsTheOnlyDifference(t *testing.T) {
 	}
 	if free.Kind != windowGrowR493 {
 		t.Fatalf("путь, умеющий растить, обязан расти: вид %q (%s)", free.Kind, free.Why)
+	}
+	if blocked.NoGrowthRequest {
+		t.Fatal("заявка у запроса есть — это не отказ шага B, а выключатель роста")
 	}
 	if !strings.Contains(blocked.Why, "выключен") {
 		t.Fatalf("причина отказа обязана называть выключатель: %q", blocked.Why)

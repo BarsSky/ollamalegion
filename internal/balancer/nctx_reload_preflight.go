@@ -85,6 +85,17 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		if v.Grow || v.decided() {
 			recordGrowthNumbersR447(ctx, v)
 		}
+		if v.Refuse {
+			// R664 (2026-11-20) ШАГ B: данные не влезают, окна клиент не заявил —
+			// 413 с МАШИННЫМ кодом и числами вместо 503 «повторите позже».
+			// Тело собирает общий сборщик (то же, что у preflight-движка), поэтому
+			// клиент видит один формат на всех путях.
+			return bodyBuf, false,
+				contextWindowExhaustedBodyR664(backendID, modelName,
+					v.Estimated, v.Loaded, v.Required, ExtractNumCtxFromBody(bodyBuf),
+					v.Available, 0, p.loadedSlotsNCtx(backendID, modelName), 0, 0),
+				http.StatusRequestEntityTooLarge
+		}
 		if v.Grow {
 			// R385: окно можно поднять — перезагрузка запущена, клиенту нужно
 			// повторить. Тело при этом не меняем: следующий запрос получит уже

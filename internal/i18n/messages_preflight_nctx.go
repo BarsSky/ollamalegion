@@ -147,6 +147,35 @@ var messagesBalancer2 = map[string]map[Lang]string{
 		EN: "the request is served in the current window; cppworker will answer with an honest " +
 			"413 if the prompt really does not fit",
 	},
+	// R664 (шаг B): отказ «данные не влезают, а окно клиент не заявил».
+	// Код ошибки машинный (error=context_window_exhausted_no_growth_request), а
+	// reason/what_to_do — человеческий текст с теми же числами, что в полях.
+	"balancer.preflight_nctx.context_window_exhausted_warn": {
+		RU: "preflight: данные не влезают, окно клиент не заявил — отказ 413 с числами, " +
+			"модель не перезагружаем",
+		EN: "preflight: the data does not fit and the client declared no window — 413 with numbers, " +
+			"the model is not reloaded",
+	},
+	"balancer.preflight_nctx.context_window_exhausted_reason": {
+		RU: "промпт (%d токенов) не помещается в загруженное окно (%d токенов), " +
+			"а окно клиента в запросе не заявлено: балансер растит окно только под " +
+			"явную заявку клиента, поэтому заявить нужно не меньше %d токенов",
+		EN: "the prompt (%d tokens) does not fit the loaded window (%d tokens), " +
+			"and the request declares no client window: the balancer grows the window only on " +
+			"an explicit client request, so at least %d tokens must be declared",
+	},
+	"balancer.preflight_nctx.context_window_exhausted_what_to_do": {
+		RU: "Заявите окно в запросе и повторите: options.num_ctx (Ollama /api/chat, " +
+			"/api/generate) или num_ctx в теле запроса; max_tokens окном не является. " +
+			"Нужно не меньше %d токенов на клиента; потолок на клиента — %d токенов " +
+			"(0 = потолок неизвестен), выше него заявка невыполнима — тогда сокращайте " +
+			"историю, tools и системный промпт.",
+		EN: "Declare the window in the request and retry: options.num_ctx (Ollama /api/chat, " +
+			"/api/generate) or num_ctx in the request body; max_tokens is not a window. " +
+			"At least %d tokens per client are needed; the per-client ceiling is %d tokens " +
+			"(0 = ceiling unknown) and a declaration above it cannot be served — in that case " +
+			"shorten the history, tools and the system prompt.",
+	},
 
 	// === llamacpp_handlers_inference.go: inference-обработчики ========
 	"balancer.llamacpp_handlers_inference.image_tool_inject_failed_warn": {

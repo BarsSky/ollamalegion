@@ -136,9 +136,14 @@ func TestR83Fix_GrowthWorthReload_NoStrategyMeansOldBehaviour(t *testing.T) {
 	}
 }
 
-// TestR83Fix_RunPreflight_ReturnsNoOpAndSkipsReload — сквозной контракт: запрос
-// не должен получать 503/ожидание, если рост окна ничего не даёт.
-func TestR83Fix_RunPreflight_ReturnsNoOpAndSkipsReload(t *testing.T) {
+// TestR83Fix_RunPreflight_NoUselessReload — сквозной контракт: запрос не должен
+// получать 503/ожидание, если рост окна ничего не даёт, и модель не должна
+// перезагружаться ради «роста в никуда».
+//
+// R664 (шаг 3B): клиент окно не заявил, а промпт (44230) не влезает в окно слота
+// (32768) — ответ окончательный, 413 с числами. Перезагрузки при этом НЕТ: именно
+// этого добивался R83-fix (growthWorthReload) и этого требует шаг B.
+func TestR83Fix_RunPreflight_NoUselessReload(t *testing.T) {
 	t.Setenv("LB_NCTX_PREFLIGHT_WAIT_SEC", "0")
 
 	srv, reloads := strategyBackend(t, `{"gpuLayers":0,"nCtx":65536,"kvCacheType":"q4_0",`+
@@ -174,13 +179,14 @@ func TestR83Fix_RunPreflight_ReturnsNoOpAndSkipsReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunPreflight error: %v", err)
 	}
-	if res.Decision != PreflightNoOp {
-		t.Fatalf("decision = %v, ожидался PreflightNoOp (запрос обслуживается в текущем "+
-			"окне, а не переводится в reload/503)", res.Decision)
+	if res.Decision != PreflightReject || res.RejectStatus != http.StatusRequestEntityTooLarge {
+		t.Fatalf("decision = %v (status=%d), ожидался отказ 413 с числами: промпт 44230 "+
+			"не влезает в окно слота 32768, заявки нет", res.Decision, res.RejectStatus)
 	}
+	assertWindowExhaustedR664(t, []byte(res.RejectBody), 44230)
 	time.Sleep(50 * time.Millisecond)
 	if n := atomic.LoadInt32(reloads); n != 0 {
-		t.Errorf("reload запущен %d раз, хотя роста окна не будет", n)
+		t.Fatalf("reload запущен %d раз, хотя роста окна не будет", n)
 	}
 }
 

@@ -35,14 +35,31 @@ func TestR385_StreamingGrowsInsteadOfServing(t *testing.T) {
 }
 
 // TestR385_StreamingGrowsForOversizedPrompt — промпт не влезает в загруженное
-// окно: раньше это был отказ «поднимите окно в карточке модели», теперь рост.
+// окно: раньше это был отказ «поднимите окно в карточке модели», при R385 — рост
+// по заявке клиента.
+//
+// R664 (шаг B): основание роста — ЗАЯВКА, поэтому без неё тот же промпт получает
+// окончательный отказ с числами, а не перезагрузку под нашу же оценку.
 func TestR385_StreamingGrowsForOversizedPrompt(t *testing.T) {
-	p := newGrowthGuardProxyR299()
+	t.Run("с заявкой — рост", func(t *testing.T) {
+		p := newGrowthGuardProxyR299()
 
-	v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301LongStreamBody()), "/api/chat", true)
-	if !v.Grow {
-		t.Fatalf("ожидался рост окна под большой промпт, получено %+v", v)
-	}
+		v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(declaredLongBodyR493()), "/api/chat", true)
+		if !v.Grow {
+			t.Fatalf("заявка есть, промпт не влезает — ожидался рост окна, получено %+v", v)
+		}
+	})
+	t.Run("без заявки — отказ с числами (шаг B)", func(t *testing.T) {
+		p := newGrowthGuardProxyR299()
+
+		v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301LongStreamBody()), "/api/chat", true)
+		if v.Grow {
+			t.Fatalf("расти без заявки нельзя: перезагрузка под нашу оценку промпта, получено %+v", v)
+		}
+		if !v.Refuse {
+			t.Fatalf("ожидался отказ с числами (R664 шаг B), получено %+v", v)
+		}
+	})
 }
 
 // TestR385_PreflightStartsReloadAndAsksRetry — транспорт: отказать, но с

@@ -162,17 +162,26 @@ func TestR447_LiveDefectNoRefusalWhenWindowServesAsIs(t *testing.T) {
 		t.Fatalf("не-стриминговый вердикт отказал запросу, который окно обслуживает: %+v", v)
 	}
 
-	// 200000 токенов в окно 180224 не влезают — отказ (ожидание роста) остаётся.
+	// 200000 токенов в окно 180224 не влезают, окна клиент не заявил — отказ
+	// остаётся, но с R664 (шаг B) он ОКОНЧАТЕЛЬНЫЙ: ждать нечего (окно без заявки
+	// не вырастет), поэтому guard не откладывает, а вердикт предписывает 413 с
+	// числами (сколько в промпте, сколько загружено, сколько заявить).
 	big := r447BodyWithEstimatedPromptR447(t, p, 200000)
 	deferNow, estimated, loaded, needed, _, _ = p.growthDeferR299("bk-1", "m", big, "/api/chat")
-	if !deferNow {
-		t.Fatalf("промпт %d не влезает в окно %d — отказ обязан остаться", estimated, loaded)
+	if deferNow {
+		t.Fatalf("промпт %d не влезает в окно %d — «подождите» здесь ложь: окно не вырастет без заявки",
+			estimated, loaded)
 	}
 	if estimated != 200000 || needed != 204096 {
 		t.Fatalf("числа отказа: estimated=%d needed=%d, want 200000/204096", estimated, needed)
 	}
-	if v := p.growthVerdictR301("rid", "bk-1", "m", big, "/api/chat", false); !v.Defer {
+	v := p.growthVerdictR301("rid", "bk-1", "m", big, "/api/chat", false)
+	if !v.Refuse {
 		t.Fatalf("не-стриминговый вердикт промолчал на промпте, который не влезает: %+v", v)
+	}
+	if v.Required <= v.Loaded || v.Required < v.Estimated {
+		t.Fatalf("required=%d при loaded=%d и промпте %d: заявка не решит проблему",
+			v.Required, v.Loaded, v.Estimated)
 	}
 }
 
@@ -238,17 +247,26 @@ func TestR447_UnifiedDecisionAgreesWithGuard(t *testing.T) {
 		t.Fatalf("не-стриминговый вердикт (единое решение) отказал обслуживаемому запросу: %+v", v)
 	}
 
-	// Промпт не влезает — оба пути дают «ждать/расти».
+	// Промпт не влезает, заявки нет — оба пути дают ОДИН вердикт: окончательный
+	// отказ с числами (R664 шаг B). «Ждать» здесь больше нет: окно без заявки не
+	// вырастет, и 503 увёл бы клиента в retry-цикл.
 	big := r447BodyWithEstimatedPromptR447(t, p, 200000)
 	d, ok = p.windowDecisionForR493("bk-1", "m", big, "/api/chat", false)
 	if !ok {
 		t.Fatal("вход единого решения не собрался")
 	}
-	if d.Kind != windowDeferR493 {
-		t.Fatalf("единое решение: вид %q, ожидался %q (причина: %s)", d.Kind, windowDeferR493, d.Why)
+	if d.Kind != windowRefuseR493 || !d.NoGrowthRequest {
+		t.Fatalf("единое решение: вид %q (no_growth_request=%t), ожидался отказ шага B (причина: %s)",
+			d.Kind, d.NoGrowthRequest, d.Why)
 	}
-	if deferNow, _, _, _, _, _ := p.growthDeferR299("bk-1", "m", big, "/api/chat"); !deferNow {
-		t.Fatal("guard промолчал там, где решение говорит «ждать»")
+	if d.Required <= d.Loaded || d.Required < d.Estimated {
+		t.Fatalf("required=%d при loaded=%d и промпте %d", d.Required, d.Loaded, d.Estimated)
+	}
+	if deferNow, _, _, _, _, _ := p.growthDeferR299("bk-1", "m", big, "/api/chat"); deferNow {
+		t.Fatal("guard отложил запрос, которому отказ известен сразу: 503 вместо 413")
+	}
+	if v := p.growthVerdictR301("rid", "bk-1", "m", big, "/api/chat", false); !v.Refuse {
+		t.Fatalf("вердикт R301 (единое решение) не донёс отказ до транспорта: %+v", v)
 	}
 }
 

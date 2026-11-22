@@ -12,7 +12,10 @@
 // воркер урезает n_predict по свободному месту сам.
 package balancer
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
 // r451State — состояние бэкенда, где окно слота 32768 и потолки большие:
 // ровно конфигурация живого случая.
@@ -71,13 +74,26 @@ func TestR451_OldFormulaWouldHaveReloaded(t *testing.T) {
 	}
 }
 
-// TestR451_PromptBeyondWindowStillGrows — промпт не влезает: рост обязателен.
-func TestR451_PromptBeyondWindowStillGrows(t *testing.T) {
+// TestR451_PromptBeyondWindowRefusedWithoutDeclaration — промпт не влезает, а
+// окна клиент не заявил: R664 (шаг B) — отказ 413 с числами, а не рост под нашу
+// оценку промпта. С заявкой тот же промпт растит окно (R385/R83).
+func TestR451_PromptBeyondWindowRefusedWithoutDeclaration(t *testing.T) {
 	meta := &RequestMeta{ModelName: "m", EstimatedPromptTokens: 40000, RequestedNPredict: 8192}
 
 	res := DecidePreflight(meta, r451State(), DefaultNCtxReloadConfig())
+	if res.Decision != PreflightReject || res.RejectStatus != http.StatusRequestEntityTooLarge {
+		t.Fatalf("промпт 40000 не влезает в окно 32768 и заявки нет — ожидался 413 с числами, "+
+			"получено %v (status=%d)", res.Decision, res.RejectStatus)
+	}
+	assertWindowExhaustedR664(t, []byte(res.RejectBody), 40000)
+
+	// Заявка есть — рост идёт, и цель не меньше промпта.
+	declared := &RequestMeta{ModelName: "m", EstimatedPromptTokens: 40000,
+		RequestedNPredict: 8192, RequestedNCtxOverride: 65536}
+	res = DecidePreflight(declared, r451State(), DefaultNCtxReloadConfig())
 	if res.Decision != PreflightReload {
-		t.Fatalf("промпт 40000 не влезает в окно 32768 — ожидался PreflightReload, получено %v", res.Decision)
+		t.Fatalf("заявка 65536 при промпте 40000 — ожидался рост, получено %v (%s)",
+			res.Decision, res.RejectBody)
 	}
 	if res.TargetNCtx < 40000 {
 		t.Fatalf("TargetNCtx=%d меньше промпта 40000 — рост не решит проблему", res.TargetNCtx)

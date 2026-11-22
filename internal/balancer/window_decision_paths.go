@@ -140,7 +140,11 @@ func logWindowDecisionR493(where, backendID, model, path string, d windowDecisio
 		"kind", string(d.Kind), "needed_tokens", d.Needed, "loaded_window_tokens", d.Loaded,
 		"target_per_client", d.Target, "retry_after_sec", d.RetryAfterSec,
 		"estimated_prompt_tokens", d.Estimated, "prompt_fits", d.PromptFits,
-		"capped_to_ceiling", d.Capped, "reason", d.Why)
+		"capped_to_ceiling", d.Capped,
+		// R664 (шаг B): у отказа «заявки нет» свои числа — минимум к заявке и
+		// потолок на клиента. Без них в логе видно отказ, но не видно, что заявить.
+		"no_growth_request", d.NoGrowthRequest, "required_window_tokens", d.Required,
+		"available_context_tokens", d.Available, "reason", d.Why)
 }
 
 // logWindowDivergenceR493 — расхождение «тени»: что решил бы единый путь и что

@@ -68,7 +68,10 @@ func TestR83Policy_ClientWindowBeyondCeiling_Rejects(t *testing.T) {
 }
 
 // TestR83Policy_VRAMKnownZero_SilentClientServed — та же VRAM-картина, но клиент
-// окно не указывал → NoOp (обслуживаем как есть), без ложного отказа.
+// окно не указывал: отказ ПО VRAM недопустим (fail-open). R664 шаг B добавляет
+// второй исход — «заявки нет и данные не влезают» → 413 с числами, но это отказ
+// по ОТСУТСТВИЮ ЗАЯВКИ, а не по VRAM: подмени мы причину, оператор искал бы
+// свободную память там, где нужно заявить окно.
 func TestR83Policy_VRAMKnownZero_SilentClientServed(t *testing.T) {
 	state := &NCtxBackendState{
 		BackendID:       "cppworker-gpu-bundled-agent",
@@ -79,22 +82,28 @@ func TestR83Policy_VRAMKnownZero_SilentClientServed(t *testing.T) {
 		ModelMaxContext: 131072,
 		GGUFMaxContext:  131072,
 	}
-	meta := &RequestMeta{EstimatedPromptTokens: 40000, RequestedNPredict: 8000}
+	cfg := NCtxReloadConfig{AutoReloadMaxNCtx: 131072}
 
-	res := DecidePreflight(meta, state, NCtxReloadConfig{AutoReloadMaxNCtx: 131072})
-	// R253 (2026-10-28): клиент окно не указывал, но окно выводится из оценки
-	// промпта: 40000 + 8000 + 64 = 48064 > загруженных 32768 → перезагрузка. Отказа
-	// быть не должно (VRAM unknown → fail-open), но и NoOp больше не верен: именно
-	// на NoOp Cline получал обрезанный вывод.
-	if res.Decision == PreflightReject {
-		t.Fatalf("VRAM неизвестна — отказ недопустим (fail-open): %s", res.RejectBody)
-	}
-	if res.Decision != PreflightReload {
-		t.Fatalf("Decision = %v, want PreflightReload (окно выведено из промпта): %s",
+	// (1) Промпт ВЛЕЗАЕТ в загруженное окно: обслуживаем как есть, отказа нет —
+	// это и есть fail-open по VRAM (живой дефект был именно здесь).
+	fits := &RequestMeta{EstimatedPromptTokens: 20000, RequestedNPredict: 8000}
+	if res := DecidePreflight(fits, state, cfg); res.Decision != PreflightNoOp {
+		t.Fatalf("промпт влезает в окно 32768 — ожидался NoOp, получено %v: %s",
 			res.Decision, res.RejectBody)
 	}
-	if !res.AgentDerivedWindow {
-		t.Error("ожидалась пометка AgentDerivedWindow")
+
+	// (2) Промпт НЕ влезает и заявки нет: 413 шага B, и причина в нём — «заяви
+	// окно», а не «мало VRAM» (иначе совет оператору был бы ложным).
+	big := &RequestMeta{EstimatedPromptTokens: 40000, RequestedNPredict: 8000}
+	res := DecidePreflight(big, state, cfg)
+	if res.Decision != PreflightReject {
+		t.Fatalf("промпт 40000 не влезает в окно 32768 без заявки — ожидался 413, получено %v: %s",
+			res.Decision, res.RejectBody)
+	}
+	out := assertWindowExhaustedR664(t, []byte(res.RejectBody), 40000)
+	if got := toIntR447(out["available_context_tokens"]); got != 131072 {
+		t.Fatalf("available_context_tokens = %d, want 131072: потолок известен, VRAM-ограничение "+
+			"не должно подменять его нулём", got)
 	}
 }
 
@@ -110,6 +119,7 @@ func TestR83_DecidePreflight_VRAMUnknown_KeepsFailOpen(t *testing.T) {
 		ModelMaxContext: 32768,
 		GGUFMaxContext:  262144,
 	}
+	// Промпт влезает в загруженное окно 32768 — решения «отказать» быть не может.
 	meta := &RequestMeta{EstimatedPromptTokens: 20000, RequestedNPredict: 8000}
 	cfg := NCtxReloadConfig{AutoReloadMaxNCtx: 131072}
 
@@ -121,8 +131,8 @@ func TestR83_DecidePreflight_VRAMUnknown_KeepsFailOpen(t *testing.T) {
 }
 
 // TestR83_DecidePreflight_VRAMKnownAndPositive_StillReloads — VRAM известна и
-// потолок больше нуля → прежняя логика (reload на partial offload), наш новый
-// отказ не должен перехватывать этот случай.
+// потолок больше нуля: законный рост под ЗАЯВКУ клиента идёт прежним путём,
+// отказ шага B его не перехватывает.
 func TestR83_DecidePreflight_VRAMKnownAndPositive_StillReloads(t *testing.T) {
 	state := &NCtxBackendState{
 		BackendID:       "cppworker",
@@ -132,12 +142,18 @@ func TestR83_DecidePreflight_VRAMKnownAndPositive_StillReloads(t *testing.T) {
 		ModelMaxContext: 32768,
 		GGUFMaxContext:  262144,
 	}
-	meta := &RequestMeta{EstimatedPromptTokens: 20000, RequestedNPredict: 8000}
+	// Заявка клиента 28672: больше загруженных 8192 и не выше потолка 32768.
+	meta := &RequestMeta{EstimatedPromptTokens: 20000, RequestedNPredict: 8000,
+		RequestedNCtxOverride: 28672}
 	cfg := NCtxReloadConfig{AutoReloadMaxNCtx: 131072, AutoReloadVRAMSafetyFactor: 0.9}
 
 	res := DecidePreflight(meta, state, cfg)
 	if res.Decision == PreflightReject {
-		t.Fatalf("Decision = PreflightReject при max_vram_n_ctx=40000: "+
-			"новый отказ перехватил рабочий случай (body=%s)", res.RejectBody)
+		t.Fatalf("Decision = PreflightReject при max_vram_n_ctx=40000 и заявке 28672: "+
+			"отказ перехватил рабочий случай (body=%s)", res.RejectBody)
+	}
+	if res.Decision != PreflightReload || res.TargetNCtx != 28672 {
+		t.Fatalf("Decision = %v (target=%d), want PreflightReload на заявленные 28672",
+			res.Decision, res.TargetNCtx)
 	}
 }

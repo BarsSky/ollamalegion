@@ -1,4 +1,4 @@
-// preflight_agent_window_r253_test.go — R253 (2026-10-28): окно n_ctx растёт под
+// preflight_agent_window_r253_test.go — R253 (2026-10-28): окно n_ctx росло под
 // агентский ход, а preflight-диалог ДООБСЛУЖИВАЕТ запрос вместо пустого [DONE].
 //
 // ЖИВОЙ ДЕФЕКТ (Cline, длинная серия tool-call'ов). Cline не присылает num_ctx,
@@ -7,8 +7,15 @@
 // preflight-диалог на async reload отвечал keepalive'ами и `data: [DONE]` БЕЗ
 // ответа модели. Снаружи: «сначала быстро, как упёрлось — срыв сессии».
 //
+// R664 ШАГ B (2026-11-20) МЕНЯЕТ ПЕРВЫЙ ПУНКТ. «Растить по НАШЕЙ оценке
+// промпта» — это перезагрузка модели под число, которого клиент не просил
+// (оценка по символам завышает в 2–3 раза, R466), и она стоила минут простоя.
+// Теперь рост — только по заявке клиента (R83/R68), а без заявки на
+// непомещающийся промпт ответ — 413 context_window_exhausted_no_growth_request
+// с числами: сколько в промпте, сколько загружено, сколько нужно заявить.
+//
 // Тесты фиксируют:
-//   - промпт больше загруженного окна и num_ctx нет → preflight ТРЕБУЕТ рост;
+//   - промпт больше загруженного окна и num_ctx нет → отказ 413 с числами;
 //   - LB_NCTX_GROW_FOR_AGENTS=0 возвращает прежнее поведение (NoOp);
 //   - промпт влезает → NoOp (никаких перезагрузок «на всякий случай»);
 //   - после reload клиент получает РЕАЛЬНЫЕ кадры ответа, а не только [DONE];
@@ -40,25 +47,28 @@ func r253State() *NCtxBackendState {
 	}
 }
 
-// TestR253_AgentPromptBeyondWindowGrows — (а) Cline без num_ctx, промпт больше
-// окна → preflight требует рост (не NoOp).
-func TestR253_AgentPromptBeyondWindowGrows(t *testing.T) {
-	// 20000 + reserve 4096 + 64 = 24160 > 16384 (окно слота) → нужен рост.
+// TestR253_AgentPromptBeyondWindowRefusedWithNumbers — (а) Cline без num_ctx,
+// промпт больше окна слота → 413 с числами (R664 шаг B), а не рост под оценку.
+func TestR253_AgentPromptBeyondWindowRefusedWithNumbers(t *testing.T) {
+	// 20000 токенов в окно слота 16384 не влезают → отказ шага B.
 	meta := &RequestMeta{EstimatedPromptTokens: 20000}
 
 	res := DecidePreflight(meta, r253State(), DefaultNCtxReloadConfig())
-	if res.Decision == PreflightNoOp {
-		t.Fatalf("промпт 20000 не влезает в окно слота 16384, а preflight дал NoOp — "+
-			"cppworker обрежет вывод (живой дефект): %+v", res)
+	if res.Decision != PreflightReject {
+		t.Fatalf("промпт 20000 не влезает в окно слота 16384, а заявки нет — ожидался "+
+			"отказ 413 с числами, получено %v", res.Decision)
 	}
-	if res.Decision != PreflightReload {
-		t.Fatalf("ожидался PreflightReload, получено %v: %s", res.Decision, res.RejectBody)
+	if res.RejectStatus != http.StatusRequestEntityTooLarge {
+		t.Fatalf("RejectStatus = %d, want 413", res.RejectStatus)
 	}
-	if !res.AgentDerivedWindow {
-		t.Error("окно выведено из промпта, но AgentDerivedWindow=false — оператор не увидит причину в логе")
+	out := assertWindowExhaustedR664(t, []byte(res.RejectBody), 20000)
+	// Потолок на клиента: 131072 суммарно ÷ 2 слота = 65536 — заявка до него
+	// выполнима, поэтому совет «заявите 20736» корректен.
+	if got := toIntR447(out["available_context_tokens"]); got != 65536 {
+		t.Fatalf("available_context_tokens = %d, want 65536 (потолок на клиента)", got)
 	}
-	if res.TargetNCtx < 20000 {
-		t.Errorf("TargetNCtx=%d меньше самого промпта (20000): рост не решит проблему", res.TargetNCtx)
+	if got := toIntR447(out["loaded_window_tokens"]); got != 16384 {
+		t.Fatalf("loaded_window_tokens = %d, want 16384 (окно слота)", got)
 	}
 }
 
@@ -72,6 +82,26 @@ func TestR253_GrowForAgentsDisabledIsBackwardCompatible(t *testing.T) {
 	if res.Decision != PreflightNoOp {
 		t.Fatalf("LB_NCTX_GROW_FOR_AGENTS=0 должен давать прежнее NoOp, получено %v: %s",
 			res.Decision, res.RejectBody)
+	}
+}
+
+// TestR253_AgentDerivedGrowthInClientBudgetMode — режим оператора
+// LB_AGENT_WINDOW_BUDGET=client возвращает ПРЕЖНЕЕ поведение целиком: окно
+// выводится из оценки промпта и растёт (R253/R451). Это осознанный откат шага B.
+func TestR253_AgentDerivedGrowthInClientBudgetMode(t *testing.T) {
+	t.Setenv("LB_AGENT_WINDOW_BUDGET", "client")
+
+	meta := &RequestMeta{EstimatedPromptTokens: 20000}
+	res := DecidePreflight(meta, r253State(), DefaultNCtxReloadConfig())
+	if res.Decision != PreflightReload {
+		t.Fatalf("в режиме client ожидался PreflightReload (прежнее поведение), получено %v: %s",
+			res.Decision, res.RejectBody)
+	}
+	if !res.AgentDerivedWindow {
+		t.Error("окно выведено из промпта, но AgentDerivedWindow=false — оператор не увидит причину в логе")
+	}
+	if res.TargetNCtx < 20000 {
+		t.Errorf("TargetNCtx=%d меньше самого промпта (20000): рост не решит проблему", res.TargetNCtx)
 	}
 }
 

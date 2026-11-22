@@ -85,9 +85,10 @@ func TestR301_TransportServesStreamingInsteadOfWorkerError(t *testing.T) {
 	}
 }
 
-// TestR301_StreamingGrowthIsRefusedBeforeNetwork — промпт не влезает: отказ с
-// числами (нужно/загружено), а не кадр ошибки воркера внутри 200.
-func TestR301_StreamingGrowthIsRefusedBeforeNetwork(t *testing.T) {
+// TestR301_StreamingRefusedWithNumbersBeforeNetwork — промпт не влезает и окно
+// клиент не заявил: отказ с числами ДО сети и ДО воркера (R664, шаг B), а не
+// кадр ошибки воркера внутри 200 и не рост под нашу оценку промпта.
+func TestR301_StreamingRefusedWithNumbersBeforeNetwork(t *testing.T) {
 	// R385: отказ «расти некуда» остаётся ровно для случая, когда рост запрещён
 	// или невозможен. Разрешённый рост проверяется в stream_growth_r385_test.go.
 	t.Setenv("LB_NCTX_GROW_FOR_STREAM", "0")
@@ -97,31 +98,42 @@ func TestR301_StreamingGrowthIsRefusedBeforeNetwork(t *testing.T) {
 		httptest.NewRequest(http.MethodPost, "/api/chat", nil).Context(),
 		"bk-1", "m", []byte(r301LongStreamBody()), "/api/chat")
 	if needsProxy {
-		t.Fatal("нужно отказать: стриминговый путь окно не растит")
+		t.Fatal("нужно отказать: данные не влезают, окна клиент не заявил")
 	}
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", status)
+	if status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413: клиенту нужно «заяви окно», а не «повтори позже»", status)
 	}
 	if len(body) == 0 {
 		t.Fatal("preflight вернул пустое тело: вызывающему нечего отдать клиенту")
 	}
-	if !strings.Contains(msg, "8192") || !strings.Contains(msg, "streaming request does not reload") {
-		t.Fatalf("в причине нет чисел и объяснения: %q", msg)
+	out := parseBodyR664(t, []byte(msg))
+	if got := out["error"]; got != contextWindowExhaustedCodeR664 {
+		t.Fatalf("error = %v, want %q", got, contextWindowExhaustedCodeR664)
+	}
+	if toIntR447(out["loaded_window_tokens"]) != 8192 {
+		t.Fatalf("loaded_window_tokens = %v, want 8192", out["loaded_window_tokens"])
+	}
+	if required := toIntR447(out["required_window_tokens"]); required <= 8192 {
+		t.Fatalf("required_window_tokens = %d обязано быть больше загруженного окна 8192", required)
 	}
 }
 
-// TestR301_RefusalBodyKeepsR299Format — тело отказа то же, что у остальных
-// «отложено» (R291/R299): новый формат не выдумываем, иначе клиент не сможет
-// обработать отказ одним правилом.
+// TestR301_RefusalBodyKeepsR299Format — тело отказа «подождите» то же, что у
+// остальных «отложено» (R291/R299): новый формат не выдумываем, иначе клиент не
+// сможет обработать отказ одним правилом.
+//
+// R664 (шаг B): «отложено» осталось там, где у запроса ЕСТЬ заявка, но путь её
+// выполнить не может (рост на стриминге выключен). Случай «заявки нет вовсе» —
+// окончательный 413 (см. TestR301_StreamingRefusedWithNumbersBeforeNetwork).
 func TestR301_RefusalBodyKeepsR299Format(t *testing.T) {
-	// R385: тело отказа проверяется на fallback-пути (рост выключен).
 	t.Setenv("LB_NCTX_GROW_FOR_STREAM", "0")
 	p := newGrowthGuardProxyR299()
-	body := []byte(r301LongStreamBody())
+	body := []byte(strings.Replace(r301LongStreamBody(), `"stream":true`,
+		`"stream":true,"options":{"num_ctx":131072}`, 1))
 
 	v := p.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", true)
 	if !v.Defer {
-		t.Fatal("ожидался отказ")
+		t.Fatalf("ожидался отказ «подождите» (заявка есть, путь её не выполняет): %+v", v)
 	}
 	rec := httptest.NewRecorder()
 	writePreflightDeferredR299(rec, p, "bk-1", "m", body, "/api/chat",

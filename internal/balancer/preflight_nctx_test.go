@@ -391,9 +391,6 @@ func TestDecidePreflight_NilInputs(t *testing.T) {
 }
 
 func TestDecidePreflight_DefaultNPredictWhenZero(t *testing.T) {
-	// R83-политика (2026-10-01): n_predict больше НЕ участвует в решении о
-	// перезагрузке. Клиент не указал окно → NoOp, даже если промпт по оценке
-	// не влезает: перезагрузка «по оценке» и была принудительным элементом.
 	meta := &RequestMeta{
 		EstimatedPromptTokens: 8000,
 		RequestedNPredict:     0, // default 2048
@@ -405,26 +402,24 @@ func TestDecidePreflight_DefaultNPredictWhenZero(t *testing.T) {
 	}
 	cfg := DefaultNCtxReloadConfig()
 	res := DecidePreflight(meta, state, cfg)
-	// R253 (2026-10-28): клиент не указал ни окна, ни n_predict — окно выводится из
-	// оценки промпта. Раньше здесь ожидался NoOp, и именно из-за этого Cline жил с
-	// неизменным окном.
-	//
-	// R451 (2026-11-06): в таргет входит только минимальный вывод, а не дефолтные
-	// 4096: 8000+512+64 = 8576 > загруженных 4096 → перезагрузка.
-	//
-	// R502 / аудит N-9: минимум — 512 (общий с воркером,
-	// types.ContextBudgetMinAnswerTokensR502), а не 256: воркер ниже 512 не
-	// опускает n_predict и отвечает 413, поэтому балансер обязан считать по нему.
-	wantTarget := 8000 + agentOutputReserveMinTokens + 64
-	if res.Decision != PreflightReload {
-		t.Fatalf("ожидался PreflightReload (%d > загруженных 4096), получено %v (target=%d)",
-			wantTarget, res.Decision, res.TargetNCtx)
+	// R664 (2026-11-20) ШАГ B: клиент не указал ни окна, ни n_predict, а промпт в
+	// загруженное окно 4096 не влезает → отказ 413 с числами. Раньше здесь (R253)
+	// окно выводилось из оценки промпта и модель перезагружалась — то есть рост под
+	// число, которого клиент не просил (оценка по символам завышает в 2–3 раза,
+	// R466). Минимум к заявке считается по тем же границам, что закрепляли
+	// R451/R502: промпт + 512 (общий с воркером минимум ответа) + 64 slack.
+	wantRequired := 8000 + agentOutputReserveMinTokens + 64
+	if res.Decision != PreflightReject || res.RejectStatus != http.StatusRequestEntityTooLarge {
+		t.Fatalf("ожидался отказ 413 с числами (%d > загруженных 4096), получено %v (status=%d)",
+			wantRequired, res.Decision, res.RejectStatus)
 	}
-	if res.TargetNCtx != wantTarget {
-		t.Errorf("TargetNCtx=%d, ожидалось %d (8000 + минимальный вывод %d + 64)",
-			res.TargetNCtx, wantTarget, agentOutputReserveMinTokens)
+	out := assertWindowExhaustedR664(t, []byte(res.RejectBody), 8000)
+	if got := toIntR447(out["required_window_tokens"]); got < wantRequired || got > wantRequired+255 {
+		t.Fatalf("required_window_tokens = %d, ожидалось %d..%d (8000 + минимальный вывод %d + 64)",
+			got, wantRequired, wantRequired+255, agentOutputReserveMinTokens)
 	}
-	// Прежний таргет (с дефолтным бюджетом клиента) доступен в режиме client.
+	// Прежний таргет (с дефолтным бюджетом клиента) доступен в режиме client —
+	// это осознанный откат шага B целиком, а не половина правила.
 	t.Setenv("LB_AGENT_WINDOW_BUDGET", "client")
 	if legacy := DecidePreflight(meta, state, cfg); legacy.TargetNCtx != 12160 {
 		t.Errorf("режим client: TargetNCtx=%d, ожидалось 12160 (8000 + 4096 + 64)", legacy.TargetNCtx)

@@ -22,10 +22,15 @@ import (
 )
 
 // windowInR504 — минимальный вход решения: занятости нет, путь умеет расти.
-func windowInR504(loaded, needed int, slots, ceiling int) windowInputR493 {
+//
+// R664 (шаг B): рост возможен только по ЗАЯВКЕ клиента, поэтому «растим» здесь
+// проверяется с requested>0. Случай «заявки нет» даёт отказ с числами — он
+// проверяется отдельно (window_refuse_no_growth_request_r664_test.go).
+func windowInR504(loaded, needed, requested int, slots, ceiling int) windowInputR493 {
 	return windowInputR493{
 		Needed:    needed,
 		Estimated: needed,
+		Requested: requested,
 		Loaded:    loaded,
 		Slots:     slots,
 		Ceiling:   ceiling,
@@ -41,7 +46,7 @@ func TestR504_TotalCeilingIsDividedBySlotsOnce(t *testing.T) {
 
 	// Клиенту 40000 — влезает в долю 65536: рост обязателен. Если долю разделить
 	// ещё раз (32768), решение откажет — именно это ловит тест.
-	d := decideWindowR493(windowInR504(32768, 40000, 2, 131072))
+	d := decideWindowR493(windowInR504(32768, 40000, 40000, 2, 131072))
 	if d.Kind != windowGrowR493 {
 		t.Fatalf("нужно 40000 при доле потолка 65536 → вид %q, ожидался %q (причина: %s): "+
 			"потолок поделён дважды (ловушка N-13)", d.Kind, windowGrowR493, d.Why)
@@ -74,16 +79,31 @@ func TestR504_ExplicitRequestAbovePerClientCeilingIsRefused(t *testing.T) {
 }
 
 // TestR504_DerivedNeedAboveShareGrowsToShare — N-1/N-13: НАША оценка выше доли
-// клиента урезается до неё (R466) и рост идёт до неё же — перезагрузка ровно в
-// суммарный потолок, без выхода за него.
+// клиента урезается до неё (R466), а рост идёт ровно до доли клиента —
+// перезагрузка не выходит за суммарный потолок.
+//
+// R664 (шаг B): рост требует ЗАЯВКИ, поэтому проверяются обе стороны одного
+// правила: без заявки урезанная потребность — это отказ с числами (модель не
+// перезагружаем), с заявкой на долю — рост ровно до неё.
 func TestR504_DerivedNeedAboveShareGrowsToShare(t *testing.T) {
-	d := decideWindowR493(windowInR504(32768, 100000, 2, 131072))
-	if d.Kind != windowGrowR493 {
-		t.Fatalf("выведенная потребность 100000 при доле 65536 → вид %q, ожидался %q (%s)",
-			d.Kind, windowGrowR493, d.Why)
-	}
+	d := decideWindowR493(windowInR504(32768, 100000, 0, 2, 131072))
 	if !d.Capped {
 		t.Fatal("выведенная потребность выше доли клиента обязана быть урезана (Capped)")
+	}
+	if d.Kind != windowRefuseR493 || !d.NoGrowthRequest {
+		t.Fatalf("без заявки клиента вид = %q (no_growth_request=%t), ожидался отказ шага B (%s)",
+			d.Kind, d.NoGrowthRequest, d.Why)
+	}
+	if d.Available != 65536 {
+		t.Fatalf("available=%d, ожидалось 65536 (доля клиента): клиент не должен заявлять недостижимое",
+			d.Available)
+	}
+
+	// Заявка ровно на долю клиента: рост идёт до неё, а перезагрузка — ровно в
+	// суммарный потолок.
+	d = decideWindowR493(windowInR504(32768, 65536, 65536, 2, 131072))
+	if d.Kind != windowGrowR493 {
+		t.Fatalf("заявка на долю 65536 → вид %q, ожидался %q (%s)", d.Kind, windowGrowR493, d.Why)
 	}
 	if d.Target > 65536 {
 		t.Fatalf("цель = %d выше доли клиента 65536: перезагрузка уйдёт за суммарный потолок", d.Target)
@@ -95,7 +115,7 @@ func TestR504_DerivedNeedAboveShareGrowsToShare(t *testing.T) {
 
 // TestR504_SingleSlotCeilingUnchanged — slots<=1: деление не меняет ничего.
 func TestR504_SingleSlotCeilingUnchanged(t *testing.T) {
-	d := decideWindowR493(windowInR504(32768, 100000, 1, 131072))
+	d := decideWindowR493(windowInR504(32768, 100000, 100000, 1, 131072))
 	if d.Kind != windowGrowR493 {
 		t.Fatalf("один слот, нужно 100000 при потолке 131072 → вид %q, ожидался %q (%s)",
 			d.Kind, windowGrowR493, d.Why)
@@ -109,6 +129,7 @@ func TestR504_SingleSlotCeilingUnchanged(t *testing.T) {
 // суммарное окно (это делает перезагрузка) не превышает суммарный потолок.
 func TestR504_ReloadNeverExceedsTotalCeiling(t *testing.T) {
 	const totalCeiling = 131072
+	grown := 0
 	for _, slots := range []int{1, 2, 3, 4} {
 		per := derivedWindowCapR466(totalCeiling, slots)
 		if per <= 0 {
@@ -118,10 +139,12 @@ func TestR504_ReloadNeverExceedsTotalCeiling(t *testing.T) {
 			if needed <= 0 {
 				continue
 			}
-			d := decideWindowR493(windowInR504(2048, needed, slots, totalCeiling))
+			// Заявка = нужное окно: без неё рост после R664 не начинается вообще.
+			d := decideWindowR493(windowInR504(2048, needed, needed, slots, totalCeiling))
 			if d.Kind != windowGrowR493 {
 				continue
 			}
+			grown++
 			reloadTotal := perClientToTotal(d.Target, slots)
 			if reloadTotal > totalCeiling {
 				t.Fatalf("slots=%d needed=%d: цель %d на клиента → перезагрузка %d "+
@@ -129,5 +152,8 @@ func TestR504_ReloadNeverExceedsTotalCeiling(t *testing.T) {
 					slots, needed, d.Target, reloadTotal, totalCeiling)
 			}
 		}
+	}
+	if grown == 0 {
+		t.Fatal("ни одного роста не проверено: тест выродился (инвариант N-1 не доказан)")
 	}
 }

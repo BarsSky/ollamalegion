@@ -183,6 +183,176 @@
     state.tokenAuth = body.tokenAuth === true;
     state.user = body.user || null;
     state.csrf = body.csrf || '';
+    // R679: состояние и UI больше не расходятся. Раньше applyMe менял ТОЛЬКО
+    // state, а класс роли/чип/видимость админских действий обновлялись в одном
+    // месте — в init() на загрузке страницы. Поэтому «сессия истекла» в открытой
+    // панели оставляла админские кнопки на месте (действия падали на 401).
+    syncAuthUi();
+    return state;
+  }
+
+  // --- R679: ЕДИНЫЙ переход «кто я» → «что видно» --------------------------
+  //
+  // Три функции ниже описывают одно правило: состояние сессии (state) — источник
+  // истины, а КЛАСС РОЛИ на body, ЧИП пользователя в шапке и ВИДИМОСТЬ
+  // админских действий ([data-admin-only]) — его следствие. Вызываются из
+  // applyMe (успешный /auth/me), expireSession (сессия истекла) и restoreSession
+  // (явный вход) — то есть во всех переходах, а не только на загрузке.
+
+  /**
+   * applyRoleClass — класс роли на body.
+   *
+   * R673: класс считается по ФАКТИЧЕСКИМ правам (isAdminNow), а не по одному
+   * признаку — иначе авторизованный администратор получал auth-role-guest.
+   * R679: класс именно ПЕРЕСТАВЛЯЕТСЯ (remove оба + add нужный). «Только add»
+   * оставлял панель в двух ролях одновременно: после истечения сессии на body
+   * оставался auth-role-admin, и любой CSS/код, читающий роли, видел админа.
+   */
+  function applyRoleClass() {
+    if (!document.body || !document.body.classList) { return; }
+    var role = isAdminNow() ? 'admin' : 'guest';
+    document.body.classList.remove('auth-role-admin');
+    document.body.classList.remove('auth-role-guest');
+    document.body.classList.add('auth-role-' + role);
+  }
+
+  /** removeUserChip — убрать чип пользователя из шапки (R679). */
+  function removeUserChip() {
+    var chip = (document.getElementById ? document.getElementById('authUserChip') : null);
+    if (!chip) { return; }
+    if (chip.parentNode && typeof chip.parentNode.removeChild === 'function') {
+      chip.parentNode.removeChild(chip);
+    } else if (typeof chip.remove === 'function') {
+      chip.remove();
+    } else if (chip.style) {
+      // Заглушка DOM в тестах без DOM-связей: прячем, чтобы панель не показывала
+      // пользователя, которого уже нет.
+      chip.style.display = 'none';
+    }
+  }
+
+  /** hideBanner — снять полосу объяснения (R679). */
+  function hideBanner() {
+    var bar = (document.getElementById ? document.getElementById('authBanner') : null);
+    if (!bar) { return; }
+    if (bar.parentNode && typeof bar.parentNode.removeChild === 'function') {
+      bar.parentNode.removeChild(bar);
+    } else if (typeof bar.remove === 'function') {
+      bar.remove();
+    } else if (bar.style) {
+      bar.style.display = 'none';
+    }
+  }
+
+  /** syncAuthUi — привести видимую часть панели к текущему state. */
+  function syncAuthUi() {
+    applyRoleClass();
+    if (state.authenticated || state.tokenAuth) {
+      renderUserChip();
+    } else {
+      removeUserChip();
+    }
+    applyRoleVisibility();
+  }
+
+  // --- R679: СЕССИЯ ИСТЕКЛА / СЕССИЯ ВОССТАНОВЛЕНА ------------------------
+  //
+  // ЖИВАЯ ЖАЛОБА: «сыпятся ошибки что пользователь неавторизован, и только
+  // перезагрузка открывает меню входа, но при этом режим просмотра не активен —
+  // то есть не переходит на пользователя гостя».
+  //
+  // Здесь — РОВНО переход «кто я» для случая, когда сервер сказал 401:
+  //   state → гость, класс роли, чип, видимость админских действий и ОДНО
+  //   объяснение (слой входа или полоса — в зависимости от R667-флажка).
+  // Решение «пора ли» принимает SessionExpiry (session-expiry.js): он гасит
+  // повторы и не даёт двум источникам (HTTP и WS) показать два объяснения.
+
+  /**
+   * expireSession — перевести открытую панель в гостя БЕЗ перезагрузки.
+   *
+   * Возвращает state. Идемпотентна: повторный вызов не плодит ни второго слоя,
+   * ни второй полосы.
+   */
+  function expireSession(opts) {
+    opts = opts || {};
+    state.loading = false;
+    state.authenticated = false;
+    state.user = null;
+    state.csrf = '';
+    // Break-glass токен, если им и работали, сервер только что отверг: держать
+    // его в sessionStorage нельзя — иначе каждый следующий запрос снова 401.
+    if (state.tokenAuth) {
+      writeStoredToken('');
+      publishToken('');
+    }
+    state.tokenAuth = false;
+
+    syncAuthUi();
+    showSessionExpiredNotice();
+    return state;
+  }
+
+  /**
+   * showSessionExpiredNotice — РОВНО ОДНО объяснение «сессия завершилась».
+   *
+   * Правило R667: если оператор уже выбирал «продолжить без входа» в этой
+   * вкладке, страницу НЕ перекрываем слоем — только полоса с кнопкой входа.
+   * Иначе показываем слой входа (как это делала перезагрузка), потому что
+   * живая жалоба звучит как «только перезагрузка открывает меню входа».
+   * Второе объяснение при этом убирается: оператор не должен видеть два текста
+   * об одном и том же.
+   */
+  function showSessionExpiredNotice() {
+    if (guestAckSaved()) {
+      dismissedOverlay = true;
+      hideOverlay();
+      hideBanner();
+      showBanner('auth.banner.sessionExpiredLive',
+        'Сессия завершилась: панель открыта в режиме просмотра. Войти — кнопка справа.');
+      return;
+    }
+    hideBanner();
+    showOverlay('expired');
+  }
+
+  /**
+   * restoreSession — вернуть админский режим после явного входа БЕЗ F5.
+   *
+   * Вызывается ТОЛЬКО когда оператор сам вошёл (пароль или аварийный токен).
+   * Если приложение уже инициализировано (сессия истекла в живой панели) —
+   * поднимаем каналы и перечитываем данные на месте. Если страница была открыта
+   * гостем, `ui.init()` в app.js НЕ вызывался (boot-гейт), и восстанавливать
+   * нечего: перезагрузка здесь — единственное уместное место, потому что она и
+   * есть штатный путь загрузки приложения.
+   */
+  function restoreSession() {
+    clearGuestAck();
+    dismissedOverlay = false;
+    hideOverlay();
+    hideBanner();
+    syncAuthUi();
+    if (window.SessionExpiry && typeof window.SessionExpiry.reset === 'function') {
+      window.SessionExpiry.reset();
+    }
+    // R679: восстанавливаем на месте ТОЛЬКО если приложение действительно было
+    // инициализировано (флаг ставит app.js → init). Если страница открыта гостем,
+    // boot-гейт init() не звал: поднимать нечего, и перезагрузка — единственное
+    // уместное место (она и есть штатный путь загрузки приложения).
+    var appReady = (window.__olAppInitialized === true) &&
+      window.App && typeof window.App.resumeAfterAuth === 'function';
+    if (appReady) {
+      try {
+        window.App.resumeAfterAuth();
+        return state;
+      } catch (e) {
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[auth] восстановление на месте не удалось, перезагружаю:', e && e.message);
+        }
+      }
+    }
+    // Приложение не инициализировано (страница открыта гостем) — только reload.
+    location.reload();
+    return state;
   }
 
   // --- экран входа -------------------------------------------------------
@@ -277,7 +447,10 @@
       }
       writeStoredToken(token);
       publishToken(token);
-      location.reload();
+      // R679: это ЯВНЫЙ вход — возвращаем админский режим на месте, без F5
+      // (полный путь восстановления — в restoreSession).
+      state.tokenAuth = true;
+      restoreSession();
     }).catch(function (err) {
       writeStoredToken('');
       publishToken('');
@@ -306,11 +479,15 @@
       body: JSON.stringify({ name: name, password: password })
     }).then(function (r) {
       if (r.status === 200 && r.body && r.body.success) {
+        state.loading = false;
         state.authenticated = true;
+        state.usersConfigured = true;
         state.user = r.body.user || { name: name, role: 'admin' };
         state.csrf = r.body.csrf || '';
-        hideOverlay();
-        location.reload();
+        // R679: явный вход возвращает админский режим НА МЕСТЕ, без F5. Если
+        // приложение на этой странице не инициализировалось (гостевой бут),
+        // restoreSession сама сделает перезагрузку — иного пути там нет.
+        restoreSession();
         return;
       }
       var msg = (r.body && (r.body.error || r.body.message)) || ('HTTP ' + r.status);
@@ -341,15 +518,26 @@
     try { window.sessionStorage.removeItem(AUTH_GUEST_ACK); } catch (e) { /* приватный режим */ }
   }
 
-  function showOverlay() {
+  /**
+   * showOverlay — показать слой входа.
+   *
+   * @param {string} [reason] — 'expired' (R679: сессия завершилась в живой панели)
+   *   меняет подсказку: оператор должен понять, что произошло, а не гадать.
+   */
+  function showOverlay(reason) {
     dismissedOverlay = false;
     var el = ensureOverlay();
     el.style.display = 'flex';
     var hint = document.getElementById('authHint');
     if (hint) {
-      hint.textContent = state.usersConfigured
-        ? 'Требуются учётные данные администратора. Если вы уже входили, сессия завершилась при перезапуске балансера — войдите заново или нажмите «Продолжить без входа».'
-        : 'Вход не настроен (нет пользователей). Панель без входа не работает: задайте LB_ADMIN_USER/LB_ADMIN_PASSWORD на балансере или введите аварийный API-токен ниже.';
+      if (reason === 'expired') {
+        hint.textContent = 'Сессия завершилась (балансер перезапущен или сессия протухла). ' +
+          'Войдите заново — или нажмите «Продолжить без входа», панель останется в режиме просмотра.';
+      } else {
+        hint.textContent = state.usersConfigured
+          ? 'Требуются учётные данные администратора. Если вы уже входили, сессия завершилась при перезапуске балансера — войдите заново или нажмите «Продолжить без входа».'
+          : 'Вход не настроен (нет пользователей). Панель без входа не работает: задайте LB_ADMIN_USER/LB_ADMIN_PASSWORD на балансере или введите аварийный API-токен ниже.';
+      }
     }
     var name = document.getElementById('authName');
     if (name && name.focus) { name.focus(); }
@@ -504,27 +692,19 @@
       // чтобы не делать запросы до входа и не сыпать 401 в консоль.
       if (pendingInit) { return pendingInit; }
       pendingInit = fetchJSON('/api/v1/auth/me').then(function (r) {
+        // R679: applyMe теперь синхронизирует и видимую часть панели (класс роли на
+        // body, чип пользователя, видимость [data-admin-only]) — см. syncAuthUi.
         applyMe((r && r.body) || {});
-        // R673 (2026-11-21): класс роли считается по ФАКТИЧЕСКИМ правам, а не только
-        // по аварийному токену: авторизованный администратор получал
-        // `auth-role-guest`. Сегодня класс никто не читает (влияния нет), но любой
-        // CSS/JS, начавший читать auth-role-*, скрыл бы админские действия у админа.
-        var guestRole = isAdminNow() ? 'admin' : 'guest';
-        if (document.body && document.body.classList) {
-          document.body.classList.add('auth-role-' + guestRole);
-        }
         if (state.authenticated || state.tokenAuth) {
           // R667: успешный вход отменяет «работаю без входа» — иначе после выхода
           // страница осталась бы без блокирующего слоя, но и без объяснения.
           clearGuestAck();
           hideOverlay();
-          renderUserChip();
-          applyRoleVisibility();
+          hideBanner();
           watchDynamicAdminNodes();
           return state;
         }
         // Гость: админские действия не показываем и ждём входа.
-        applyRoleVisibility();
         watchDynamicAdminNodes();
         if (state.usersConfigured) {
           // R667: закрытый ранее слой не открываем заново после перезагрузки —
@@ -566,7 +746,17 @@
       return fetchJSON('/api/v1/auth/logout', { method: 'POST' });
     },
     headers: headers,
-    applyRoleVisibility: applyRoleVisibility
+    applyRoleVisibility: applyRoleVisibility,
+    // R679: единые переходы «кто я» — их зовут session-expiry.js (сессия
+    // истекла), обработчики явного входа (пароль/токен) и тесты.
+    applyMe: applyMe,
+    expireSession: expireSession,
+    restoreSession: restoreSession,
+    syncAuthUi: syncAuthUi,
+    removeUserChip: removeUserChip,
+    hideBanner: hideBanner,
+    showBanner: showBanner,
+    showOverlay: showOverlay
   };
 
   window.Auth = Auth;

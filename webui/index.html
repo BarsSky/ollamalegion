@@ -2607,6 +2607,11 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          DEMO_MODE к этому моменту уже прочитан из сгенерированного конфига. -->
     <script defer src="js/modules/demo-mode.js?v=R425"></script>
     <script defer src="js/modules/auth.js?v=R425"></script>
+    <!-- R679: единая точка «сессия истекла» (HTTP 401 + отказ рукопожатия WS).
+         Грузится СРАЗУ после auth.js: api.js, websocket.js, notifications.js и
+         logs-stream.js зовут window.SessionExpiry на 401, поэтому модуль обязан
+         существовать до их первого запроса/подключения. -->
+    <script defer src="js/modules/session-expiry.js?v=R679"></script>
     <script defer src="js/modules/users-admin.js?v=R425"></script>
     <script defer src="js/modules/layout-layers-info.js?v=R425"></script>
     <script defer src="js/modules/backend-type-filter.js?v=R425"></script>

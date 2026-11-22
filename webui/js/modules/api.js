@@ -98,6 +98,20 @@ const Api = (function () {
                 const err = new Error(`HTTP ${response.status}: ${response.statusText}`);
                 err.status = response.status;
                 err.body = body;
+                err.url = String(url);
+                // R679: 401 = СЕССИЯ ИСТЕКЛА, а не «ошибка запроса».
+                //
+                // Раньше 401 уходил наверх как обычная ошибка: каждый модуль
+                // ловил её, звал свой toast и писал console.error — в открытой
+                // панели получалась лента «пользователь неавторизован», а сам
+                // Auth оставался админским. Теперь сигнал уходит в ЕДИНСТВЕННУЮ
+                // точку (session-expiry.js): она переводит панель в гостя,
+                // показывает одно объяснение и гасит повторы. Исключение —
+                // /auth/login: там 401 означает неверный пароль, а не истёкшую
+                // сессию (иначе опечатка разлогинивала бы панель).
+                if (response.status === 401 && String(url).indexOf('/api/v1/auth/') === -1) {
+                    noteSessionExpired('http', { status: 401, url: String(url) });
+                }
                 throw err;
             }
             return response;
@@ -129,6 +143,24 @@ const Api = (function () {
     async function getJson(endpoint) {
         const response = await request(`${API_BASE}${endpoint}`);
         return response.json();
+    }
+
+    /**
+     * noteSessionExpired — R679: сигнал «сессия истекла» в единую точку.
+     *
+     * ЗАЧЕМ ЗДЕСЬ, А НЕ В КАЖДОМ МОДУЛЕ. `request()` — единственный транспорт для
+     * ВСЕХ Api.* вызовов, поэтому это самая полная точка, где виден 401 от
+     * балансера. Решение «что делать» принимает session-expiry.js; здесь только
+     * передаём сигнал. Модуль может быть не подключён (старый образ/тесты) —
+     * тогда поведение остаётся прежним, без падений.
+     */
+    function noteSessionExpired(source, detail) {
+        try {
+            if (typeof window !== 'undefined' && window.SessionExpiry &&
+                typeof window.SessionExpiry.note === 'function') {
+                window.SessionExpiry.note(source, detail);
+            }
+        } catch (e) { /* диагностика не должна ломать обработку ошибки */ }
     }
 
     /**
@@ -983,10 +1015,23 @@ const Api = (function () {
         },
 
         // Generic error handler for UI
-
+        //
+        // R679: 401 из ШУМА превращён в состояние. Пока панель уже переведена в
+        // гостя из-за истёкшей сессии (SessionExpiry.isExpired), повторные
+        // сообщения об авторизации НЕ порождают ни console.error, ни события
+        // api-error — иначе каждый модуль показывал бы свой toast, и «поток
+        // ошибок» из живой жалобы остался бы на месте. Остальные ошибки
+        // (диск, таймаут, 500) не глушатся: шум не должен прятать реальные
+        // проблемы.
         handleError(err, fallbackMessage = 'Ошибка API') {
-            console.error(err);
             const msg = err?.message || fallbackMessage;
+            const SE = (typeof window !== 'undefined') ? window.SessionExpiry : null;
+            const isAuthStatus = !!(err && (err.status === 401 || err.status === 403));
+            if (SE && typeof SE.isExpired === 'function' && SE.isExpired() &&
+                (isAuthStatus || (typeof SE.shouldSilence === 'function' && SE.shouldSilence(msg)))) {
+                return msg;
+            }
+            console.error(err);
             window.dispatchEvent(new CustomEvent('api-error', { detail: { message: msg, error: err } }));
             return msg;
         },

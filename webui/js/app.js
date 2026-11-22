@@ -39,6 +39,17 @@ const ui = (function () {
         // app.js must be loaded AFTER app-core.js (see webui/index.html).
         // R57.3: populate App.context for app-listeners.js setup functions.
         // Each function reads from App.context to access app.js state and helpers.
+        //
+        // R679: флаг «приложение инициализировано». Нужен auth.js → restoreSession,
+        // чтобы отличить два случая явного входа:
+        //   * сессия истекла в ЖИВОЙ панели — init() уже был, каналы и страницы
+        //     подняты, данные можно перечитать на месте (без F5);
+        //   * страница ОТКРЫТА ГОСТЕМ — boot-гейт не звал init(), и восстанавливать
+        //     нечего: перезагрузка здесь единственный уместный путь (она и есть
+        //     штатная загрузка приложения).
+        // Флаг ставится ПЕРВОЙ строкой: любая поздняя ошибка не должна оставлять
+        // панель в состоянии «инициализирована наполовину, но считается гостем».
+        window.__olAppInitialized = true;
         if (!window.App) {
             console.error('app.js: window.App not defined — app-core.js must be loaded BEFORE app.js');
         } else {
@@ -140,6 +151,25 @@ const ui = (function () {
                 // паузы считается по тому же правилу, что и для страницы
                 // (R493: пауза, скрытая вкладка и «монитор не открыт»).
                 syncMonitorIframePause();
+            });
+        }
+
+        // R679 (2026-11-21): ПАУЗА МОНИТОРА ПОВТОРЯЕТСЯ ПОСЛЕ ЗАГРУЗКИ IFRAME.
+        //
+        // ЖИВОЙ ФАКТ (замер на стенде): страница «Бэкенды», авто-обновление
+        // включено, а монитор в iframe опрашивает API каждые 2 с — и после
+        // истечения сессии продолжает получать 401 (11 запросов за цикл).
+        // Причина не в паузе, а в ГОНКЕ: родитель отправляет
+        // {type:'ollamalegion-pause', paused:true} один раз при инициализации,
+        // когда обработчик postMessage в iframe ещё не зарегистрирован (его
+        // регистрирует js/monitor/state.js, загружаемый позже). Сообщение
+        // уходит в пустоту, и iframe спокойно живёт своим циклом.
+        // Здесь досылаем состояние паузы на load — тогда «монитор не открыт ⇒
+        // он молчит» (правило R493) выполняется и на практике.
+        var monitorFrameEl = document.getElementById('monitorFrame');
+        if (monitorFrameEl && monitorFrameEl.addEventListener) {
+            monitorFrameEl.addEventListener('load', function () {
+                try { syncMonitorIframePause(); } catch (e) { /* iframe не готов */ }
             });
         }
         setupVisibilityRefresh();
@@ -1052,6 +1082,92 @@ const ui = (function () {
     }
 
 
+    // ---- R679: возврат в админский режим после явного входа, БЕЗ F5 ----
+    //
+    // ЗАЧЕМ. При истечении сессии открытая панель переводится в гостя на месте
+    // (auth.js → expireSession) и глушит всё, что шумит: авто-обновление,
+    // WebSocket, SSE-уведомления, live-tail логов. После входа эти каналы нужно
+    // поднять и ПЕРЕЧИТАТЬ данные — иначе оператор получает работающий, но
+    // пустой интерфейс и всё равно жмёт F5. Эта функция и есть альтернатива
+    // перезагрузке: состояние страницы, выбранная вкладка и всё, что оператор
+    // успел открыть, остаётся на месте.
+    //
+    // ГДЕ ПЕРЕЗАГРУЗКА ВСЁ-ТАКИ УМЕСТНА. Если страница была ОТКРЫТА ГОСТЕМ,
+    // boot-гейт ниже не вызывал ui.init(), и поднимать нечего — там auth.js
+    // делает location.reload(), то есть перезагрузка остаётся штатным путём
+    // загрузки приложения (и это единственное место, где она уместна).
+    // ---- R679: остановка всего, что само стучится в API ----------------
+    //
+    // ЗАЧЕМ. При истечении сессии каждый самостоятельный цикл (авто-обновление,
+    // статус операций, монитор в iframe со своими 2 с) продолжает ходить в API и
+    // получать 401. Именно это видел оператор как «поток ошибок». Останавливаем
+    // их ОДНИМ вызовом из session-expiry.js; поднимает их resumeAfterAuth.
+    function pauseForSessionExpiry() {
+        try { stopPeriodicRefresh(); } catch (e) { /* таймера ещё нет */ }
+        try { stopOpsAutoRefresh(); } catch (e) { /* модалка закрыта */ }
+        // Монитор — ОТДЕЛЬНЫЙ документ со своими 2-секундными таймерами: из
+        // родителя их не остановить, поэтому договариваемся сообщением.
+        // Сообщение может потеряться: обработчик postMessage в iframe
+        // регистрируется его собственными <script>, то есть ПОЗЖЕ, чем родитель
+        // может отправить первый pause. Повторяем отправку и ловим load — иначе
+        // «остановили» остаётся словами, а монитор продолжает получать 401.
+        var sendPause = function () {
+            try { postMonitorPause(true); } catch (e) { /* iframe ещё не загружен */ }
+        };
+        sendPause();
+        setTimeout(sendPause, 500);
+        setTimeout(sendPause, 1500);
+        try {
+            var frame = document.getElementById('monitorFrame');
+            if (frame && frame.addEventListener) { frame.addEventListener('load', sendPause, { once: true }); }
+        } catch (e) { /* нет iframe — не критично */ }
+        return true;
+    }
+    window.App = window.App || {};
+
+    function resumeAfterAuth() {
+        try {            if (window.WebSocketManager) {
+                if (typeof window.WebSocketManager.resetAttempts === 'function') {
+                    window.WebSocketManager.resetAttempts();
+                }
+                window.WebSocketManager.connect();
+            }
+        } catch (e) { console.warn('[app] WS после входа не поднялся:', e && e.message); }
+
+        try {
+            if (window.notifications && typeof window.notifications.resume === 'function') {
+                window.notifications.resume();
+            }
+        } catch (e) { console.warn('[app] уведомления после входа не поднялись:', e && e.message); }
+
+        try {
+            if (window.logsStream && typeof window.logsStream.resume === 'function') {
+                window.logsStream.resume();
+            }
+        } catch (e) { console.warn('[app] live-tail логов после входа не поднялся:', e && e.message); }
+
+        try {
+            if (window.DataRefresh && typeof window.DataRefresh.setAuthExpired === 'function') {
+                window.DataRefresh.setAuthExpired(false);
+            }
+            startPeriodicRefresh();
+            if (!window.DataRefresh || window.DataRefresh.isAuto()) {
+                startOpsAutoRefresh();
+            }
+            // R679: монитор в iframe тоже надо разбудить (на странице «Монитор»
+            // он был остановлен вместе с остальными каналами).
+            syncMonitorIframePause();
+            // Перечитываем данные активной страницы: панель не должна остаться
+            // пустой до следующего тика авто-обновления.
+            fetchClusterState().then(function () {
+                refreshPage(currentPage);
+            }).catch(function () { /* индикатор свежести покажет состояние */ });
+        } catch (e) {
+            console.warn('[app] данные после входа не перечитаны:', e && e.message);
+        }
+        return true;
+    }
+
     // ---- Public API ----
 
     // R66b (2026-09-22): публикуем в window функции, которые другие модули
@@ -1070,9 +1186,16 @@ const ui = (function () {
     // не инициализировалось вообще).
     window.autoSaveSettings = autoSaveSettings;
     window.loadSettings = loadSettings;
+    // R679: возврат в админский режим после явного входа без перезагрузки.
+    // Присваивание ВНУТРИ IIFE — иначе ReferenceError (см. комментарий выше).
+    window.App = window.App || {};
+    window.App.resumeAfterAuth = resumeAfterAuth;
+    window.App.pauseForSessionExpiry = pauseForSessionExpiry;
 
     return {
         init,
+        resumeAfterAuth,
+        pauseForSessionExpiry,
         editBackend: window.BackendCRUD.editBackend,
 
         confirmDeleteBackend: window.BackendCRUD.confirmDeleteBackend,

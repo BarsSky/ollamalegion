@@ -380,6 +380,14 @@
     function monitorIframeMustPause() {
         if (getCurrentPage() !== 'monitor') return true;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return true;
+        // R679: сессия истекла — монитор в iframe живёт СВОИМ 2-секундным циклом
+        // (свои запросы к /api/v1/cluster, /sessions, /queue). Пока он не
+        // остановлен, он продолжает получать 401 и писать их в консоль — это
+        // часть «потока ошибок» из живой жалобы. Ждём явного входа.
+        if (window.SessionExpiry && typeof window.SessionExpiry.isExpired === 'function' &&
+            window.SessionExpiry.isExpired()) {
+            return true;
+        }
         if (window.DataRefresh && typeof window.DataRefresh.isAuto === 'function') {
             return !window.DataRefresh.isAuto();
         }
@@ -438,6 +446,14 @@
         refreshTimer = setInterval(() => {
             if (periodicRefreshPaused()) return;
             if (window.DataRefresh && !window.DataRefresh.isAuto()) return;
+            // R679: сессия истекла — тик молчит. Каждый запрос получил бы 401,
+            // каждый модуль показал бы свою ошибку, и индикатор свежести краснел
+            // бы каждые 5 секунд (ровно тот «поток ошибок» из живой жалобы).
+            // Опрос возобновится после явного входа (App.resumeAfterAuth).
+            if (window.SessionExpiry && typeof window.SessionExpiry.isExpired === 'function' &&
+                window.SessionExpiry.isExpired()) {
+                return;
+            }
             // R676: страница тика читается ОДИН раз (геттер), дальше это значение:
             // пока тик ходит по сети, оператор может уйти на другой раздел, и
             // перерисовка обязана остаться про ту страницу, для которой тик начат.

@@ -84,6 +84,22 @@
         }
 
         /**
+         * resume — R679: поднять live-tail после явного входа.
+         *
+         * ЗАЧЕМ: при истечении сессии поток останавливается (stop) — иначе он
+         * бесконечно переподключается к /ws/logs и получает 401 на каждом
+         * рукопожатии. start() здесь не годится: он заново навесил бы onEntry/
+         * onSnapshot, и каждая запись лога попала бы в панель дважды.
+         */
+        resume() {
+            if (this.shouldReconnect) return; // уже работает
+            this.shouldReconnect = true;
+            this.reconnectAttempts = 0;
+            this.startedAt = this.startedAt || new Date();
+            this._connect();
+        }
+
+        /**
          * Подключиться к /ws/logs. WS URL собирается из текущего origin/api_base.
          */
         _connect() {
@@ -190,6 +206,11 @@
         _scheduleReconnect() {
             if (!this.shouldReconnect) return;
             if (this.reconnectTimer) return; // уже запланирован
+            // R679: истёкшая сессия ⇒ рукопожатие снова получит 401. Ждём входа.
+            if (typeof window !== 'undefined' && window.SessionExpiry &&
+                typeof window.SessionExpiry.isExpired === 'function' && window.SessionExpiry.isExpired()) {
+                return;
+            }
 
             this.reconnectAttempts++;
             var delayMs = Math.min(30000, 1000 * Math.pow(2, this.reconnectAttempts - 1));

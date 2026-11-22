@@ -41,6 +41,11 @@
         lastOkAt: 0,
         // lastError — текст последней ошибки обновления ('' = ошибок нет).
         lastError: '',
+        // authExpired — R679: панель в гостя из-за истёкшей сессии. Это НЕ «ошибка
+        // обновления»: показывать оператору «не удалось обновить: HTTP 401» каждые
+        // 5 секунд — тот самый поток ошибок, на который жаловались. Индикатор
+        // переключается в спокойное «требуется вход», а после входа возвращается.
+        authExpired: false,
         // running — обновление идёт прямо сейчас (индикатор покажет спиннер).
         running: false,
         // auto — авто-обновление включено (переключатель в шапке).
@@ -125,10 +130,37 @@
     function markFresh() {
         state.lastOkAt = Date.now();
         state.lastError = '';
+        // R679: НЕ снимаем authExpired по одному успешному ответу. Запрос, ушедший
+        // ДО инвалидации сессии, может завершиться уже после неё — и тогда
+        // индикатор вернулся бы из «требуется вход» в «обновлено», хотя панель
+        // по-прежнему гость. Снимает флаг только восстановление сессии
+        // (App.resumeAfterAuth → setAuthExpired(false)).
+        if (!(window.SessionExpiry && typeof window.SessionExpiry.isExpired === 'function' &&
+              window.SessionExpiry.isExpired())) {
+            state.authExpired = false;
+        }
+        render();
+    }
+
+    /**
+     * setAuthExpired — R679: панель в гостя из-за истёкшей сессии (или вышла из него).
+     *
+     * ЗАЧЕМ ОТДЕЛЬНЫЙ ФЛАГ, А НЕ lastError. «Не удалось обновить: HTTP 401» —
+     * технически ошибка, но оператору это не действие: сессия завершилась, и
+     * помочь может только вход. Поэтому индикатор говорит «требуется вход»
+     * (нейтральный статус), а не краснеет ошибкой на каждом тике — ровно то, что
+     * просили: «не должен показывать ошибку пачками».
+     */
+    function setAuthExpired(on) {
+        state.authExpired = !!on;
+        if (state.authExpired) { state.lastError = ''; }
         render();
     }
 
     function markError(err) {
+        // R679: пока сессия истекла, ошибки обновления — следствие одного факта,
+        // а не поток новых. Индикатор остаётся в спокойном состоянии.
+        if (state.authExpired) { render(); return; }
         var msg = (err && err.message) ? err.message : String(err || '');
         state.lastError = msg || t('refresh.error_unknown', 'неизвестная ошибка');
         render();
@@ -168,17 +200,25 @@
         if (!node) return;
         var text = byId('dataFreshnessText');
         var icon = byId('dataFreshnessIcon');
-        var label = state.running
-            ? t('refresh.running', 'обновляю…')
-            : freshnessLabel(ageSeconds(), state.auto, state.lastError);
+        var label;
+        if (state.authExpired && !state.running) {
+            // R679: спокойный статус вместо ошибки: причина названа один раз —
+            // полосой/слоем входа (auth.js), индикатор лишь напоминает.
+            label = t('refresh.auth_required', 'требуется вход');
+        } else {
+            label = state.running
+                ? t('refresh.running', 'обновляю…')
+                : freshnessLabel(ageSeconds(), state.auto, state.lastError);
+        }
         if (text) text.textContent = label;
         else node.textContent = label;
-        node.classList.toggle('is-error', !!state.lastError);
-        node.classList.toggle('is-stale', !state.lastError && !state.auto);
+        node.classList.toggle('is-error', !!state.lastError && !state.authExpired);
+        node.classList.toggle('is-stale', (state.authExpired || !state.lastError) && !state.auto);
         if (icon) {
-            icon.className = state.running ? 'fas fa-circle-notch fa-spin'
-                : (state.lastError ? 'fas fa-triangle-exclamation'
-                    : (state.auto ? 'fas fa-circle-check' : 'fas fa-pause'));
+            icon.className = state.authExpired ? 'fas fa-lock'
+                : (state.running ? 'fas fa-circle-notch fa-spin'
+                    : (state.lastError ? 'fas fa-triangle-exclamation'
+                        : (state.auto ? 'fas fa-circle-check' : 'fas fa-pause')));
         }
         var toggle = byId('dataAutoToggle');
         if (toggle) {
@@ -222,6 +262,9 @@
      */
     function shouldPoll() {
         if (!state.auto) return false;
+        // R679: сессия истекла — опрос бессмыслен (каждый запрос 401) и является
+        // источником шума. Возобновится после явного входа (setAuthExpired(false)).
+        if (state.authExpired) return false;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
         return true;
     }
@@ -255,6 +298,13 @@
             // но индикатор всё равно должен показать, что мы «дёрнули» данные.
             render();
             return Promise.resolve(true);
+        }
+        // R679: сессия истекла — не дёргаем провайдеров. Иначе одно нажатие
+        // «Обновить» в гостевом режиме давало пачку 401 и ленту ошибок; внятное
+        // состояние уже показано полосой/слоем входа.
+        if (state.authExpired) {
+            render();
+            return Promise.resolve(false);
         }
         state.running = true;
         render();
@@ -316,6 +366,7 @@
         refresh: refresh,
         markFresh: markFresh,
         markError: markError,
+        setAuthExpired: setAuthExpired,
         setAuto: setAuto,
         isAuto: isAuto,
         toggleAuto: toggleAuto,

@@ -262,6 +262,28 @@
         }
     }
 
+    /**
+     * sessionExpired — R679: панель уже переведена в гостя из-за истёкшей сессии.
+     *
+     * Пока это так, ЛЮБОЕ сообщение об авторизации — повтор одного и того же
+     * факта: сессия завершилась, объяснение уже показано полосой/слоем. Гасим,
+     * чтобы «поток ошибок» из живой жалобы не воспроизводился в «Системных
+     * логах» и в тостах. Реальные ошибки (диск/таймаут/500) не глушатся.
+     */
+    function sessionExpired() {
+        return !!(typeof window !== 'undefined' && window.SessionExpiry &&
+            typeof window.SessionExpiry.isExpired === 'function' && window.SessionExpiry.isExpired());
+    }
+
+    function shouldSilence(message) {
+        if (!sessionExpired()) { return false; }
+        if (typeof window !== 'undefined' && window.SessionExpiry &&
+            typeof window.SessionExpiry.shouldSilence === 'function') {
+            return window.SessionExpiry.shouldSilence(message);
+        }
+        return false;
+    }
+
     App.setupWebSocketEvents = function() {
         const ctx = App.context;
         window.addEventListener('ws-open', function() {
@@ -277,6 +299,9 @@
 
         window.addEventListener('ws-error', function() {
             if (ctx && ctx.updateConnectionStatus) ctx.updateConnectionStatus(false);
+            // R679: после истёкшей сессии каждое переподключение снова 401 —
+            // строка «Ошибка WebSocket» на каждую попытку и была шумом.
+            if (sessionExpired()) { return; }
             if (ctx && ctx.addLog) {
                 ctx.addLog(window.I18N ? I18N.t('app.ws_error') : 'WebSocket error', 'error');
             }
@@ -284,12 +309,14 @@
 
         window.addEventListener('ws-reconnecting', function(e) {
             const detail = e.detail || {};
+            if (sessionExpired()) { return; }
             if (ctx && ctx.addLog) {
                 ctx.addLog(window.I18N ? I18N.t('app.ws_reconnect', { attempt: detail.attempt, max: detail.max, delay: Math.round((detail.delay || 0) / 1000) }) : 'Reconnecting... (' + detail.attempt + '/' + detail.max + ') in ' + Math.round((detail.delay || 0) / 1000) + 's', 'warn');
             }
         });
 
         window.addEventListener('ws-max-reconnect', function() {
+            if (sessionExpired()) { return; }
             if (ctx && ctx.addLog) {
                 ctx.addLog(window.I18N ? I18N.t('app.ws_max_reconnect') : 'Max reconnection attempts reached', 'error');
             }
@@ -317,6 +344,9 @@
         window.addEventListener('api-error', function(e) {
             const detail = e.detail || {};
             const message = detail.message;
+            // R679: повторные 401/403 после истечения сессии не порождают ни
+            // toast'а, ни строки в логах панели: состояние уже объяснено один раз.
+            if (shouldSilence(message)) { return; }
             App.showToast(message, 'error');
             if (ctx && ctx.addLog) ctx.addLog(message, 'error');
             if (message && (message.includes('Network error') || message.includes('Failed to fetch') || message.includes('NetworkError'))) {

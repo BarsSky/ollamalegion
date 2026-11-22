@@ -1,4 +1,4 @@
-﻿/**
+/**
  * app-core.js — Theme / Density / i18n / AutoTune toast helpers.
  *
  * R57.2 (2026-09-03): extracted from webui/js/app.js.
@@ -242,6 +242,19 @@
     // этим определением из-за hoisting. После split: только эта каноническая версия
     // живёт в app-core.js, initAutoTuneEventHandlers вызывает её напрямую.
     App.showToast = function(message, type, timeoutMs) {
+        // R679 (2026-11-21): ПОСЛЕ ИСТЕЧЕНИЯ СЕССИИ — НЕ ЛЕНТА, А ОДНО ОБЪЯСНЕНИЕ.
+        //
+        // Живая жалоба: «сыпятся ошибки что пользователь неавторизован». Источником
+        // был не один модуль, а все: каждый ловил 401 и звал showToast. Гасим здесь,
+        // потому что это ЕДИНСТВЕННАЯ точка, через которую проходят все тосты
+        // (window.showToast ниже — ссылка на эту же функцию). Гасятся только
+        // сообщения об авторизации и только пока панель уже переведена в гостя:
+        // реальные ошибки (диск, таймаут, 500) по-прежнему видны.
+        var SE = (typeof window !== 'undefined') ? window.SessionExpiry : null;
+        if (SE && typeof SE.isExpired === 'function' && SE.isExpired() &&
+            typeof SE.shouldSilence === 'function' && SE.shouldSilence(message)) {
+            return;
+        }
         const container = document.getElementById('toastContainer');
         if (!container) return;
         const toast = document.createElement('div');

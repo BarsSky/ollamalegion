@@ -1,4 +1,4 @@
-﻿// webui/js/modules/notifications.js — singleton для SSE notifications (F.α).
+// webui/js/modules/notifications.js — singleton для SSE notifications (F.α).
 //
 // Архитектура:
 //   - EventSource подключается к GET /api/v1/events?token=<X-API-Token>.
@@ -65,6 +65,7 @@
         init({ token, onNew, onClear } = {}) {
             if (onNew) this.callbacks.onNew.push(onNew);
             if (onClear) this.callbacks.onClear.push(onClear);
+            this._token = token || this._token || '';
             this._connect(token);
         }
 
@@ -74,6 +75,26 @@
                 this.eventSource.close();
                 this.eventSource = null;
             }
+        }
+
+        /**
+         * resume — R679: поднять поток после явного входа.
+         *
+         * ЗАЧЕМ ОТДЕЛЬНЫЙ МЕТОД, А НЕ ПОВТОРНЫЙ init(). При истечении сессии поток
+         * останавливается (stop), иначе SSE переподключается бесконечно и пишет в
+         * консоль на каждую попытку — это был один из источников «потока ошибок».
+         * После входа канал надо вернуть: init() снова навесил бы подписчиков
+         * (onNew/onClear), и каждое уведомление отрисовалось бы дважды. resume()
+         * переподключается с уже сохранённым токеном и БЕЗ дублирования подписок.
+         */
+        resume() {
+            this._closed = false;
+            this.reconnectAttempt = 0;
+            if (this.eventSource) {
+                try { this.eventSource.close(); } catch (e) { /* уже закрыт */ }
+                this.eventSource = null;
+            }
+            this._connect(this._token || '');
         }
 
         markAllAsRead() {
@@ -138,6 +159,12 @@
 
         _scheduleReconnect(token) {
             if (this._closed) return;
+            // R679: пока сессия истекла, каждая попытка снова получит 401 и
+            // console.warn. Ждём явного входа (resume).
+            if (typeof window !== 'undefined' && window.SessionExpiry &&
+                typeof window.SessionExpiry.isExpired === 'function' && window.SessionExpiry.isExpired()) {
+                return;
+            }
             const delay = Math.min(
                 RECONNECT_BASE_MS * Math.pow(2, this.reconnectAttempt),
                 RECONNECT_MAX_MS

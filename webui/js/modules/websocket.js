@@ -9,6 +9,10 @@ const WebSocketManager = (function () {
     let heartbeatTimer = null;
     let reconnectAttempts = 0;
     let connected = false;
+    // R679: открылось ли ТЕКУЩЕЕ соединение хотя бы раз. Отличие важно: закрытие
+    // уже работавшего канала — это обрыв/рестарт балансера, а закрытие без
+    // открытия — отказ рукопожатия, в том числе 401 от AuthorizeWS.
+    let openedThisAttempt = false;
 
     const MAX_RECONNECT_ATTEMPTS = CFG.MAX_RECONNECT_ATTEMPTS || 10;
     const BASE_INTERVAL = CFG.RECONNECT_INTERVAL_BASE || 3000;
@@ -24,6 +28,39 @@ const WebSocketManager = (function () {
     function setStatus(isConnected) {
         connected = isConnected;
         window.dispatchEvent(new CustomEvent('ws-status', { detail: { connected } }));
+    }
+
+    /**
+     * sessionExpired — R679: сессия уже признана истёкшей?
+     *
+     * Нужен здесь потому, что переподключение к /ws/metrics после истечения
+     * сессии гарантированно снова получит 401: сервер проверяет доступ ДО
+     * Upgrade (AuthorizeWS). Раньше это давало 10 попыток и 10 строк «Ошибка
+     * WebSocket → Переподключение…» в панели.
+     */
+    function sessionExpired() {
+        return !!(typeof window !== 'undefined' && window.SessionExpiry &&
+            typeof window.SessionExpiry.isExpired === 'function' && window.SessionExpiry.isExpired());
+    }
+
+    /**
+     * noteHandshakeFailure — R679: рукопожатие не удалось, проверить сессию.
+     *
+     * ПОЧЕМУ ПРОВЕРКА ОТДЕЛЬНЫМ ЗАПРОСОМ. Браузерный WebSocket API НЕ отдаёт
+     * HTTP-статус отказа рукопожатия: onerror получает Event без полей, onclose —
+     * code 1006. То есть «401 от AuthorizeWS» снаружи неотличим от обрыва сети.
+     * Проверяем публичный /api/v1/auth/me: если сервер отвечает 200 и
+     * authenticated:false при настроенных пользователях — сессия действительно
+     * истекла, и панель надо перевести в гостя ТЕМ ЖЕ путём, что и HTTP-401.
+     * Если балансер недоступен (сеть), probe молчит: это не истёкшая сессия.
+     */
+    function noteHandshakeFailure(reason) {
+        try {
+            if (typeof window !== 'undefined' && window.SessionExpiry &&
+                typeof window.SessionExpiry.probe === 'function') {
+                window.SessionExpiry.probe(reason || 'ws');
+            }
+        } catch (e) { /* диагностика не должна ломать WS */ }
     }
 
     // Build WS URL with token if present
@@ -47,6 +84,10 @@ const WebSocketManager = (function () {
 
     // Connect WebSocket
     function connect() {
+        // R679: после истечения сессии новое рукопожатие снова получит 401 —
+        // не поднимаем канал, пока оператор не войдёт (явный вход перезагружает
+        // страницу либо восстанавливает сессию и зовёт connect() сам).
+        if (sessionExpired()) { return; }
         if (ws) {
             try { ws.close(); } catch {}
             ws = null;
@@ -56,6 +97,7 @@ const WebSocketManager = (function () {
             ws = new WebSocket(buildUrl());
 
             ws.onopen = () => {
+                openedThisAttempt = true;
                 reconnectAttempts = 0;
                 setStatus(true);
                 startHeartbeat();
@@ -67,13 +109,19 @@ const WebSocketManager = (function () {
             ws.onclose = () => {
                 setStatus(false);
                 stopHeartbeat();
+                // R679: закрытие БЕЗ единого открытия = отказ рукопожатия.
+                // Спрашиваем /auth/me, жива ли сессия (см. noteHandshakeFailure).
+                if (!openedThisAttempt) { noteHandshakeFailure('ws-close'); }
                 attemptReconnect();
             };
 
             ws.onerror = (err) => {
                 setStatus(false);
+                // R679: та же причина, что и в onclose, но приходит раньше.
+                if (!openedThisAttempt) { noteHandshakeFailure('ws-error'); }
                 window.dispatchEvent(new CustomEvent('ws-error', { detail: err }));
             };
+            openedThisAttempt = false;
         } catch (e) {
             setStatus(false);
             attemptReconnect();
@@ -82,6 +130,9 @@ const WebSocketManager = (function () {
 
     // Reconnect with exponential backoff
     function attemptReconnect() {
+        // R679: сессия истекла — переподключение бессмысленно (каждая попытка
+        // снова 401). Канал поднимет явный вход.
+        if (sessionExpired()) { return; }
         if (reconnectTimer) return; // already scheduled
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
             window.dispatchEvent(new CustomEvent('ws-max-reconnect', {
@@ -134,6 +185,7 @@ const WebSocketManager = (function () {
                 try { ws.close(); } catch {}
                 ws = null;
             }
+            openedThisAttempt = false;
             setStatus(false);
         },
         send(data) {
@@ -146,6 +198,14 @@ const WebSocketManager = (function () {
         },
         getAttempts() {
             return reconnectAttempts;
+        },
+        /** R679: канал не поднят из-за истёкшей сессии (для тестов/диагностики). */
+        isSuspended() {
+            return sessionExpired();
+        },
+        /** R679: сбросить счётчик попыток — нужен после успешного входа. */
+        resetAttempts() {
+            reconnectAttempts = 0;
         }
     };
 })();

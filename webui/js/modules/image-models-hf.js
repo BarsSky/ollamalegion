@@ -25,7 +25,10 @@
  * иначе правила «какой файл есть VAE» разъехались бы между воркером и UI, и
  * bundle собирался бы неправильно при том же имени файла.
  *
- * Экспорт: window.ImageModelsHf = { mount, render, tabIds, _actions, _state, pure }.
+ * Экспорт: window.ImageModelsHf = { mount, unmount, render, tabIds, _actions, _state, pure }.
+ * R694: модуль подписан на i18n:changed (в mount, снимается unmount'ом) и
+ * перерисовывает динамику активного таба из state — без сети и без потери
+ * раскрытой карточки R693.
  */
 (function () {
     'use strict';
@@ -42,6 +45,32 @@
 
     // Роли файлов — ЗАМОРОЖЕННЫЙ контракт pkg/types/image_model.go:32-45.
     var IMAGE_ROLES = ['diffusion', 'vae', 'clip_l', 'clip_g', 't5xxl', 'llm', 'clip_vision', 'taesd', 'lora', 'upscaler', 'controlnet', 'ip_adapter'];
+
+    // R694: ключи подписей ролей для селекта файла. Перечислены ЯВНО, а не
+    // собираются как 'imageModels.role_' + role, и это осознанное решение:
+    //
+    //   1) scripts/i18n_dead_keys.js (храповик R575: «мёртвых» ключей 0) видит
+    //      потребителя либо как строку, РАВНУЮ ключу, либо как динамический
+    //      префикс. Явный список делает каждый ключ видимым поимённо, а не
+    //      «возможно динамическим»: удалить живой перевод или добавить ключ без
+    //      потребителя чекер поймает, не ослабляя allowlist;
+    //   2) карта — единственный источник всех 12 подписей: тест сверяет её с
+    //      IMAGE_ROLES и с обоими пакетами, поэтому новая роль без перевода
+    //      краснеет, а не показывает сырой id (clip_l, t5xxl, ...) в селекте.
+    var ROLE_LABEL_KEYS = {
+        diffusion: 'imageModels.role_diffusion',
+        vae: 'imageModels.role_vae',
+        clip_l: 'imageModels.role_clip_l',
+        clip_g: 'imageModels.role_clip_g',
+        t5xxl: 'imageModels.role_t5xxl',
+        llm: 'imageModels.role_llm',
+        clip_vision: 'imageModels.role_clip_vision',
+        taesd: 'imageModels.role_taesd',
+        lora: 'imageModels.role_lora',
+        upscaler: 'imageModels.role_upscaler',
+        controlnet: 'imageModels.role_controlnet',
+        ip_adapter: 'imageModels.role_ip_adapter'
+    };
     // Семейства — pkg/types/image_model.go:49-52.
     var IMAGE_FAMILIES = ['sd15', 'sd21', 'sd_turbo', 'sdxl', 'sdxl_turbo', 'sd3', 'flux', 'flux2', 'chroma', 'qwen_image', 'z_image', 'other'];
 
@@ -57,6 +86,16 @@
     var AUTO_ROLES = ['diffusion', 'vae', 'clip_l', 'clip_g'];
 
     var mounted = false;
+    // R694: подписка на i18n:changed. Храним функцию, а не навешиваем анонимную:
+    // unmount() обязан снять РОВНО её, иначе повторный mount() навесит вторую и
+    // смена языка перерисует выдачу дважды (двойные запросы на табе «Загрузки»).
+    var i18nHandler = null;
+    // keydownHandler — обработчик Enter в поле поиска: тоже хранится, чтобы
+    // unmount() снял его, а повторный mount не навесил второй.
+    var keydownHandler = null;
+    // dataRefreshBound — провайдер «Загрузок» регистрируется один раз за жизнь
+    // страницы: у DataRefresh нет unregister (см. unmount ниже).
+    var dataRefreshBound = false;
     var state = {
         ctx: null,
         query: '',
@@ -637,8 +676,10 @@
 
     function roleOptions(selected) {
         return IMAGE_ROLES.map(function (role) {
+            // Подпись берём из статического ROLE_LABEL_KEYS (см. комментарий у
+            // карты): для оператора «CLIP-L (текстовый энкодер)», а не «clip_l».
             return '<option value="' + role + '"' + (role === selected ? ' selected' : '') + '>' +
-                escapeHtml(t('imageModels.role_' + role, role)) + '</option>';
+                escapeHtml(t(ROLE_LABEL_KEYS[role], role)) + '</option>';
         }).join('');
     }
 
@@ -1751,6 +1792,35 @@
         return state.probes[filePath(main)] || null;
     }
 
+    /**
+     * renderActiveTab — перерисовать ДИНАМИКУ показанного таба после смены языка.
+     *
+     * ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ render(ctx). render() на табе «Загрузки»
+     * перечитывает снимок воркера (refreshDownloads) — на смену языка сеть ходить
+     * не должна: данные те же, поменялся только текст. Здесь же ни одного запроса:
+     * renderSearchResults/renderFiles/renderDownloads только пересобирают HTML из
+     * уже лежащего в state (R693: карточка файлов переезжает в слот раскрытой
+     * модели тем же узлом, а state.expandedRepo/selection/repoCache не трогаются,
+     * поэтому повторного GET /hf/files не будет, раскрытие и отметки сохранятся).
+     *
+     * Неактивный таб перерисовывать не нужно: при возврате на него шелл зовёт
+     * render(ctx) (image-models-page.js → showTab → renderTabs), и он соберётся
+     * уже на новом языке. Это и есть «без повторного поиска».
+     */
+    function renderActiveTab() {
+        var tab = state.ctx && state.ctx.tab;
+        if (tab === 'downloads') {
+            // Снимок тот же — только подписи статусов/заголовки на новом языке.
+            if (state.downloads) renderDownloads();
+            return false;
+        }
+        if (tab !== 'hf') return false;
+        renderSearchResults();
+        renderFiles();
+        renderBundleProgress();
+        return true;
+    }
+
     function mount() {
         if (mounted) return;
         mounted = true;
@@ -1760,11 +1830,21 @@
             page.addEventListener('click', onClick);
             page.addEventListener('change', onChange);
         }
+        // R694: динамические подписи табов HF/Загрузки собраны в JS, поэтому
+        // штатный I18N.apply(document) их не переводит — перерисовываем сами.
+        // Соседние модули (image-backends-page.js:1139, image-profiles.js:1202)
+        // делают так же; отличие — обработчик хранится в переменной, чтобы
+        // unmount() мог снять подписку и повторный mount не задвоил её.
+        if (!i18nHandler && window.addEventListener) {
+            i18nHandler = function () { renderActiveTab(); };
+            window.addEventListener('i18n:changed', i18nHandler);
+        }
         var query = el('imHfQuery');
-        if (query && query.addEventListener) {
-            query.addEventListener('keydown', function (ev) {
+        if (query && query.addEventListener && !keydownHandler) {
+            keydownHandler = function (ev) {
                 if (ev && ev.key === 'Enter') { ev.preventDefault(); search(); }
-            });
+            };
+            query.addEventListener('keydown', keydownHandler);
         }
         renderFamilySelect();
         var tokenInput = el('imgHfToken');
@@ -1773,10 +1853,46 @@
         // «Обновить» — её действие (перечитать /api/hf/downloads) отдаётся
         // провайдеру страницы image, то есть общей кнопке в шапке. Регистрация
         // в mount, а не в render: mount идемпотентен (mounted), поэтому
-        // провайдер не задвоится при повторных показах таба.
-        if (window.DataRefresh && typeof window.DataRefresh.register === 'function') {
+        // провайдер не задвоится при повторных показах таба. Флаг нужен и после
+        // unmount(): у реестра DataRefresh нет отписки, второй register()
+        // заставил бы общую кнопку обновления дёргать «Загрузки» дважды.
+        if (!dataRefreshBound && window.DataRefresh && typeof window.DataRefresh.register === 'function') {
+            dataRefreshBound = true;
             window.DataRefresh.register('image', function () { return refreshDownloads(); });
         }
+    }
+
+    /**
+     * unmount — снять подписку на window и вернуть модуль в «не смонтирован».
+     *
+     * В SPA страница живёт до перезагрузки, и шелл (image-models-page.js) не
+     * выгружает табы; поэтому «выгрузка» здесь — явный вызов (тест, смена
+     * страницы хостом в будущем). Паттерн тот же, что у mount: идемпотентность
+     * через флаг. Без removeEventListener повторный mount навесил бы вторую
+     * подписку, и одно i18n:changed перерисовывало бы выдачу дважды.
+     *
+     * ЧЕГО ЗДЕСЬ НЕТ: регистрация в DataRefresh не снимается — у реестра нет
+     * unregister, поэтому она однократная (флаг dataRefreshBound), а не
+     * «отписываемая»; врать про полный teardown хуже, чем назвать границу.
+     */
+    function unmount() {
+        if (!mounted) return false;
+        mounted = false;
+        if (i18nHandler && window.removeEventListener) {
+            window.removeEventListener('i18n:changed', i18nHandler);
+        }
+        i18nHandler = null;
+        var page = el('image-page');
+        if (page && page.removeEventListener) {
+            page.removeEventListener('click', onClick);
+            page.removeEventListener('change', onChange);
+        }
+        if (keydownHandler) {
+            var query = el('imHfQuery');
+            if (query && query.removeEventListener) query.removeEventListener('keydown', keydownHandler);
+            keydownHandler = null;
+        }
+        return true;
     }
 
     /** render(ctx) — вызывается шеллом при показе таба. */
@@ -1793,15 +1909,15 @@
             refreshDownloads();
             return;
         }
-        if (tab === 'hf') {
-            renderSearchResults();
-            renderFiles();
-            renderBundleProgress();
-        }
+        // Таб HF (и любой другой): только перерисовка из state, один код с
+        // обработчиком i18n:changed — см. renderActiveTab.
+        renderActiveTab();
     }
 
     window.ImageModelsHf = {
         mount: mount,
+        // R694: симметричное снятие подписок (см. unmount выше).
+        unmount: unmount,
         render: render,
         tabIds: TAB_IDS,
         _actions: {
@@ -1837,6 +1953,8 @@
             bundleStatusKey: bundleStatusKey,
             downloadsSummary: downloadsSummary,
             IMAGE_ROLES: IMAGE_ROLES,
+            ROLE_LABEL_KEYS: ROLE_LABEL_KEYS,
+            roleOptions: roleOptions,
             IMAGE_FAMILIES: IMAGE_FAMILIES,
             AUTO_ROLES: AUTO_ROLES,
             repoCompatibility: repoCompatibility,

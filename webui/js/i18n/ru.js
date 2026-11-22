@@ -2030,8 +2030,27 @@ window.I18N_RU = {
   "imageModels.loaded_title": "Загруженная модель",
   "imageModels.downloads_title": "Загрузки моделей",
   "imageModels.no_backend_selected": "Image-бэкенд не выбран",
+  // R694: подписи ролей файлов для селекта на табе HuggingFace. Список ролей —
+  // замороженный контракт pkg/types/image_model.go:32-45, но значения добавленных
+  // ролей ЧЕЛОВЕЧЕСКИЕ: сырые id (clip_l, t5xxl, ip_adapter, ...) оператору ничего
+  // не говорят. Существующие role_diffusion/role_vae оставлены как были — они уже
+  // показывались и на вкладке «Модели на диске» (image-page.js:657); дефект был
+  // ровно в десяти ролях, которым ключа не хватало вовсе. При добавлении роли в
+  // контракт добавьте ключ в оба пакета — image-models-hf.js перечисляет их
+  // статически (ROLE_LABEL_KEYS), поэтому забытый ключ виден и измерителю i18n,
+  // и тесту селекта.
   "imageModels.role_diffusion": "diffusion (веса)",
   "imageModels.role_vae": "vae",
+  "imageModels.role_clip_l": "CLIP-L (текстовый энкодер)",
+  "imageModels.role_clip_g": "CLIP-G (текстовый энкодер)",
+  "imageModels.role_t5xxl": "T5-XXL (текстовый энкодер FLUX/SD3)",
+  "imageModels.role_llm": "LLM-энкодер (Qwen-Image, Z-Image, FLUX.2)",
+  "imageModels.role_clip_vision": "CLIP-vision (для IP-Adapter)",
+  "imageModels.role_taesd": "TAESD (крошечный автоэнкодер)",
+  "imageModels.role_lora": "LoRA (адаптер)",
+  "imageModels.role_upscaler": "Апскейлер (ESRGAN)",
+  "imageModels.role_controlnet": "ControlNet (управляющая сеть)",
+  "imageModels.role_ip_adapter": "IP-Adapter (референс-изображение)",
   "imageModels.search_task_filter": "Только text-to-image",
   "imageModels.confirm_delete_bundle": "Удалить bundle {name} с диска? Скачанные файлы будут удалены безвозвратно.",
   "imageModels.deleted_freed": "Удалено, освобождено {mb} MB",

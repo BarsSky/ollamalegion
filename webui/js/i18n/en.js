@@ -1999,8 +1999,27 @@ window.I18N_EN = {
   "imageModels.loaded_title": "Loaded model",
   "imageModels.downloads_title": "Model downloads",
   "imageModels.no_backend_selected": "No image backend selected",
+  // R694: file role labels for the HuggingFace tab selector. The role list is the
+  // frozen contract in pkg/types/image_model.go:32-45, but the added roles get
+  // HUMAN labels: raw ids (clip_l, t5xxl, ip_adapter, ...) tell the operator
+  // nothing. The existing role_diffusion/role_vae values are unchanged — they were
+  // already shown on the "Models on disk" tab (image-page.js:657); the defect was
+  // exactly the ten roles that had no key at all. When a role is added to the
+  // contract, add the key to both packs — image-models-hf.js lists them statically
+  // (ROLE_LABEL_KEYS), so a forgotten key is visible both to the i18n measurer and
+  // to the selector test.
   "imageModels.role_diffusion": "diffusion (weights)",
   "imageModels.role_vae": "vae",
+  "imageModels.role_clip_l": "CLIP-L (text encoder)",
+  "imageModels.role_clip_g": "CLIP-G (text encoder)",
+  "imageModels.role_t5xxl": "T5-XXL (FLUX/SD3 text encoder)",
+  "imageModels.role_llm": "LLM encoder (Qwen-Image, Z-Image, FLUX.2)",
+  "imageModels.role_clip_vision": "CLIP-vision (for IP-Adapter)",
+  "imageModels.role_taesd": "TAESD (tiny autoencoder)",
+  "imageModels.role_lora": "LoRA (adapter)",
+  "imageModels.role_upscaler": "Upscaler (ESRGAN)",
+  "imageModels.role_controlnet": "ControlNet (control network)",
+  "imageModels.role_ip_adapter": "IP-Adapter (reference image)",
   "imageModels.search_task_filter": "Text-to-image only",
   "imageModels.confirm_delete_bundle": "Delete bundle {name} from disk? Downloaded files will be removed permanently.",
   "imageModels.deleted_freed": "Deleted, {mb} MB freed",

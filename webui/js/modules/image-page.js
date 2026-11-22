@@ -1013,7 +1013,9 @@
                 // Смена языка перерисовывает статичный HTML через App._updateUITranslations,
                 // но динамические куски (таблица моделей) собраны в JS — их нужно
                 // перерисовать вручную. Табы HF/Загрузки перерисовывает их модуль
-                // сам, слушая то же событие (image-models-hf.js).
+                // сам: image-models-hf.js подписан на i18n:changed в mount()
+                // (R694; пересобирает только HTML активного таба из state — без
+                // повторных /hf/files и с сохранением раскрытой карточки R693).
                 window.addEventListener('i18n:changed', function () {
                     renderModelsTable();
                 });

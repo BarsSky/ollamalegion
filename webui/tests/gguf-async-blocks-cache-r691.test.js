@@ -382,6 +382,10 @@ global.GgufModule = {
 };
 
 // Настоящие модули в том порядке, в котором их подключает index.html.
+// R692: helpers (window.GgufModelKey — правило «имя модели → ключ профиля»)
+// грузится ДО потребителей: без него hydration редактора не находит профиль по
+// имени файла, и блок «параметры модели» показывает «не задано».
+require(path.join(SRC, 'js', 'modules', 'gguf-renderer-helpers.js'));
 require(path.join(SRC, 'js', 'modules', 'refresh-guard.js'));
 require(path.join(SRC, 'js', 'modules', 'form-dirty.js'));
 const SafeForm = require(path.join(SRC, 'js', 'modules', 'safe-form.js'));

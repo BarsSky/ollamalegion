@@ -32,8 +32,10 @@
         // `ReferenceError: formatFileSize is not defined` (gguf-detail-models.js:56),
         // затем на `stripGGUF` (:68,74,79). Панель не перерисовывалась, а
         // `state.detailPane` уже был "models" — таб «залипал» на старой вкладке.
-        // Без stripGGUF деградируют молча и обе ветки поиска значений профиля
-        // (:532-534, :629-631): там стоит `typeof stripGGUF === 'function'`.
+        // Без stripGGUF деградировали молча и обе ветки поиска значений профиля
+        // (:532-534, :629-631) — в R692 они переведены на общее правило
+        // window.GgufModelKey (см. profileEntryFor), но stripGGUF по-прежнему
+        // нужен renderModelsPane для сравнения с загруженным инстансом.
         var stripGGUF = ctx.stripGGUF;
         var formatFileSize = ctx.formatFileSize;
 
@@ -503,6 +505,45 @@
         '</div>';
     }
 
+    // ----- R692: профиль модели — ОДНО правило (window.GgufModelKey) -----------
+    //
+    // ЖИВОЙ ДЕФЕКТ (замер на стенде r691, вкладка GGUF → «Модели»). Ключи
+    // профилей балансера — без расширения (`gemma-4-E4B-it-Q4_K_M`), а карточка
+    // модели на диске называет её именем файла (`gemma-4-E4B-it-Q4_K_M.gguf`).
+    // Поиск «полное имя = ключ» не находил ничего: колонка «В профиле» была
+    // «— не задано —» у ВСЕХ трёх моделей стенда при 21 существующем профиле.
+    //
+    // Нормализация живёт в ОДНОМ месте (js/modules/gguf-renderer-helpers.js →
+    // window.GgufModelKey, зеркало balancer.NormalizeModelProfileKey). Здесь —
+    // только вызов: своих списков ключей (`name`, `stripGGUF(name)`, basename…)
+    // в этом файле больше нет, иначе правка одного правила не чинила бы другой
+    // путь (класс R136/R674).
+    //
+    // ПОДСТРОК НЕТ намеренно. На стенде рядом лежат профили
+    // `Qwen3-4B-Instruct-2507` И `Qwen3-4B-Instruct-2507-Q4_K_M`: «похожий»
+    // профиль — это ЧУЖОЙ профиль, и подставлять его в карточку нельзя (лучше
+    // честное «не задано»). Путь (`m.path`) — второй заход: он тоже может быть
+    // тем именем, под которым профиль сохранён.
+    var warnedNoModelKey = false;
+    function profileEntryFor(name, path) {
+        var K = (typeof window !== 'undefined') ? window.GgufModelKey : null;
+        if (!K || typeof K.find !== 'function') {
+            // Не тихая деградация: без нормализатора дефект снова выглядел бы как
+            // «профилей нет». Причина названа в консоли один раз.
+            if (!warnedNoModelKey && typeof console !== 'undefined' && console.warn) {
+                warnedNoModelKey = true;
+                console.warn('[gguf] window.GgufModelKey не загружен (js/modules/gguf-renderer-helpers.js): ' +
+                    'значения профиля модели не будут найдены по имени файла');
+            }
+            return null;
+        }
+        var profs = (M.state && M.state.modelProfiles) || null;
+        if (!profs || typeof profs !== 'object') return null;
+        var entry = K.profile(profs, name);
+        if (entry) return entry;
+        return path ? K.profile(profs, path) : null;
+    }
+
     function buildLoadedFlags(m, rt) {
         m = m || {};
         rt = rt || {};
@@ -527,6 +568,13 @@
         // m.parameters — параметры этой загрузки, rt.parameters — runtime-документ,
         // state.modelProfiles — профиль модели (R162: единственный доступный
         // источник намерения, когда загрузка шла по профилю).
+        //
+        // R692 (2026-11-23): профиль ищется ПРАВИЛОМ (window.GgufModelKey), а не
+        // самодельным списком ключей. На стенде r691 имя здесь — имя файла
+        // (`…Q4_K_M.gguf`), а ключ профиля — без расширения: список из
+        // `stripGGUF`-вариантов находил его ТОЛЬКО когда helpers загружен, то
+        // есть ровно в браузере и молча — никогда в тестовой обвязке. Одно
+        // правило вместо двух: и расширение, и `.gguf` в ключе, и регистр.
         const intentOf = function (key) {
             const fromM = m.parameters && m.parameters[key] && typeof m.parameters[key].value === 'number'
                 ? m.parameters[key].value : null;
@@ -534,19 +582,8 @@
             const fromRt = rt.parameters && rt.parameters[key] && typeof rt.parameters[key].value === 'number'
                 ? rt.parameters[key].value : null;
             if (fromRt !== null) return fromRt;
-            const profs = (M.state && M.state.modelProfiles) || null;
-            if (!profs) return null;
-            const name = String(m.name || m.model || '');
-            const base = m.path ? String(m.path).split(/[\\/]/).pop() : '';
-            const keys = [name, base];
-            if (typeof stripGGUF === 'function') {
-                keys.push(stripGGUF(name));
-                if (base) keys.push(stripGGUF(base));
-            }
-            for (let i = 0; i < keys.length; i++) {
-                const entry = keys[i] ? profs[keys[i]] : null;
-                if (entry && typeof entry[key] === 'number') return entry[key];
-            }
+            const entry = profileEntryFor(m.name || m.model || '', m.path);
+            if (entry && typeof entry[key] === 'number') return entry[key];
             return null;
         };
         const flags = [];
@@ -630,23 +667,14 @@
         // факта всё же нет — показываем значение ПРОФИЛЯ с явной пометкой
         // «профиль», (3) если и профиля нет — честный прочерк, а не f16.
         const kvFact = pick(factOf(m, ['kv_cache_type', 'kvCacheType']), factOf(rt, ['kv_cache_type']));
+        // R692: профиль по ОДНОМУ правилу (см. profileEntryFor) — до правки здесь
+        // был второй самодельный список ключей, и он не находил профиль у модели,
+        // названной именем файла.
         const kvProfile = (function () {
-            const profs = (M.state && M.state.modelProfiles) || null;
-            if (!profs) return null;
-            const name = String(m.name || m.model || '');
-            const base = m.path ? String(m.path).split(/[\\/]/).pop() : '';
-            const keys = [name, base];
-            if (typeof stripGGUF === 'function') {
-                keys.push(stripGGUF(name));
-                if (base) keys.push(stripGGUF(base));
-            }
-            for (let i = 0; i < keys.length; i++) {
-                const entry = keys[i] ? profs[keys[i]] : null;
-                if (!entry) continue;
-                const v = entry.kvCacheType || entry.kv_cache_type;
-                if (v) return String(v);
-            }
-            return null;
+            const entry = profileEntryFor(m.name || m.model || '', m.path);
+            if (!entry) return null;
+            const v = entry.kvCacheType || entry.kv_cache_type;
+            return v ? String(v) : null;
         })();
         let kvValue = '—';
         let kvTone = 'warn';

@@ -68,6 +68,10 @@ function loadModule() {
         state: STATE,
         _: function (key, fallback) { return fallback || key; },
     };
+    // R692: правило «имя модели → ключ профиля» (window.GgufModelKey) живёт в
+    // helpers и грузится раньше потребителей — как в index.html. Без загрузки
+    // helpers профиль не находится по имени файла, и R155-стрелки нет.
+    require('./gguf-renderer-helpers.js');
     // R656: таб Models вынесен в gguf-detail-models.js — грузим до detail-render.
 require('./gguf-detail-models.js');
 require('./gguf-detail-params.js');

@@ -658,9 +658,16 @@
         el.querySelectorAll('[data-action="catalog-edit"]').forEach(btn => {
             btn.addEventListener('click', async () => {
                 const name = btn.dataset.name;
-                // Имя файла: профили хранятся и без .gguf — попробуем оба варианта.
-                const base = name.replace(/\.gguf$/i, '');
+                // R692: имя файла → КЛЮЧ профиля по ОДНОМУ правилу
+                // (window.GgufModelKey, зеркало балансера). До R692 здесь была
+                // своя регулярка `.replace(/\.gguf$/i, '')` — третья копия
+                // правила на странице; она не знала ни basename пути, ни
+                // регистра, ни ключа, реально сохранённого с `.gguf`.
+                const K = (typeof window !== 'undefined') ? window.GgufModelKey : null;
+                const base = (K && typeof K.key === 'function') ? K.key(name) : name;
                 let profile = null;
+                // Ключа может не быть (база ответила 404) — тогда профиль ещё не
+                // создан и форма предзаполняется действующими значениями.
                 try {
                     const r = await PROFILES.get(base);
                     profile = r.profile;

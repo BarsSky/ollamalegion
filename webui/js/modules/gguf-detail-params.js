@@ -391,6 +391,37 @@
         return (typeof window !== 'undefined' && window.GgufAsyncCache) || null;
     }
 
+    // ----- R692: поиск профиля модели — ОДНО правило на всю страницу ----------
+    //
+    // ЖИВОЙ ДЕФЕКТ (замер r691): «В профиле» показывало «— не задано —» у всех
+    // моделей на диске, потому что профиль искался ПОЛНЫМ именем файла
+    // (`…Q4_K_M.gguf`) в карте, где ключи балансера — без расширения. Правило
+    // нормализации живёт в одном месте (js/modules/gguf-renderer-helpers.js →
+    // window.GgufModelKey, зеркало balancer.NormalizeModelProfileKey), здесь
+    // только его вызов: своих сравнений имени с ключом больше нет.
+    //
+    // Если модуль почему-то не загружен — это НЕ тихая деградация (класс R674):
+    // возвращаем null и ГОВОРИМ об этом в консоль один раз, иначе дефект снова
+    // выглядел бы как «профилей нет».
+    var warnedNoModelKey = false;
+    function modelKeyLib() {
+        var K = (typeof window !== 'undefined') ? window.GgufModelKey : null;
+        if (K && typeof K.find === 'function') return K;
+        if (!warnedNoModelKey && typeof console !== 'undefined' && console.warn) {
+            warnedNoModelKey = true;
+            console.warn('[gguf] window.GgufModelKey не загружен (js/modules/gguf-renderer-helpers.js): ' +
+                'профиль модели не будет найден — колонка «В профиле» останется «не задано»');
+        }
+        return null;
+    }
+
+    /** profileOf — профиль модели по её имени (файл/модель/путь) либо null. */
+    function profileOf(profiles, modelName) {
+        var K = modelKeyLib();
+        if (!K || !profiles || typeof profiles !== 'object') return null;
+        return K.profile(profiles, modelName);
+    }
+
     /**
      * editorPayload — всё, что нужно, чтобы нарисовать редактор БЕЗ запроса.
      *
@@ -400,12 +431,13 @@
      */
     function editorPayload(model, profiles, res) {
         var effective = (res && res.effectiveContext) || {};
-        var has = function (obj, key) {
-            return !!(obj && Object.prototype.hasOwnProperty.call(obj, key));
-        };
         return {
             model: String(model || ''),
-            profile: has(profiles, model) ? (profiles[model] || null) : null,
+            // R692: профиль ищется ПРАВИЛОМ (GgufModelKey), а не точным ключом:
+            // ключи балансера — без `.gguf`, карточка диска зовёт модель именем
+            // файла. До R692 здесь стоял `profiles[model]`, и КАЖДАЯ модель на
+            // диске показывала «— не задано —» при существующем профиле.
+            profile: profileOf(profiles, model),
             effective: modelEffectiveEntry(model, effective),
             ceiling: (res && res.nctxCeiling) || null,
             defaults: (M.state && M.state.loadDefaults) || null
@@ -514,22 +546,19 @@
     // modelEffectiveEntry — найти запись effectiveContext для модели.
     //
     // Ключ карты — имя модели балансера, а карточка может держать имя файла
-    // (`X.gguf`) или путь: перебираем те же варианты, что intentOf (R162), иначе
-    // причина ограничения молча не находилась бы ровно у загруженной модели.
+    // (`X.gguf`) или путь: ищем ТЕМ ЖЕ правилом, что и профиль (R692 →
+    // window.GgufModelKey), иначе причина ограничения молча не находилась бы
+    // ровно у имени файла — самого частого написания.
+    //
+    // R692 (2026-11-23): ЗДЕСЬ БОЛЬШЕ НЕТ ЛОКАЛЬНОЙ КОПИИ ПРАВИЛА. До R692
+    // функция снимала `.gguf` своим `noExt` «чтобы работала без helpers»; в
+    // результате на странице жили ДВА правила (это и `stripGGUF`), и починка
+    // одного не чинила другой. Единственный нормализатор — GgufModelKey;
+    // тест/страница грузят его так же, как боевая страница (index.html).
     function modelEffectiveEntry(modelName, effectiveMap) {
-        if (!effectiveMap || typeof effectiveMap !== 'object') return null;
-        // Расширение снимаем локально, а не через stripGGUF из соседнего модуля:
-        // функция должна работать и там, где helpers ещё не загружен (и в тестах),
-        // иначе причина «не нашлась» ровно у имени файла — самого частого написания.
-        const noExt = function (v) { return String(v || '').replace(/\.gguf$/i, ''); };
-        const full = String(modelName || '');
-        const base = full ? full.split(/[\\/]/).pop() : '';
-        const keys = [full, base, noExt(full), noExt(base)];
-        for (let i = 0; i < keys.length; i++) {
-            const k = keys[i];
-            if (k && Object.prototype.hasOwnProperty.call(effectiveMap, k)) return effectiveMap[k];
-        }
-        return null;
+        var K = modelKeyLib();
+        if (!K) return null;
+        return K.profile(effectiveMap, modelName);
     }
 
     // paintWindowLimit — R319: подписать форму «чем ограничено окно».
@@ -808,6 +837,9 @@
             hydrateModelParamEditors: hydrateModelParamEditors,
             windowLimitNote: windowLimitNote,
             modelEffectiveEntry: modelEffectiveEntry,
+            // R692: поиск профиля модели единым правилом (тест проверяет
+            // «файл ↔ ключ без расширения», «ключ с .gguf», «чужой не подставить»).
+            profileOf: profileOf,
             paintWindowLimit: paintWindowLimit,
             paintWindowLimitNote: paintWindowLimitNote,
             applyInheritedDefaults: applyInheritedDefaults,

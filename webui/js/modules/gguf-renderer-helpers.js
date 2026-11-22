@@ -5,11 +5,15 @@
  *
  * Содержит pure functions, не зависящие от state:
  *   - stripGGUF(name) — убирает суффикс ".gguf" (case-insensitive)
+ *   - window.GgufModelKey — ЕДИНСТВЕННОЕ правило «имя модели → ключ профиля»
+ *     (R692): normalized key, варианты поиска и сам поиск в карте профилей
  *   - formatFileSize(bytes) — "1.5 GB" / "320 MB" / etc
  *   - showToast(message, type) — local toast или fallback в window.showToast
  *
  * Контракт:
- *   - window.GgufModule = { stripGGUF, formatFileSize, showToast }
+ *   - window.GgufModule = { stripGGUF, GgufModelKey, formatFileSize, showToast }
+ *   - window.GgufModelKey — та же карта, доступная без window.GgufModule
+ *     (её читают gguf-detail-params.js / gguf-detail-models.js / cppworker-params.js)
  *   - Загружается ДО gguf-renderer.js (см. webui/index.html)
  */
 (function() {
@@ -29,6 +33,158 @@
             return name.slice(0, -5);
         }
         return name;
+    };
+
+    // =========================================================================
+    // R692 (2026-11-23): ЕДИНОЕ правило «имя модели → ключ профиля».
+    //
+    // ЖИВОЙ ДЕФЕКТ (замер на стенде r691, образ webui:r261120-r691). Вкладка
+    // GGUF → «Модели»: у ВСЕХ трёх моделей на диске колонка «В профиле» была
+    // «— не задано —», поля пустые, и «Применить» сохраняло бы пустоту. При этом
+    // профили существуют (`hasProfile=true`, 21 профиль в стенде):
+    //
+    //   файл на диске                                   ключ профиля
+    //   Qwen3-4B-Instruct-2507-Q4_K_M.gguf          ↔   Qwen3-4B-Instruct-2507-Q4_K_M
+    //   Qwen3.8-9B-Distill-uncensored-heretic…gguf  ↔   …heretic.Q4_K_M
+    //   gemma-4-E4B-it-Q4_K_M.gguf                  ↔   gemma-4-E4B-it-Q4_K_M
+    //
+    // ПРИЧИНА. webui искал профиль ПОЛНЫМ именем файла (`…Q4_K_M.gguf`) прямо в
+    // карте профилей, а балансер ключует их БЕЗ расширения:
+    // `balancer.NormalizeModelProfileKey` (internal/balancer/num_ctx_resolver.go:148)
+    // = trim → `\` в `/` → basename → снять `.gguf` (EqualFold) → trim.
+    // Расширение — единственное, что балансер нормализует: регистр он СОХРАНЯЕТ,
+    // суффикс квантования (`-Q4_K_M`) и `-it` НЕ снимает. Поэтому здесь нельзя
+    // «додумывать» правило шире сервера: на живом стенде рядом лежат профили
+    // `Qwen3-4B-Instruct-2507` И `Qwen3-4B-Instruct-2507-Q4_K_M` — обрезка
+    // квантования или поиск по подстроке подставили бы ЧУЖОЙ профиль в карточку.
+    //
+    // ЧТО СОБИРАЕТ ЭТОТ ОБЪЕКТ:
+    //   key(name)        — канонический ключ профиля (зеркало Go-функции);
+    //   fold(name)       — ключ в нижнем регистре для последней проверки на
+    //                      регистр (карта профилей хранит регистр, а имя файла
+    //                      на диске может отличаться);
+    //   candidates(name) — упорядоченные варианты, которые имеет смысл искать;
+    //   find(map,name)   — поиск в карте профилей/effectiveContext с ЯВНОЙ
+    //                      лестницей приоритетов (см. ниже);
+    //   profile(map,name)/has(map,name) — значение/флаг по тому же правилу.
+    //
+    // ЛЕСТНИЦА find() (требование совместимости, R136/R212):
+    //   1) ТОЧНОЕ совпадение — как имя пришло (карточка/путь) и его basename.
+    //      Так находится профиль, который РЕАЛЬНО назван с `.gguf` (записи до
+    //      R136 существуют и терять их нельзя).
+    //   2) ТОЧНОЕ + `.gguf` — обратный случай: имя без расширения, а ключ с ним.
+    //   3) НОРМАЛИЗОВАННЫЙ ключ (key) — обиходный случай, зеркало балансера.
+    //   4) ТОЛЬКО РЕГИСТР (fold) — те же ключи, но в другом регистре; выбор
+    //      детерминированный (сортировка ключей, как в GetModelProfile).
+    // Подстрок НЕТ ни на одном шаге: «чужой профиль вместо пустого» хуже, чем
+    // честное «не задано», и именно это проверяет тест.
+    // =========================================================================
+    var ModelKey = (M.GgufModelKey = window.GgufModelKey = {});
+
+    /** key — канонический ключ профиля; зеркало balancer.NormalizeModelProfileKey. */
+    ModelKey.key = function(name) {
+        var s = (name === null || name === undefined) ? '' : String(name).trim();
+        if (!s) return '';
+        s = s.replace(/\\/g, '/');
+        var cut = s.lastIndexOf('/');
+        if (cut >= 0) s = s.slice(cut + 1);
+        // То же условие длины, что у stripGGUF и у Go (len(name) > 5): имя `gguf`
+        // — это имя модели, а не расширение.
+        if (s.length > 5 && s.slice(-5).toLowerCase() === '.gguf') s = s.slice(0, -5);
+        return s.trim();
+    };
+
+    /** fold — ключ в нижнем регистре: только для проверки «то же имя, другой регистр». */
+    ModelKey.fold = function(name) {
+        var k = ModelKey.key(name);
+        return k ? k.toLowerCase() : '';
+    };
+
+    /**
+     * candidates — упорядоченные варианты ключа для поиска (без повторов).
+     *
+     * Порядок = лестница приоритетов: имя как есть → basename пути → с `.gguf`
+     * → канонический ключ балансера. Возвращается наружу, чтобы тест мог
+     * проверить правило без карты профилей (и чтобы вызывающий мог показать, что
+     * именно искали).
+     */
+    ModelKey.candidates = function(name) {
+        var steps = candidateSteps(name);
+        var out = [];
+        for (var i = 0; i < steps.length; i++) out.push(steps[i].key);
+        return out;
+    };
+
+    /**
+     * candidateSteps — те же варианты, но с меткой ШАГА лестницы.
+     *
+     * Нужна, чтобы ответ find() называл, КАК совпало (`exact` / `exact-suffixed`
+     * / `normalized`): по одной строке-кандидату это не восстановить — при имени
+     * без расширения «как есть» и «канонический ключ» совпадают.
+     */
+    function candidateSteps(name) {
+        var raw = (name === null || name === undefined) ? '' : String(name).trim();
+        if (!raw) return [];
+        var base = raw.replace(/\\/g, '/');
+        var cut = base.lastIndexOf('/');
+        base = cut >= 0 ? base.slice(cut + 1) : base;
+        var out = [];
+        var seen = {};
+        function push(k, how) {
+            if (!k || seen[k]) return;
+            seen[k] = true;
+            out.push({ key: k, how: how });
+        }
+        push(raw, 'exact');
+        push(base, 'exact');
+        // Профиль с расширением в ключе (записи до R136) — и для имени, и для
+        // basename. Лишний `.gguf.gguf` дать невозможно: проверяем суффикс.
+        if (!/\.gguf$/i.test(raw)) push(raw + '.gguf', 'exact-suffixed');
+        if (!/\.gguf$/i.test(base)) push(base + '.gguf', 'exact-suffixed');
+        push(ModelKey.key(raw), 'normalized');
+        push(ModelKey.key(base), 'normalized');
+        return out;
+    }
+
+    /**
+     * find — найти запись в карте по имени модели.
+     *
+     * @param {Object} map карта профилей (ключ — имя модели балансера) либо
+     *   effectiveContext из GET /api/v1/cppworker/model-profiles
+     * @param {string} name имя файла, имя модели или путь
+     * @returns {{key:string, value:*, matched:string}|null}
+     *   matched: 'exact' | 'exact-suffixed' | 'normalized' | 'folded'
+     */
+    ModelKey.find = function(map, name) {
+        if (!map || typeof map !== 'object') return null;
+        var steps = candidateSteps(name);
+        if (steps.length === 0) return null;
+        for (var i = 0; i < steps.length; i++) {
+            var k = steps[i].key;
+            if (!Object.prototype.hasOwnProperty.call(map, k)) continue;
+            return { key: k, value: map[k], matched: steps[i].how };
+        }
+        // Последний шаг — регистр. Детерминированно: сортировка ключей, как в
+        // balancer.GetModelProfile (порядок map в JS/Go не гарантирован).
+        var want = ModelKey.fold(name);
+        if (!want) return null;
+        var names = Object.keys(map).sort();
+        for (var j = 0; j < names.length; j++) {
+            if (typeof names[j] !== 'string') continue;
+            if (ModelKey.fold(names[j]) === want) return { key: names[j], value: map[names[j]], matched: 'folded' };
+        }
+        return null;
+    };
+
+    /** profile — значение записи (профиль модели/effective) по правилу find. */
+    ModelKey.profile = function(map, name) {
+        var found = ModelKey.find(map, name);
+        return found ? found.value : null;
+    };
+
+    /** has — есть ли запись для этой модели (индикаторы «свой профиль»/hasProfile). */
+    ModelKey.has = function(map, name) {
+        return !!ModelKey.find(map, name);
     };
 
     M.formatFileSize = function(bytes) {

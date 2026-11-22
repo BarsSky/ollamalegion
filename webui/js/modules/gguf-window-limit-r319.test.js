@@ -66,6 +66,11 @@ global.document = {
 };
 
 const path = require('path');
+// R692: правило «имя модели → ключ профиля» живёт в helpers (window.GgufModelKey)
+// и грузится ДО потребителей — ровно как в index.html. Без него
+// modelEffectiveEntry не находит запись по имени файла (и это правильное
+// поведение страницы: правило ОДНО, второй копии в gguf-detail-params.js нет).
+require(path.join(__dirname, 'gguf-renderer-helpers.js'));
 // R656: таб Models вынесен в gguf-detail-models.js — грузим до detail-render.
 require(path.join(__dirname, 'gguf-detail-models.js'));
 require(path.join(__dirname, 'gguf-detail-params.js'));

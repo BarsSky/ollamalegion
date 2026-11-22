@@ -283,6 +283,35 @@ const ME_VIEWER = { status: 200, body: { authenticated: true, usersConfigured: t
     assert.strictEqual(calls.length, 1, 'открытая панель (без пользователей) не должна терять запросы');
   });
 
+  await check('R686: CSRF добавляется ПОСЛЕ готовности входа (ранний POST не уходит без заголовка)', async function () {
+    // ЖИВОЙ ДЕФЕКТ (CDP-замер на стенде): при загрузке дашборда ровно один 403 —
+    // POST /api/v1/placement/plan из карточки групп монитора. Её autoMount()
+    // стартует на DOMContentLoaded ОДНОВРЕМЕННО с Auth.init(), когда /auth/me
+    // ещё в полёте. Обёртка fetch решала «нужен ли CSRF» ДО ожидания готовности
+    // входа (state.csrf === ''), и запрос уходил без X-CSRF-Token →
+    // AuthMiddleware отвечал 403 csrf_check_failed.
+    //
+    // Здесь воспроизводится ТА ЖЕ гонка: POST отправляется сразу после init(),
+    // не дожидаясь /auth/me. Заголовок обязан появиться, когда промис
+    // готовности разрешится (applyMe заполнил csrf).
+    responses = [ME_VIEWER];
+    loadAuth();
+    const initPromise = window.Auth.init();
+    calls = [];
+    const sent = window.fetch('/api/v1/placement/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lang: 'ru' })
+    });
+    await Promise.all([initPromise, sent]);
+    const call = calls.filter(function (c) { return c.url.indexOf('/api/v1/placement/plan') >= 0; })[0];
+    assert.ok(call, 'POST не ушёл на сервер');
+    const h = call.opts.headers;
+    const csrf = (h && typeof h.get === 'function') ? h.get('X-CSRF-Token') : (h && h['X-CSRF-Token']);
+    assert.strictEqual(csrf, 'csrf-123',
+      'ранний POST ушёл БЕЗ CSRF — балансер ответит 403 (ровно этот 403 и был в консоли дашборда)');
+  });
+
   console.log('\nOK: ' + checks + ' проверок пройдено');
 })().catch(function (err) {
   console.error('FAIL:', err && err.message ? err.message : err);

@@ -50,31 +50,62 @@
         var modeInfo = window.SettingsUI ? window.SettingsUI.collectModeConfig() : { mode: 'standard', config: {} };
         var settings = collectCommonSettings();
 
-        var backends = [];
-        try {
-            // Collect from data if available
-            if (window.ui && window.ui.data && window.ui.data.backends) {
-                backends = window.ui.data.backends.map(function (b) {
-                    return {
-                        id: b.id,
-                        name: b.name || b.id,
-                        host: b.host,
-                        ollamaPort: b.ollamaPort || 11434,
-                        agentPort: b.agentPort || 18032,
-                        weight: b.weight || 1
-                    };
-                });
-            }
-        } catch (e) { /* optional */ }
-
         return {
             version: '1.0',
             exportedAt: new Date().toISOString(),
             operating_mode: modeInfo.mode,
             settings: settings,
             mode_config: modeInfo.config,
-            backends: backends
+            // R686: раньше здесь был мёртвый цикл по `ui.data.backends`
+            // (поля `data` в `ui` нет) — список бэкендов в файл не попадал.
+            backends: collectBackendsForExport()
         };
+    }
+
+    // ---- Список бэкендов для экспорта (R686) -----------------------------
+    //
+    // ЖИВОЙ ДЕФЕКТ. Экспорт конфигурации собирал бэкенды через
+    // `if (ui && ui.data && ui.data.backends)`, но поля `data` в объекте `ui`
+    // НЕТ (ui — возвращаемый объект IIFE app.js с другим набором полей). Ветка
+    // была мертва, и `backends` в экспортируемом файле всегда оставался пустым
+    // массивом: оператор выгружал конфиг без единого бэкенда, а импорт такого
+    // файла ничего про них не знал.
+    //
+    // КАК ЧИНИМ. Источник передаёт владелец состояния явной привязкой —
+    // `window.ConfigIO.bindBackendsSource({getBackends})` из app.js, — как это
+    // уже сделано для страницы у BackendTypeFilter.bindPage (R680). Передаётся
+    // ФУНКЦИЯ, а не массив: app-listeners.js:186 перезаписывает data.backends на
+    // каждом тике, и снимок снова заморозил бы экспорт.
+    //
+    // ФОРМАТ ЭКСПОРТА НЕ МЕНЯЕТСЯ. Поле `backends` было и остаётся массивом
+    // объектов с теми же шестью полями (id/name/host/ollamaPort/agentPort/
+    // weight); разница только в том, что он больше не пуст. Это проверяет
+    // webui/tests/config-io-backends-export-r686.test.js.
+    var backendsSource = null;
+
+    function bindBackendsSource(source) {
+        backendsSource = (source && typeof source.getBackends === 'function') ? source : null;
+    }
+
+    function collectBackendsForExport() {
+        var list = [];
+        try {
+            if (backendsSource) { list = backendsSource.getBackends() || []; }
+        } catch (e) {
+            // Источник недоступен — экспорт без бэкендов, а не падение экспорта.
+            list = [];
+        }
+        if (!Array.isArray(list)) { return []; }
+        return list.filter(function (b) { return b && b.id; }).map(function (b) {
+            return {
+                id: b.id,
+                name: b.name || b.id,
+                host: b.host,
+                ollamaPort: b.ollamaPort || 11434,
+                agentPort: b.agentPort || 18032,
+                weight: b.weight || 1
+            };
+        });
     }
 
     function collectCommonSettings() {
@@ -435,6 +466,8 @@
     window.ConfigIO = {
         exportConfig: exportConfig,
         collectFullConfig: collectFullConfig,
+        // R686: явная привязка источника бэкендов (вызывает app.js).
+        bindBackendsSource: bindBackendsSource,
         importConfigFromFile: importConfigFromFile,
         validateConfig: validateConfig,
         generatePreview: generatePreview,

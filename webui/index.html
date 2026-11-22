@@ -1158,7 +1158,19 @@
 
             <!-- Monitor Page -->
             <div class="page" id="monitor-page">
-                <iframe id="monitorFrame" src="monitor.html?v=R425" class="monitor-iframe"></iframe>
+                <!-- R686 (2026-11-22): IFRAME МОНИТОРА ГРУЗИТСЯ ТОЛЬКО ПОСЛЕ init().
+                     ЖИВОЙ ФАКТ (CDP-замер, гостевая загрузка): панель не
+                     инициализирована (boot-гейт app.js не позвал init(), потому что
+                     вход не выполнен), а iframe со своим `src` из разметки уже
+                     работает: 55-58 попыток /api/ за 10 с, все 401 (auth.js R223
+                     отвечает синтетическим 401, поэтому в сеть они не идут, но
+                     каждый тик остаётся работой и шумом в консоли).
+                     ПОЧЕМУ data-src, А НЕ «убрать src в JS». Общий ?v= cache-токен
+                     статики подставляет сборка (docker/webui/Dockerfile → sed по
+                     *.html); ссылка, переехавшая в JS, перестала бы обновляться, и
+                     браузер держал бы старый monitor.html. Здесь адрес остаётся в
+                     разметке, а его ПРИМЕНЕНИЕ — в init() (webui, модуль app). -->
+                <iframe id="monitorFrame" data-src="monitor.html?v=R425" class="monitor-iframe"></iframe>
             </div>
 
             <!-- Logs Page -->

@@ -166,11 +166,33 @@ const ui = (function () {
         // уходит в пустоту, и iframe спокойно живёт своим циклом.
         // Здесь досылаем состояние паузы на load — тогда «монитор не открыт ⇒
         // он молчит» (правило R493) выполняется и на практике.
+        //
+        // R686 (2026-11-22): ЗАГРУЗКА IFRAME НАЧИНАЕТСЯ ЗДЕСЬ, А НЕ В РАЗМЕТКЕ.
+        //
+        // ЖИВОЙ ФАКТ (CDP-замер, гостевая загрузка): панель НЕ инициализирована
+        // (boot-гейт не позвал init() — вход не выполнен), а iframe монитора уже
+        // работает и делает 55-58 попыток /api/ за 10 с, все 401. Причина: init()
+        // — единственное место, где живёт syncMonitorIframePause, на гостевой
+        // загрузке он не вызывается вовсе.
+        // Теперь адрес монитора лежит в data-src (В РАЗМЕТКЕ — сборка
+        // подставляет туда общий ?v= cache-токен), а `src` выставляется здесь,
+        // то есть только после init(). Заодно закрыта ВТОРАЯ гонка R679:
+        // раньше iframe из разметки успевал загрузиться ДО init(), и `load`
+        // проходил мимо обработчика ниже — замер на дашборде дал 55 опросов за
+        // 10 с (пауза не доезжала). Теперь обработчик регистрируется ДО
+        // назначения src, поэтому load гарантированно ловится, а
+        // sendMonitorConfig() заканчивается syncMonitorIframePause() (R493).
         var monitorFrameEl = document.getElementById('monitorFrame');
-        if (monitorFrameEl && monitorFrameEl.addEventListener) {
-            monitorFrameEl.addEventListener('load', function () {
-                try { syncMonitorIframePause(); } catch (e) { /* iframe не готов */ }
-            });
+        if (monitorFrameEl) {
+            if (monitorFrameEl.addEventListener) {
+                monitorFrameEl.addEventListener('load', function () {
+                    try { sendMonitorConfig(); } catch (e) { /* iframe не готов */ }
+                });
+            }
+            var monitorSrc = monitorFrameEl.getAttribute ? monitorFrameEl.getAttribute('data-src') : '';
+            if (monitorSrc && !monitorFrameEl.getAttribute('src')) {
+                monitorFrameEl.setAttribute('src', monitorSrc);
+            }
         }
         setupVisibilityRefresh();
 
@@ -1063,6 +1085,31 @@ const ui = (function () {
     }
 
 
+    // === R686 (2026-11-22): ИСТОЧНИК СПИСКА БЭКЕНДОВ ДЛЯ ЭКСПОРТА КОНФИГА ===
+    //
+    // ЖИВОЙ ДЕФЕКТ. modules/config-io.js читал `window.ui.data.backends`, а поля
+    // `data` в объекте `ui` НЕТ: `ui` — возвращаемый объект этого IIFE, у него
+    // другой набор полей (см. return ниже). Ветка была мёртвой, и в
+    // экспортируемом файле `backends` ВСЕГДА оставался пустым массивом: оператор
+    // выгружал конфигурацию без единого бэкенда.
+    //
+    // Чиним тем же способом, что страницу для BackendTypeFilter (R680): не
+    // публикуем наружу живой `data` (это расширило бы публичный API `ui` и
+    // оставило бы модуль зависеть от формы чужого объекта), а передаём источник
+    // явной привязкой. Передаётся ФУНКЦИЯ, а не массив: app-listeners.js:186
+    // ПЕРЕЗАПИСЫВАЕТ data.backends на каждом тике, и снимок снова заморозил бы
+    // экспорт на состоянии первого рендера.
+    //
+    // Вызов на верхнем уровне IIFE — по той же причине, что у bindPage:
+    // config-io.js подключён в index.html ДО app.js, а кнопку «Экспорт» нажимают
+    // уже после init().
+    if (window.ConfigIO && typeof window.ConfigIO.bindBackendsSource === 'function') {
+        window.ConfigIO.bindBackendsSource({
+            getBackends: function () { return data.backends; }
+        });
+    }
+
+
     // ---- CppWorker port auto-detection ----
     // Probes common cppworker ports on the given host and returns the first
     // port that responds OK to /info (or /health). 18092 first (актуальный
@@ -1263,9 +1310,10 @@ const ui = (function () {
 //     switchPage}) выше (см. R680 в этом файле);
 //   * `modules/config-io.js:56` — if (window.ui && window.ui.data…): поля `data`
 //     в `ui` тоже нет, то есть список бэкендов в ЭКСПОРТИРУЕМЫЙ конфиг не
-//     попадает. Это отдельный (незакрытый) дефект: чинится либо публикацией
-//     `data`, либо передачей списка владельцем — трогать его здесь без разбора
-//     не стали, чтобы не менять формат экспорта молча.
+//     попадает. Это отдельный дефект, и он закрыт в R686: источник передаётся
+//     явной привязкой ConfigIO.bindBackendsSource({getBackends}) выше, формат
+//     экспорта при этом не меняется — поле `backends` было и остаётся массивом,
+//     просто теперь оно не пустое.
 window.ui = ui;
 window.App = window.App || {};
 window.App.ui = ui;

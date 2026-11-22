@@ -110,6 +110,49 @@
   // Правим ОДНИМ местом: оборачиваем window.fetch и добавляем CSRF к same-origin
   // мутирующим запросам (если заголовок не задан явно). Так покрываются все модули,
   // включая будущие, и не нужно править каждый вызов.
+  //
+  // R686 (2026-11-22): ЗАГОЛОВОК СТАВИТСЯ В МОМЕНТ ОТПРАВКИ, А НЕ В МОМЕНТ ВЫЗОВА.
+  //
+  // ЖИВОЙ ФАКТ (CDP-замер на стенде, сессия администратора): при загрузке дашборда
+  // ровно один 403 в консоли — `POST /api/v1/placement/plan`. Источник — карточка
+  // логических групп (modules/monitor-groups.js) в iframe монитора: её autoMount()
+  // стартует на DOMContentLoaded ОДНОВРЕМЕННО с Auth.init(), когда запрос /auth/me
+  // ещё в полёте. Обёртка решала «нужен ли CSRF» ДО ожидания готовности входа,
+  // то есть при state.csrf === '', и запрос уходил без заголовка:
+  // AuthMiddleware → 403 `csrf_check_failed`.
+  //
+  // Матрица, проверенная на стенде (диагностический контейнер): GET того же пути —
+  // 405 (эндпоинт только POST), POST без CSRF — 403, POST с CSRF — 200. То есть
+  // дело не в маршруте и не в правах, а в отсутствующем заголовке.
+  //
+  // Теперь csrfHeaders() вызывается ПОСЛЕ ожидания __authReady: applyMe()
+  // заполняет state.csrf ДО того, как этот же промис разрешится. Для
+  // /api/v1/auth/* ожидания нет (иначе дедлок: готовность входа = сам /auth/me),
+  // там заголовок берётся сразу — как и раньше.
+  function csrfHeaders(input, init) {
+    try {
+      var opts = init || {};
+      var method = String(opts.method || 'GET').toUpperCase();
+      var mutating = method === 'POST' || method === 'PUT' || method === 'DELETE' || method === 'PATCH';
+      var sameOrigin = true;
+      if (typeof input === 'string') {
+        sameOrigin = input.indexOf('http') !== 0 || input.indexOf(window.location.origin) === 0;
+      }
+      if (!mutating || !sameOrigin) { return init; }
+      // CSRF берём у АКТУАЛЬНОГО Auth: обёртка ставится один раз, а модуль
+      // может переинициализироваться (тесты, повторный init).
+      var csrf = (window.Auth && typeof window.Auth.csrf === 'function') ? window.Auth.csrf() : state.csrf;
+      if (!csrf) { return init; }
+      var headers = new Headers(opts.headers || undefined);
+      if (!headers.has('X-CSRF-Token')) { headers.set('X-CSRF-Token', csrf); }
+      opts.headers = headers;
+      return opts;
+    } catch (e) {
+      // Заголовок — не повод падать: запрос уйдёт как есть.
+      return init;
+    }
+  }
+
   (function wrapFetchForCSRF() {
     if (typeof window === 'undefined' || typeof window.fetch !== 'function' || window.__csrfFetchWrapped) { return; }
     // R232: в демо-режиме перехват делает demo-mode.js (он ставится раньше и
@@ -119,26 +162,6 @@
     var origFetch = window.fetch.bind(window);
     window.__csrfFetchWrapped = true;
     window.fetch = function (input, init) {
-      try {
-        var opts = init || {};
-        var method = String(opts.method || 'GET').toUpperCase();
-        var mutating = method === 'POST' || method === 'PUT' || method === 'DELETE' || method === 'PATCH';
-        var sameOrigin = true;
-        if (typeof input === 'string') {
-          sameOrigin = input.indexOf('http') !== 0 || input.indexOf(window.location.origin) === 0;
-        }
-        if (mutating && sameOrigin) {
-          // CSRF берём у АКТУАЛЬНОГО Auth: обёртка ставится один раз, а модуль
-          // может переинициализироваться (тесты, повторный init).
-          var csrf = (window.Auth && typeof window.Auth.csrf === 'function') ? window.Auth.csrf() : state.csrf;
-          if (csrf) {
-            var headers = new Headers(opts.headers || undefined);
-            if (!headers.has('X-CSRF-Token')) { headers.set('X-CSRF-Token', csrf); }
-            opts.headers = headers;
-            init = opts;
-          }
-        }
-      } catch (e) { /* не мешаем запросу: заголовок — не повод падать */ }
       // R223: пока не известно состояние входа, не стреляем запросами в /api/:
       // на экране входа это давало пачку 401 (backends/cluster/queue/sessions) в
       // консоли и логах балансера. Ждём __authReady (тот же промис, что у app.js),
@@ -146,7 +169,11 @@
       // не настроен (usersConfigured=false), пускаем как раньше: панель открыта.
       var isAuthPath = typeof input === 'string' && input.indexOf('/api/v1/auth/') >= 0;
       var isAPIPath = typeof input === 'string' && input.indexOf('/api/') >= 0;
-      if (!isAPIPath || isAuthPath) { return origFetch(input, init); }
+      // Не-API запросы (статика, воркер) — как раньше: заголовок сразу, без
+      // ожидания готовности входа.
+      if (!isAPIPath) { return origFetch(input, csrfHeaders(input, init)); }
+      // /auth/* не ждёт готовности входа (это и есть её источник) — CSRF сразу.
+      if (isAuthPath) { return origFetch(input, csrfHeaders(input, init)); }
       // Состояние берём у АКТУАЛЬНОГО Auth, а не из замыкания: обёртка ставится
       // один раз, а модуль может быть инициализирован повторно (тесты, HMR).
       var ready = (typeof window.__authReady === 'function') ? window.__authReady() : null;
@@ -155,7 +182,10 @@
         if (st && st.usersConfigured && !st.authenticated && !st.tokenAuth) {
           return unauthenticatedResponse();
         }
-        return origFetch(input, init);
+        // R686: готовность входа уже наступила — state.csrf заполнен applyMe,
+        // поэтому заголовок ставится здесь, а не до ожидания (иначе ранний POST
+        // уходил без X-CSRF-Token и получал 403 от балансера).
+        return origFetch(input, csrfHeaders(input, init));
       });
     };
   })();

@@ -278,9 +278,7 @@
             showToast('succeeded=' + (resp.succeeded || 0) + ' failed=' + (resp.failed || 0));
             // После успешной операции — очищаем выбор и обновляем список моделей.
             selectNone();
-            if (window.ui && typeof window.ui.refresh === 'function') {
-                try { window.ui.refresh(); } catch (e) { /* ignore */ }
-            }
+            return refreshModelsAfterBulk();
         } catch (err) {
             const msg = (err && err.message) ? err.message : String(err);
             showToast('Error: ' + msg, true);
@@ -319,22 +317,55 @@
             window.console.warn('[bulkModels] delete errors:', errors);
         }
         selectNone();
-        if (window.ui && typeof window.ui.refresh === 'function') {
-            try { window.ui.refresh(); } catch (e) { /* ignore */ }
-        }
+        return refreshModelsAfterBulk();
     }
 
     /**
-     * Простой toast — попытка использовать существующий notification system,
-     * если нет — fallback на window.alert.
+     * refreshModelsAfterBulk — перечитать список моделей РЕАЛЬНЫМ путём обновления.
+     *
+     * R686 (2026-11-22): здесь стоял `ui.refresh()`, но такого метода в объекте
+     * `ui` НЕТ (ui — возвращаемый объект IIFE app.js, там другой набор полей),
+     * поэтому после массовой операции карточки моделей оставались со старым
+     * состоянием до следующего тика авто-обновления. Ровно тот же мёртвый
+     * guard был в showToast ниже (уведомление искали в объекте `ui`).
+     *
+     * Существующий путь обновления страницы «Модели» — провайдер 'models' в
+     * DataRefresh (app-data.js:628): он перечитывает cluster state, заново
+     * рисует карточки и перерисовывает этот toolbar. Именно его и зовём —
+     * кнопка «Обновить» в шапке обновляет страницу тем же реестром.
+     *
+     * Резервный путь — перерисовка активной страницы из уже полученных данных
+     * (app.js → App.context.refreshPage), если data-refresh.js не подключён.
+     */
+    function refreshModelsAfterBulk() {
+        if (window.DataRefresh && typeof window.DataRefresh.refresh === 'function') {
+            return window.DataRefresh.refresh('models');
+        }
+        if (window.App && window.App.context && typeof window.App.context.refreshPage === 'function') {
+            try { window.App.context.refreshPage('models'); } catch (e) { /* ignore */ }
+        }
+        return Promise.resolve(false);
+    }
+
+    /**
+     * Уведомление о результате — существующим механизмом WebUI.
+     *
+     * R686: раньше здесь искали метод уведомления в объекте `ui`, которого нет,
+     * и всё «уведомление» сводилось к строке в console: оператор не видел
+     * результата массовой операции. Канонический тост — window.showToast
+     * (app-core.js:280, он же App.showToast; его же зовут gguf/image-модули).
      */
     function showToast(msg, isError) {
-        // Если есть глобальная система нотификаций — используем её.
-        if (window.ui && typeof window.ui.showNotification === 'function') {
-            window.ui.showNotification(msg, isError ? 'error' : 'success');
+        var type = isError ? 'error' : 'success';
+        if (typeof window.showToast === 'function') {
+            window.showToast(msg, type);
             return;
         }
-        // Fallback: console + alert (минимально invasive).
+        if (window.App && typeof window.App.showToast === 'function') {
+            window.App.showToast(msg, type);
+            return;
+        }
+        // Fallback: консоль (минимально invasive), если слой тостов не поднялся.
         if (window.console) {
             if (isError) console.error('[bulkModels]', msg);
             else console.log('[bulkModels]', msg);

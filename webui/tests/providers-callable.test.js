@@ -67,6 +67,15 @@ global.document = {
     addEventListener() {},
     visibilityState: 'visible',
     createElement(tag) { return makeElement('new-' + tag); },
+    // R680: список моделей AutoTune пересобирается через DocumentFragment
+    // (коллектор→фрагмент→restore), как и карточки моделей в app-data.js:831.
+    // Без этой строки провайдер падал на document.createDocumentFragment, и
+    // «провайдер вызывается» краснело не по делу.
+    createDocumentFragment() {
+        const frag = makeElement('#fragment');
+        frag.isFragment = true;
+        return frag;
+    },
     body: makeElement('body'),
 };
 

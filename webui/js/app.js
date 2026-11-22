@@ -1041,6 +1041,28 @@ const ui = (function () {
     var donorBlockedText = modelUi.donorBlockedText;
 
 
+    // === R680 (2026-11-21): КОНТРАКТ СТРАНИЦЫ ДЛЯ СИНГЛТОНОВ ===
+    //
+    // modules/backend-type-filter.js — не фабрика `window.X = function (ctx)`, а
+    // синглтон, поэтому страницу он получает явной привязкой, а не литералом.
+    // ЗАЧЕМ. Его toggleGgufTab/toggleImageTab уходили с исчезнувшей страницы
+    // чтением `window.ui.currentPage` и вызовом `window.ui.switchPage`. Ни того,
+    // ни другого в `ui` НЕТ (ui — возвращаемый объект IIFE, там другой набор
+    // полей), поэтому ветка «страницу спрятали, оператор на ней — переключить на
+    // dashboard» была мёртвым кодом. Передаём ФУНКЦИИ: значение-снимок — это
+    // ровно дефект R493/R676.
+    //
+    // Вызов стоит здесь, на верхнем уровне IIFE: app.js грузится ПОСЛЕ модуля
+    // (index.html, defer, порядок документа), а init() и первый cluster-update
+    // случаются позже — то есть к первому toggle* привязка уже есть.
+    if (window.BackendTypeFilter && typeof window.BackendTypeFilter.bindPage === 'function') {
+        window.BackendTypeFilter.bindPage({
+            getCurrentPage: function () { return currentPage; },
+            switchPage: switchPage
+        });
+    }
+
+
     // ---- CppWorker port auto-detection ----
     // Probes common cppworker ports on the given host and returns the first
     // port that responds OK to /info (or /health). 18092 first (актуальный
@@ -1230,12 +1252,20 @@ const ui = (function () {
 //   * inline-обработчики в генерируемой разметке — onclick="ui.executeModelOperation(...)"
 //     (страница Models, кнопки Load/Unload/Delete, app.js:2225-2226) и
 //     onclick="ui.cancelOperationByKey(...)" (app.js:2428). Без window.ui клик
-//     по этим кнопкам падал с ReferenceError — «выгрузка модели не работает»;
-//   * modules/backend-type-filter.js:344,369 — if (window.ui && window.ui.currentPage…)
-//     ветка никогда не срабатывала, т.е. авто-переход на dashboard при скрытии
-//     текущей страницы не работал;
-//   * modules/config-io.js:32 — if (window.ui && window.ui.data…) не срабатывал,
-//     из-за чего в экспортируемый конфиг не попадал список бэкендов.
+//     по этим кнопкам падал с ReferenceError — «выгрузка модели не работает».
+//
+// R680 (2026-11-21): здесь были ещё два пункта, и оба были НЕВЕРНЫ — публикация
+// `ui` их не чинила:
+//   * `modules/backend-type-filter.js` — if (window.ui.currentPage…) / (…switchPage…):
+//     ни `currentPage`, ни `switchPage` в возвращаемом объекте НИКОГДА не было,
+//     поэтому ветка «уйти со скрытой страницы» оставалась мёртвой. Теперь контракт
+//     страницы передаётся явно — BackendTypeFilter.bindPage({getCurrentPage,
+//     switchPage}) выше (см. R680 в этом файле);
+//   * `modules/config-io.js:56` — if (window.ui && window.ui.data…): поля `data`
+//     в `ui` тоже нет, то есть список бэкендов в ЭКСПОРТИРУЕМЫЙ конфиг не
+//     попадает. Это отдельный (незакрытый) дефект: чинится либо публикацией
+//     `data`, либо передачей списка владельцем — трогать его здесь без разбора
+//     не стали, чтобы не менять формат экспорта молча.
 window.ui = ui;
 window.App = window.App || {};
 window.App.ui = ui;

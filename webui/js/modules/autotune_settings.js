@@ -94,6 +94,111 @@
         el.className = 'autotune-save-status ' + (type || '');
     }
 
+    // === R680 (2026-11-21): ПЕРЕСБОРКА СПИСКА МОДЕЛЕЙ НЕ ТЕРЯЕТ ВЫБОР ОПЕРАТОРА ===
+    //
+    // ЖИВОЙ ДЕФЕКТ. Строка на модель — это `<select>`; список пересобирался одной
+    // строкой `list.innerHTML = html`, то есть каждый раз создавались НОВЫЕ
+    // селекторы. Заслон R513 (RefreshGuard выше) спасал только тот случай, когда
+    // фокус СЕЙЧАС внутри списка: оператор выбрал значение, увёл фокус (или ушёл
+    // тик авто-обновления / нажал «Сохранить» → render()), и пересборка возвращала
+    // селектор к СЕРВЕРНОМУ значению. Следствие: «Сохранить» отправлял не то, что
+    // оператор выбрал, — выбор терялся молча, без единой ошибки в консоли.
+    //
+    // КАК ПРАВИЛЬНО (тот же порядок, что у settings-registry.js:swapPanel, R676):
+    // снять значения, которые оператор уже изменил (SafeForm.collectInputs,
+    // ключ — data-model) → нарисовать новые узлы в DocumentFragment → одним
+    // движением заменить содержимое списка → вернуть значения оператора
+    // (SafeForm.restoreInputs; он же объявляет базой серверное значение у КАЖДОГО
+    // узла, иначе следующая пересборка снова не увидела бы правку).
+    //
+    // Правила SafeForm не ослабляются: запись идёт только через его API
+    // (collectInputs/restoreInputs), прямых `el.value = …` в этом файле нет.
+    const PER_MODEL_KEY_ATTR = 'data-model';
+
+    /** overrideLabel — подпись рядом с селектором («наследует глобальное»/«явный выбор»). */
+    function overrideLabel(current) {
+        if (current === undefined) {
+            return '(inherit global: ' + (currentConfig.globalEnabled ? 'ON' : 'OFF') + ')';
+        }
+        return '(explicit: ' + (current ? 'ON' : 'OFF') + ')';
+    }
+
+    /**
+     * buildPerModelItem — строка списка для одной модели.
+     *
+     * Собирается из createElement, а не из строки innerHTML: имя модели приходит
+     * из ответа сервера (внешние данные), и в разметку оно попадает textContent'ом,
+     * то есть HTML-исходником стать не может.
+     */
+    function buildPerModelItem(name) {
+        const current = currentConfig.perModel[name];
+
+        const item = document.createElement('div');
+        item.className = 'autotune-per-model-item';
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'model-name';
+        nameEl.textContent = name;
+        item.appendChild(nameEl);
+
+        const toggle = document.createElement('div');
+        toggle.className = 'override-toggle';
+
+        const hint = document.createElement('span');
+        hint.className = 'hint';
+        hint.textContent = overrideLabel(current);
+        toggle.appendChild(hint);
+
+        const select = document.createElement('select');
+        select.className = 'autotune-per-model-override';
+        // Ключ, по которому SafeForm переносит выбор при пересборке, и по
+        // которому saveConfig() находит модель (cb.dataset.model).
+        select.setAttribute(PER_MODEL_KEY_ATTR, name);
+        // Значения те же, что читает saveConfig(): 'null' — наследовать
+        // глобальный тумблер, 'true'/'false' — явный выбор.
+        [['null', 'inherit'], ['true', 'ON'], ['false', 'OFF']].forEach(function (opt) {
+            const option = document.createElement('option');
+            option.value = opt[0];
+            option.textContent = opt[1];
+            select.appendChild(option);
+        });
+        // Нарисованное состояние — СЕРВЕРНОЕ; выбор оператора вернёт
+        // swapPerModelList ниже.
+        select.value = current === undefined ? 'null' : String(current);
+        toggle.appendChild(select);
+        item.appendChild(toggle);
+
+        return item;
+    }
+
+    /** replaceChildren — заменить всё содержимое узла одной подготовленной разметкой. */
+    function replaceChildren(node, fresh) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+        node.appendChild(fresh);
+    }
+
+    /**
+     * swapPerModelList — подменить содержимое списка, сохранив выбор оператора (R680).
+     *
+     * @param {Element} list контейнер #autotune-per-model-list
+     * @param {DocumentFragment} fragment новые узлы (ещё не в документе)
+     * @returns {boolean} true — выбор оператора перенесён (SafeForm был доступен)
+     */
+    function swapPerModelList(list, fragment) {
+        const SF = window.SafeForm;
+        if (!SF || typeof SF.collectInputs !== 'function' || typeof SF.restoreInputs !== 'function') {
+            // SafeForm не загружен (урезанная страница/тест) — рисуем как раньше,
+            // переносить выбор нечем. В боевой странице модуль подключён раньше
+            // (index.html: safe-form.js идёт до autotune_settings.js).
+            replaceChildren(list, fragment);
+            return false;
+        }
+        const pending = SF.collectInputs(list, PER_MODEL_KEY_ATTR);
+        replaceChildren(list, fragment);
+        SF.restoreInputs(list, pending, PER_MODEL_KEY_ATTR);
+        return true;
+    }
+
     function renderPerModelList() {
         const list = document.getElementById('autotune-per-model-list');
         if (!list) return;
@@ -105,45 +210,21 @@
             window.RefreshGuard.isEditingIn(list)) {
             return;
         }
+        // R680: новые узлы рисуются в DocumentFragment — список не остаётся
+        // пустым между удалением старых узлов и вставкой новых, а выбор
+        // оператора переносится следом (swapPerModelList).
+        const fragment = document.createDocumentFragment();
         if (availableModels.length === 0) {
-            list.innerHTML = '<div class="hint">No models loaded yet. Start a model or wait for metrics poller to refresh.</div>';
-            return;
+            const hint = document.createElement('div');
+            hint.className = 'hint';
+            hint.textContent = 'No models loaded yet. Start a model or wait for metrics poller to refresh.';
+            fragment.appendChild(hint);
+        } else {
+            availableModels.forEach(function (name) {
+                fragment.appendChild(buildPerModelItem(name));
+            });
         }
-        let html = '';
-        availableModels.forEach(name => {
-            const current = currentConfig.perModel[name];
-            const effective = current !== undefined ? current : currentConfig.globalEnabled;
-            const label = current === undefined
-                ? `(inherit global: ${currentConfig.globalEnabled ? 'ON' : 'OFF'})`
-                : `(explicit: ${current ? 'ON' : 'OFF'})`;
-            html += `
-                <div class="autotune-per-model-item">
-                    <span class="model-name">${escapeHtml(name)}</span>
-                    <div class="override-toggle">
-                        <span class="hint">${label}</span>
-                        <select class="autotune-per-model-override" data-model="${escapeHtml(name)}">
-                            <option value="null"${current === undefined ? ' selected' : ''}>inherit</option>
-                            <option value="true"${current === true ? ' selected' : ''}>ON</option>
-                            <option value="false"${current === false ? ' selected' : ''}>OFF</option>
-                        </select>
-                    </div>
-                </div>
-            `;
-        });
-        list.innerHTML = html;
-    }
-
-    function escapeHtml(s) {
-        if (s === null || s === undefined) return '';
-        if (window.Utils && typeof window.Utils.escapeHtml === 'function') {
-            return window.Utils.escapeHtml(s);
-        }
-        return String(s)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
+        swapPerModelList(list, fragment);
     }
 
     async function render() {

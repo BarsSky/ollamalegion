@@ -10,6 +10,90 @@
 
     const STORAGE_KEY = 'ollamalegion_backend_type';
 
+    // === R680 (2026-11-21): КОНТРАКТ СТРАНИЦЫ ДЛЯ СИНГЛТОНА ===
+    //
+    // ЖИВОЙ ДЕФЕКТ (закрыт здесь). toggleGgufTab/toggleImageTab решали «оператор
+    // сейчас на этой странице?» чтением `window.ui.currentPage`, а объект `ui`
+    // (const в app.js, публикуется как window.ui) этого свойства НЕ ПУБЛИКУЕТ —
+    // его там нет ни значением, ни геттером. Вторая зависимость того же места,
+    // `window.ui.switchPage`, тоже отсутствует: switchPage объявлен внутри IIFE
+    // app.js и в возвращаемый объект не попадает. Следствие: обе ветки
+    // «активной страницы больше нет → уйти на дефолтную» были МЁРТВЫ, и когда
+    // состав кластера прятал страницу (GGUF на чисто image-стенде, Image-модели
+    // на чисто текстовом), оператор оставался на скрытом пункте меню.
+    //
+    // КАК ПРАВИЛЬНО. Во всех фабриках проекта страница уже читается геттером
+    // `getCurrentPage()` (app-logs.js:20, app-data.js:42, app-models.js:37,
+    // app-settings.js:26; контракт закреплён тестом
+    // webui/tests/page-contract-r676.test.js). Этот модуль — СИНГЛТОН, а не
+    // фабрика `window.X = function (ctx)`, поэтому оба действия (прочитать
+    // страницу и уйти с неё) передаются ему явной привязкой из app.js —
+    // владельца состояния `currentPage`:
+    //
+    //     BackendTypeFilter.bindPage({
+    //         getCurrentPage: function () { return currentPage; },
+    //         switchPage: switchPage
+    //     });
+    //
+    // Передаются ФУНКЦИИ, а не значения: снимок страницы — ровно тот класс
+    // дефекта, который здесь закрывается (R493/R676).
+    var pageApi = { getCurrentPage: null, switchPage: null };
+
+    /**
+     * bindPage — принять контракт страницы от владельца состояния (app.js).
+     *
+     * Частичная привязка допустима: тесты и другие страницы могут дать только
+     * геттер. Возвращает true, если принят хотя бы один метод.
+     */
+    function bindPage(ctx) {
+        if (!ctx || typeof ctx !== 'object') return false;
+        var taken = false;
+        if (typeof ctx.getCurrentPage === 'function') {
+            pageApi.getCurrentPage = ctx.getCurrentPage;
+            taken = true;
+        }
+        if (typeof ctx.switchPage === 'function') {
+            pageApi.switchPage = ctx.switchPage;
+            taken = true;
+        }
+        return taken;
+    }
+
+    /**
+     * currentPageName — имя активной страницы ('' — неизвестно).
+     *
+     * Страница читается ВЫЗОВОМ геттера на каждом обращении. Прямого чтения
+     * `window.ui.currentPage` в модуле не осталось: его значение всегда
+     * undefined, и любая проверка с ним ложна навсегда.
+     */
+    function currentPageName() {
+        if (typeof pageApi.getCurrentPage !== 'function') return '';
+        try {
+            return String(pageApi.getCurrentPage() || '');
+        } catch (e) {
+            return '';
+        }
+    }
+
+    /**
+     * leaveHiddenPage — уйти с только что скрытой страницы на дефолтную.
+     *
+     * @param {string} page имя страницы, которую сейчас прячут
+     * @returns {boolean} true — переход выполнен
+     */
+    function leaveHiddenPage(page) {
+        if (!page || currentPageName() !== page) return false;
+        var go = pageApi.switchPage;
+        if (typeof go !== 'function') return false;
+        try {
+            go('dashboard');
+            return true;
+        } catch (e) {
+            console.warn('[BackendTypeFilter] switchPage after hiding ' + page + ' failed:', e && e.message);
+            return false;
+        }
+    }
+
     /**
      * BackendTypeFilter — центральный модуль фильтрации
      */
@@ -36,6 +120,12 @@
          * Защита от множественных синхронных XHR при повторных вызовах.
          */
         _syncAttempted: false,
+
+        /**
+         * R680: контракт страницы (getCurrentPage/switchPage) от app.js.
+         * См. блок «КОНТРАКТ СТРАНИЦЫ ДЛЯ СИНГЛТОНА» выше.
+         */
+        bindPage: bindPage,
 
         getCurrentType: function () {
             // 1. Проверяем кэш localStorage
@@ -539,11 +629,10 @@
             var show = this.clusterHasText();
             ggufNav.style.display = show ? '' : 'none';
             ggufNav.title = show ? '' : (window.I18N ? I18N.t('dashboard.engine_hint_auto') : '');
-            if (!show && window.ui && window.ui.currentPage === 'gguf') {
-                if (typeof window.ui.switchPage === 'function') {
-                    window.ui.switchPage('dashboard');
-                }
-            }
+            // R680: страница читается геттером (см. bindPage выше). Раньше здесь
+            // стояло `window.ui.currentPage === 'gguf'` — свойства не существует,
+            // условие было ложным ВСЕГДА, и оператор оставался на скрытой странице.
+            if (!show) leaveHiddenPage('gguf');
         },
 
         /**
@@ -556,11 +645,8 @@
             if (!nav) return;
             var show = this.clusterHasImage();
             nav.style.display = show ? '' : 'none';
-            if (!show && window.ui && window.ui.currentPage === 'image') {
-                if (typeof window.ui.switchPage === 'function') {
-                    window.ui.switchPage('dashboard');
-                }
-            }
+            // R680: тот же контракт страницы, что и в toggleGgufTab выше.
+            if (!show) leaveHiddenPage('image');
         },
 
         /**

@@ -334,7 +334,11 @@ check('R513/4: панель горячих настроек не пересоб�
 });
 
 check('R513/4: список моделей AutoTune не пересобирается во время выбора', () => {
-    assertGuardBefore(autotuneSrc, 'renderPerModelList', 'list.innerHTML', 'autotune_settings.js');
+    // R680: пересборка идёт через swapPerModelList(list, fragment) — DocumentFragment
+    // плюс перенос выбора оператора через SafeForm. Заслон R513 обязан стоять ДО
+    // неё (он и остаётся единственным, что защищает момент открытого выпадающего
+    // списка: пока фокус внутри списка, узел не подменяется вовсе).
+    assertGuardBefore(autotuneSrc, 'renderPerModelList', 'swapPerModelList(list, fragment)', 'autotune_settings.js');
 });
 
 check('R513/4: провайдер «Настроек» тянет ВСЕ источники страницы одним проходом', () => {

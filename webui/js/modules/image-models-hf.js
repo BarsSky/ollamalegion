@@ -679,8 +679,28 @@
             // Подпись берём из статического ROLE_LABEL_KEYS (см. комментарий у
             // карты): для оператора «CLIP-L (текстовый энкодер)», а не «clip_l».
             return '<option value="' + role + '"' + (role === selected ? ' selected' : '') + '>' +
-                escapeHtml(t(ROLE_LABEL_KEYS[role], role)) + '</option>';
+                escapeHtml(roleLabel(role)) + '</option>';
         }).join('');
+    }
+
+    /**
+     * roleLabel — человеческая подпись роли для оператора.
+     *
+     * ЕДИНСТВЕННЫЙ источник подписи — статическая карта ROLE_LABEL_KEYS (см.
+     * комментарий у неё). Никакой склейки вида 'imageModels.role_' + role здесь
+     * нет сознательно: ровно такая склейка в подсказке «(предложено: …)» и была
+     * дефектом R695 — подсказка собиралась из СЕРВЕРНОГО id (suggestedRole),
+     * поэтому рядом с переведённым селектом стояло сырое «clip_l»/«vae».
+     *
+     * ЧЕГО ЗДЕСЬ НЕТ: падения на роли вне контракта. Сервер вправе прислать
+     * что-то новое (или пустое), и подсказка обязана остаться читаемой: для
+     * такой роли возвращается сам id как есть (что было нормой для всех 12 до
+     * R694), а не «undefined» и не исключение.
+     */
+    function roleLabel(role) {
+        var key = ROLE_LABEL_KEYS[role];
+        if (!key) return String(role == null ? '' : role);
+        return t(key, role);
     }
 
     /**
@@ -908,9 +928,12 @@
             var role = sel.role;
             var suggested = suggestedRole(f);
             // Расхождение роли и подсказки сервера показываем как есть: это
-            // сигнал «оператор выбрал другое», а не ошибка.
+            // сигнал «оператор выбрал другое», а не ошибка. Подпись в подсказке
+            // — та же карта ROLE_LABEL_KEYS, что и у селекта (R695): серверный
+            // id («clip_l», «vae») оператору ничего не говорит, а рядом стояли
+            // человеческие подписи — расхождение и было дефектом.
             var roleHint = suggested && suggested !== role
-                ? ' <span style="font-size:var(--font-size-xs);color:var(--text-muted);">(' + escapeHtml(t('imageModels.hf_suggested', 'предложено')) + ': ' + escapeHtml(suggested) + ')</span>'
+                ? ' <span style="font-size:var(--font-size-xs);color:var(--text-muted);">(' + escapeHtml(t('imageModels.hf_suggested', 'предложено')) + ': ' + escapeHtml(roleLabel(suggested)) + ')</span>'
                 : '';
             // Метка совместимости: результат пред-проверки, если он есть; иначе —
             // «не проверено» + кнопка «Проверить» (для файлов весов).
@@ -1954,6 +1977,7 @@
             downloadsSummary: downloadsSummary,
             IMAGE_ROLES: IMAGE_ROLES,
             ROLE_LABEL_KEYS: ROLE_LABEL_KEYS,
+            roleLabel: roleLabel,
             roleOptions: roleOptions,
             IMAGE_FAMILIES: IMAGE_FAMILIES,
             AUTO_ROLES: AUTO_ROLES,

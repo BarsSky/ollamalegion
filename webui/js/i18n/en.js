@@ -2000,16 +2000,22 @@ window.I18N_EN = {
   "imageModels.downloads_title": "Model downloads",
   "imageModels.no_backend_selected": "No image backend selected",
   // R694: file role labels for the HuggingFace tab selector. The role list is the
-  // frozen contract in pkg/types/image_model.go:32-45, but the added roles get
-  // HUMAN labels: raw ids (clip_l, t5xxl, ip_adapter, ...) tell the operator
-  // nothing. The existing role_diffusion/role_vae values are unchanged — they were
-  // already shown on the "Models on disk" tab (image-page.js:657); the defect was
-  // exactly the ten roles that had no key at all. When a role is added to the
-  // contract, add the key to both packs — image-models-hf.js lists them statically
-  // (ROLE_LABEL_KEYS), so a forgotten key is visible both to the i18n measurer and
-  // to the selector test.
+  // frozen contract in pkg/types/image_model.go:32-45, and every role gets a
+  // HUMAN label: raw ids (clip_l, t5xxl, ip_adapter, ...) tell the operator
+  // nothing. When a role is added to the contract, add the key to both packs —
+  // image-models-hf.js lists them statically (ROLE_LABEL_KEYS), so a forgotten key
+  // is visible both to the i18n measurer and to the selector test.
+  //
+  // R695: role_vae is no longer a raw id. It was the only role whose value equaled
+  // the id itself ("vae"), and the operator saw exactly that: the role selector on
+  // the HuggingFace tab showed a technical string next to human labels such as
+  // "CLIP-L (text encoder)", and the "Models on disk" tab (image-page.js:657)
+  // inherited the same value. The role means "decode latents into pixels"
+  // (pkg/types/image_model.go:34: ImageFileRoleVae = "vae", the --vae flag); for
+  // FLUX/SD3/Qwen/Z-Image it is a SEPARATE file (ae.safetensors), so the label
+  // names what it is instead of spelling the acronym alone.
   "imageModels.role_diffusion": "diffusion (weights)",
-  "imageModels.role_vae": "vae",
+  "imageModels.role_vae": "VAE (autoencoder)",
   "imageModels.role_clip_l": "CLIP-L (text encoder)",
   "imageModels.role_clip_g": "CLIP-G (text encoder)",
   "imageModels.role_t5xxl": "T5-XXL (FLUX/SD3 text encoder)",

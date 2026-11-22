@@ -60,24 +60,41 @@
        каждая переменная, которую использует страница, обязана быть определена
        в подключённых ею стилях. */
     /* F.γ-specific styles (inline чтобы не плодить css). */
+    /* R695 (2026-11-23): РАЗМЕРЫ ШРИФТОВ — ТОЛЬКО ТОКЕНЫ, НИ ОДНОГО px.
+       ЖИВОЙ ДЕФЕКТ. Плотность панели — это body[data-density] + переопределение
+       --font-size-* в css/themes.css (-15 % у dense). Внутри iframe документ
+       свой, и attr data-density сюда УЖЕ переносится (applyDensity ниже), но
+       размер «32px» у оценки здоровья и 11-13px у подписей карточек,
+       таблиц и строк ошибок жили ВНЕ шкалы: страница оставалась «обычной» по
+       типографике на фоне плотной панели — тот же разъезд оформления, из-за
+       которого R690 переносил тему и язык. Поэтому каждая подпись размера
+       ссылается на шкалу --font-size-*, а сторож
+       webui/tests/health-density-tokens-r695.test.js требует, чтобы px-размеров
+       в этой странице не оставалось вовсе.
+       СООТВЕТСТВИЕ ШКАЛЕ (normal → dense): xs 11→10, sm 13→12, base 14→13,
+       md 16→14, 2xl 28→22, 3xl 36→28. Где значение не совпадало с шагом шкалы,
+       выбран БЛИЖАЙШИЙ шаг того же смысла: оценка здоровья — как метрика
+       дашборда (css/metrics.css:64, --font-size-3xl), заголовок страницы — как
+       .header h1 самой панели (css/layout.css:274, --font-size-2xl), мелкие
+       подписи — как весь остальной интерфейс (--font-size-xs). */
     .health-page { padding: 24px; max-width: 1400px; margin: 0 auto; }
     .health-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
-    .health-header h1 { margin: 0; font-size: 24px; display: flex; align-items: center; gap: 10px; }
+    .health-header h1 { margin: 0; font-size: var(--font-size-2xl); display: flex; align-items: center; gap: 10px; }
     .health-header .actions { display: flex; gap: 8px; align-items: center; }
-    .health-header .actions button { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary); cursor: pointer; font-size: 13px; }
+    .health-header .actions button { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary); cursor: pointer; font-size: var(--font-size-sm); }
     .health-header .actions button:hover { background: var(--bg-hover); }
     .health-header .actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 
     .health-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
     .health-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
-    .health-card .label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-    .health-card .value { font-size: 32px; font-weight: 700; color: var(--text-primary); line-height: 1; }
+    .health-card .label { font-size: var(--font-size-xs); color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+    .health-card .value { font-size: var(--font-size-3xl); font-weight: 700; color: var(--text-primary); line-height: 1; }
     .health-card .value.good { color: var(--success, #22c55e); }
     .health-card .value.warn { color: var(--warning, #f59e0b); }
     .health-card .value.bad { color: var(--danger, #ef4444); }
-    .health-card .sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+    .health-card .sub { font-size: var(--font-size-xs); color: var(--text-secondary); margin-top: 4px; }
 
-    .health-status-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .health-status-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: var(--font-size-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
     .health-status-badge.healthy { background: rgba(34,197,94,0.15); color: var(--success, #22c55e); }
     .health-status-badge.degraded { background: rgba(245,158,11,0.15); color: var(--warning, #f59e0b); }
     .health-status-badge.unhealthy { background: rgba(239,68,68,0.15); color: var(--danger, #ef4444); }
@@ -90,16 +107,16 @@
     .health-score-fill.bad { background: var(--danger, #ef4444); }
 
     .health-section { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
-    .health-section h2 { margin: 0 0 16px 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
-    .health-section h2 .count { font-size: 12px; font-weight: 400; color: var(--text-secondary); }
+    .health-section h2 { margin: 0 0 16px 0; font-size: var(--font-size-md); display: flex; align-items: center; gap: 8px; }
+    .health-section h2 .count { font-size: var(--font-size-xs); font-weight: 400; color: var(--text-secondary); }
 
     .health-table { width: 100%; border-collapse: collapse; }
-    .health-table th, .health-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
-    .health-table th { color: var(--text-secondary); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
-    .health-table td.mono { font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; }
+    .health-table th, .health-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: var(--font-size-sm); }
+    .health-table th { color: var(--text-secondary); font-weight: 600; text-transform: uppercase; font-size: var(--font-size-xs); letter-spacing: 0.5px; }
+    .health-table td.mono { font-family: ui-monospace, "SF Mono", monospace; font-size: var(--font-size-xs); }
     .health-table tr:hover { background: var(--bg-hover); }
 
-    .backend-status { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .backend-status { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: var(--font-size-xs); font-weight: 600; }
     .backend-status.healthy { background: rgba(34,197,94,0.15); color: var(--success, #22c55e); }
     .backend-status.degraded { background: rgba(245,158,11,0.15); color: var(--warning, #f59e0b); }
     .backend-status.unhealthy { background: rgba(239,68,68,0.15); color: var(--danger, #ef4444); }
@@ -107,25 +124,25 @@
 
     .error-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border); }
     .error-row:last-child { border-bottom: none; }
-    .error-row .source-badge { flex: 0 0 90px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; text-align: center; }
+    .error-row .source-badge { flex: 0 0 90px; padding: 2px 8px; border-radius: 10px; font-size: var(--font-size-xs); font-weight: 600; text-align: center; }
     .error-row .source-badge.healthcheck { background: rgba(239,68,68,0.15); color: var(--danger, #ef4444); }
     .error-row .source-badge.transport { background: rgba(245,158,11,0.15); color: var(--warning, #f59e0b); }
     .error-row .source-badge.event { background: rgba(107,114,128,0.15); color: var(--text-secondary); }
     .error-row .content { flex: 1; }
-    .error-row .content .message { color: var(--text-primary); font-size: 13px; margin-bottom: 4px; }
-    .error-row .content .meta { color: var(--text-secondary); font-size: 11px; }
+    .error-row .content .message { color: var(--text-primary); font-size: var(--font-size-sm); margin-bottom: 4px; }
+    .error-row .content .meta { color: var(--text-secondary); font-size: var(--font-size-xs); }
     .error-row .content .meta span { margin-right: 12px; }
-    .error-row .severity { flex: 0 0 70px; text-align: right; font-size: 11px; color: var(--text-secondary); }
+    .error-row .severity { flex: 0 0 70px; text-align: right; font-size: var(--font-size-xs); color: var(--text-secondary); }
     .error-row .severity .sev { display: inline-block; padding: 2px 6px; border-radius: 8px; font-weight: 600; }
     .error-row .severity .sev.warning { background: rgba(245,158,11,0.15); color: var(--warning, #f59e0b); }
     .error-row .severity .sev.error { background: rgba(239,68,68,0.15); color: var(--danger, #ef4444); }
     .error-row .severity .sev.critical { background: rgba(220,38,38,0.15); color: var(--danger, #ef4444); }
-    .error-row .timestamp { flex: 0 0 100px; text-align: right; font-size: 11px; color: var(--text-secondary); }
+    .error-row .timestamp { flex: 0 0 100px; text-align: right; font-size: var(--font-size-xs); color: var(--text-secondary); }
 
-    .empty-state { text-align: center; padding: 32px 16px; color: var(--text-secondary); font-size: 14px; }
-    .empty-state i { font-size: 32px; margin-bottom: 12px; display: block; }
+    .empty-state { text-align: center; padding: 32px 16px; color: var(--text-secondary); font-size: var(--font-size-base); }
+    .empty-state i { font-size: var(--font-size-3xl); margin-bottom: 12px; display: block; }
 
-    .conn-status { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
+    .conn-status { font-size: var(--font-size-xs); color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
     .conn-status .dot { width: 8px; height: 8px; border-radius: 50%; }
     .conn-status.connected .dot { background: var(--success, #22c55e); }
     .conn-status.disconnected .dot { background: var(--danger, #ef4444); }
@@ -200,7 +217,7 @@
         </select>
         <button id="pauseBtn" onclick="togglePause()" data-i18n="health.pause">⏸ Pause</button>
         <button id="refreshBtn" onclick="loadNow()" class="primary" data-i18n="health.refresh">🔄 Refresh</button>
-        <a href="/" id="backLink" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-primary);text-decoration:none;font-size:13px" data-i18n="health.back">← Dashboard</a>
+        <a href="/" id="backLink" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-primary);text-decoration:none;font-size:var(--font-size-sm)" data-i18n="health.back">← Dashboard</a>
         <!-- R60.14 (2026-09-07): language picker. health.html uses its own
              inline I18N system (line 122) so we wire onchange to I18N.setLang.
              Same ollamalegion_lang localStorage key — synced with index.html + monitor.html. -->
@@ -432,19 +449,28 @@
     //
     // ollamalegion-pause  — {paused:true|false} пауза цикла (страница не видна,
     //                       вкладка скрыта, сессия истекла, авто на паузе);
-    // ollamalegion-config — {apiBase, apiToken, lang} параметры панели.
+    // ollamalegion-config — {apiBase, apiToken, lang} параметры панели;
+    // ollamalegion-refresh — «обновись сейчас» (R695): кнопка «Обновить» в шапке
+    //                       панели. НЕ на каждом тике панели, а ровно на клик.
     // Ровно этот набор панель отправляет монитору (sendMonitorConfig /
     // postMonitorPause): второго канала для «ещё одной страницы в iframe» нет.
     //
     // ЧЕГО ЗДЕСЬ НЕТ И ПОЧЕМУ. Панель НЕ дёргает страницу на каждом своём тике
     // (у монитора это делает провайдер DataRefresh 'monitor'): у «Состояния»
     // свой интервал, и второй запрос по тику панели означал бы опрос вдвое чаще,
-    // чем выбрал оператор. Ручное обновление — кнопка на самой странице.
+    // чем выбрал оператор. Ручное обновление — кнопка на самой странице И
+    // кнопка «Обновить» в шапке панели (R695): второе и есть ollamalegion-refresh,
+    // которое панель шлёт ТОЛЬКО из обработчика клика (см. app-data.js →
+    // postHealthRefresh), не из провайдера DataRefresh.
     window.addEventListener('message', function (e) {
       var d = e && e.data;
       if (!d || typeof d !== 'object') return;
       if (d.type === 'ollamalegion-pause') {
         if (poll) poll.setPaused('remote', !!d.paused);
+        return;
+      }
+      if (d.type === 'ollamalegion-refresh') {
+        refreshFromPanel();
         return;
       }
       if (d.type === 'ollamalegion-config') {
@@ -598,7 +624,7 @@
         rows.push('<td>' + fmtLatency(b.avgLatencyMs) + '</td>');
         rows.push('<td>' + (b.consecutiveFails || 0) + '</td>');
         rows.push('<td>' + (b.hasAgent ? '✓' : '—') + '</td>');
-        rows.push('<td style="color:var(--text-secondary);font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(b.lastError || '') + '">' + escapeHtml(b.lastError || '—') + '</td>');
+        rows.push('<td style="color:var(--text-secondary);font-size:var(--font-size-xs);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(b.lastError || '') + '">' + escapeHtml(b.lastError || '—') + '</td>');
         rows.push('</tr>');
       }
       rows.push('</tbody></table>');
@@ -644,11 +670,56 @@
         .replace(/'/g, '&#39;');
     }
 
+    // ---- «Обновись сейчас» из панели (R695) -------------------------------
+    //
+    // ЗАЧЕМ СЧЁТЧИКИ. Требование к кнопке «Обновить» в шапке — РОВНО ОДИН
+    // немедленный запрос /api/v1/health/detailed и ни одного второго таймера.
+    // Проверить это глазами нельзя (запросы идут в фоне), поэтому страница
+    // считает принятые и отброшенные как дубль сообщения и отдаёт их наружу
+    // (`window.healthRefreshStats` рядом с `window.healthPoll.stats()`) — по ним
+    // живой замер и тест видят, что произошло на самом деле.
+    //
+    // ДВА ПРИЗНАКА ДУБЛЯ, оба независимы:
+    //   1) запрос УЖЕ ИДЁТ (loadInFlight) — второй не нужен, данные те же;
+    //   2) повтор в пределах REFRESH_DEDUP_MS — панель может отправить сообщение
+    //      дважды (клик + последующий проход обновления страницы), а запрос,
+    //      завершившийся за миллисекунды, не оставляет окна «в полёте».
+    // Без этого refreshNow() на каждое сообщение снимал бы таймер и ставил новый:
+    // интервал 5 с превращался бы в «5 с от последнего дубля», а на каждый клик
+    // уходило бы по два запроса.
+    var REFRESH_DEDUP_MS = 400;
+    var lastRefreshAt = 0;
+    var loadInFlight = false;
+    var refreshAccepted = 0;
+    var refreshSkipped = 0;
+
+    function refreshFromPanel() {
+      var now = Date.now();
+      if (loadInFlight || (lastRefreshAt && (now - lastRefreshAt) < REFRESH_DEDUP_MS)) {
+        refreshSkipped++;
+        return false;
+      }
+      lastRefreshAt = now;
+      refreshAccepted++;
+      if (poll) {
+        // refreshNow() — существующий контракт цикла: снять текущий таймер,
+        // сделать запрос СРАЗУ и поставить ОДИН новый (js/modules/health-poll.js:157).
+        poll.refreshNow();
+      } else {
+        // Модуля цикла нет (страница без health-poll.js): данные всё равно
+        // обновляем, иначе кнопка мочала бы молча.
+        loadNow();
+      }
+      return true;
+    }
+
     function loadNow() {
       var url = apiBase + '/api/v1/health/detailed';
       var headers = {};
       if (apiToken) headers['X-API-Token'] = apiToken;
-      fetch(url, { headers: headers, cache: 'no-store' })
+      var done = function (value) { loadInFlight = false; return value; };
+      loadInFlight = true;
+      return fetch(url, { headers: headers, cache: 'no-store' })
         .then(function(r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
           return r.json();
@@ -656,12 +727,14 @@
         .then(function(report) {
           setConnStatus('connected');
           renderReport(report);
+          return done(report);
         })
         .catch(function(err) {
           setConnStatus('disconnected');
           console.error('health fetch failed', err);
           var txt = document.getElementById('connText');
           if (txt) txt.textContent = t('health.error', 'Error: ') + err.message;
+          return done(null);
         });
     }
 
@@ -675,6 +748,19 @@
     }
 
     window.loadNow = loadNow;
+    // Диагностический якорь R695: сколько сообщений «обновись сейчас» принято,
+    // сколько отброшено как дубль и идёт ли запрос прямо сейчас. Рядом с
+    // window.healthPoll.stats() (цикл) он и есть доказательство «один клик = один
+    // запрос, второго таймера нет».
+    window.healthRefreshStats = function () {
+      return {
+        accepted: refreshAccepted,
+        skipped: refreshSkipped,
+        inFlight: loadInFlight,
+        lastAt: lastRefreshAt,
+        dedupMs: REFRESH_DEDUP_MS
+      };
+    };
     window.togglePause = function() {
       if (!poll) return;
       // Локальный повод 'user': пауза оператора не снимается сообщением панели.

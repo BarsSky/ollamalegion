@@ -528,6 +528,64 @@
     }
 
     /**
+     * postHealthRefresh — «обновись СЕЙЧАС» для страницы «Состояние» (R695).
+     *
+     * ЗАЧЕМ ОТДЕЛЬНОЕ СООБЩЕНИЕ. У страницы свой цикл (js/modules/health-poll.js,
+     * интервал из её селектора, по умолчанию 5 с), и до R695 кнопка «Обновить» в
+     * шапке его не касалась вовсе: провайдер DataRefresh переотправлял только
+     * конфиг и состояние паузы, то есть нажатие не приводило ни к одному запросу
+     * /api/v1/health/detailed. Оператор видел «кнопка не работает» — ровно тот
+     * класс, ради которого появился R84.
+     *
+     * ПОЧЕМУ НЕ В ПРОВАЙДЕРЕ DataRefresh. Провайдер страницы вызывается не только
+     * кнопкой: тот же `DataRefresh.refresh(page)` дёргает тик авто-обновления
+     * (startPeriodicRefresh). Сообщение «обновись сейчас» из провайдера уходило бы
+     * каждые 5 секунд и давало ВТОРОЙ опрос рядом с собственным циклом страницы
+     * (удвоенная нагрузка на /health/detailed). Поэтому источник сообщения —
+     * именно клик по кнопке (bindHealthRefreshButton), а провайдер остаётся тем,
+     * чем был: конфиг + пауза.
+     */
+    function postHealthRefresh() {
+        var frame = document.getElementById('healthFrame');
+        if (!frame || !frame.contentWindow) return false;
+        try {
+            frame.contentWindow.postMessage({ type: 'ollamalegion-refresh' }, '*');
+            return true;
+        } catch (e) {
+            return false; // iframe ещё не загрузился
+        }
+    }
+
+    // healthRefreshBound — слушатель кнопки навешивается ОДИН раз за жизнь
+    // панели: повторный registerPageProviders() (переинициализация) не должен
+    // давать второе сообщение на один клик — это был бы второй запрос страницы.
+    var healthRefreshBound = false;
+
+    /**
+     * bindHealthRefreshButton — «Обновить» в шапке → ollamalegion-refresh.
+     *
+     * Кнопка уже имеет обработчик (app.js:469 — общие данные + провайдеры), и
+     * этот слушатель НЕ его заменяет: он добавляет к тому же клику сообщение
+     * вложенной странице. Второй слушатель на ту же кнопку выбран сознательно,
+     * потому что кнопка обязана работать на всех страницах, а страница
+     * «Состояние» — единственная, чьи данные живут в ДРУГОМ документе.
+     *
+     * Условие «открыта страница health» проверяется на клик, а не при
+     * навешивании: адрес iframe выставляется лениво (ensureHealthFrame).
+     */
+    function bindHealthRefreshButton() {
+        if (healthRefreshBound) return false;
+        var btn = (typeof document !== 'undefined') ? document.getElementById('refreshBtn') : null;
+        if (!btn || typeof btn.addEventListener !== 'function') return false;
+        healthRefreshBound = true;
+        btn.addEventListener('click', function () {
+            if (getCurrentPage() !== 'health') return;
+            postHealthRefresh();
+        });
+        return true;
+    }
+
+    /**
      * refreshCurrentPage — обновить данные АКТИВНОЙ страницы.
      *
      * R84 (2026-10-03): сначала провайдеры страницы (их регистрирует
@@ -810,6 +868,9 @@
             sendHealthConfig();
             return true;
         });
+        // R695: «Обновить» в шапке → сообщение ollamalegion-refresh странице
+        // «Состояние» (см. postHealthRefresh: почему не в провайдере выше).
+        bindHealthRefreshButton();
         // R513 (2026-11-19): «Настройки» — единственная страница, которую тик
         // раньше перерисовывал ЦЕЛИКОМ: refreshPage('settings') заново тянул
         // серверный конфиг (заливал ~40 полей), реестр горячих настроек
@@ -1153,6 +1214,8 @@
             healthIframeMustPause: healthIframeMustPause,
             syncHealthIframePause: syncHealthIframePause,
             postHealthPause: postHealthPause,
+            // R695: «обновись сейчас» для страницы «Состояние» (кнопка «Обновить»).
+            postHealthRefresh: postHealthRefresh,
             refreshCurrentPage: refreshCurrentPage,
             startPeriodicRefresh: startPeriodicRefresh,
             postMonitorPause: postMonitorPause,

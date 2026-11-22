@@ -314,7 +314,13 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
     check('состав bundle (роли) и кнопка удаления с диска видны для незагруженной модели', function () {
         const html = elements['imgModelsBody'].innerHTML;
         assert.ok(html.indexOf('diffusion (веса)') !== -1, 'нет роли diffusion в составе');
-        assert.ok(html.indexOf('vae') !== -1, 'нет роли vae в составе');
+        // R695: роль vae показывается ПОДПИСЬЮ из пакета, а не сырым id. До правки
+        // это же место видело «vae» (значение imageModels.role_vae совпадало с
+        // самим id), поэтому проверка ниже краснеет на старом пакете/старом рендере.
+        assert.ok(html.indexOf('VAE (автоэнкодер)') !== -1,
+            'нет подписи роли vae в составе (оператор видит сырой id): ' + html.slice(0, 400));
+        assert.strictEqual(RU['imageModels.role_vae'], 'VAE (автоэнкодер)',
+            'значение imageModels.role_vae в ru.js снова равно сырому id или изменилось');
         assert.ok(html.indexOf('data-img-action="delete-model"') !== -1, 'нет кнопки удаления с диска');
         assert.strictEqual((html.match(/colspan="8"/g) || []).length, 0, 'colspan не должен попадать в строки с данными');
     });

@@ -134,6 +134,7 @@ docker compose -f deployments/docker-compose.stack.yml --profile full down -v  #
 | [api.ru.md](docs/api/api.ru.md) | REST API управления |
 | [rpc-benchmark-qwen38.ru.md](docs/features/rpc-benchmark-qwen38.ru.md) | замер раскладки слоёв по RPC на 27B |
 | [webui-auth.ru.md](docs/features/webui-auth.ru.md) | вход, роли, CSRF, сессии |
+| [webui-demo.ru.md](docs/features/webui-demo.ru.md) | демо-режим: WebUI без кластера |
 | [image-generation.ru.md](docs/features/image-generation.ru.md) | генерация изображений на том же балансере |
 | [debts.ru.md](docs/architecture/debts.ru.md) | реестр осознанно не сделанного |
 

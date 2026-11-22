@@ -143,6 +143,7 @@ The table of contents for all documentation is [docs/README.ru.md](docs/README.r
 | [api.ru.md](docs/api/api.ru.md) | the management REST API |
 | [rpc-benchmark-qwen38.ru.md](docs/features/rpc-benchmark-qwen38.ru.md) | layer layout over RPC, benchmarked on 27B |
 | [webui-auth.ru.md](docs/features/webui-auth.ru.md) | login, roles, CSRF, sessions |
+| [webui-demo.ru.md](docs/features/webui-demo.ru.md) | demo mode: the WebUI without a cluster |
 | [image-generation.ru.md](docs/features/image-generation.ru.md) | image generation on the same balancer |
 | [debts.ru.md](docs/architecture/debts.ru.md) | the register of deliberately undone work |
 

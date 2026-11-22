@@ -62,6 +62,11 @@ pwsh -File scripts/release-all.ps1 -Tag <тег>   # сборка с идент�
 docker compose -f deployments/docker-compose.stack.yml --profile full up -d
 ```
 
+**С нуля (образов ещё нет):** вместо прямого `docker compose up -d` — `pwsh -File scripts/up-stack.ps1`
+(или `./scripts/up-stack.sh`). Скрипт вычисляет идентичность сборки из git (её требует стража R486 в
+Dockerfile'ах), собирает только недостающие образы и поднимает стек; подробнее —
+[up-from-scratch.ru.md](docs/operations/up-from-scratch.ru.md).
+
 Прямой `up -d` на машине без образов соберёт их сам, но сборке нужны build-arg'и идентичности
 (`GIT_COMMIT` и др.) из окружения процесса — без них стража в Dockerfile останавливает сборку.
 

@@ -16,7 +16,16 @@
 #   cp .env.bundled-with-agent.example .env.bundled-with-agent
 #   # set CPPWORKER_API_TOKEN (the single stack token) in deployments/.env
 #
-# Run:
+# Run (RECOMMENDED: works on a machine with NO images. The script computes the
+# R486 build identity from git and passes it to compose as build args; a second
+# run with the images already built does not rebuild anything):
+#   pwsh -File ../scripts/up-stack.ps1                    # Windows PowerShell 5.1+/pwsh
+#   ../scripts/up-stack.sh                                # bash
+#   ... -NoBuild   /  ... --no-build                      # images exist: skip the build
+#
+# Run (raw compose: works when the images already exist, or when the identity
+# build args are ALREADY in the process environment. On a clean machine the
+# identity guard in the Dockerfiles fails the build — see docker/balancer/Dockerfile):
 #   docker compose -f docker-compose.stack.yml --profile full up -d
 #
 # Client endpoints: Ollama API :18080, OpenAI :18079, Admin API :18081, WebUI :18083.

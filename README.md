@@ -69,6 +69,11 @@ When images with the required tags already exist, compose alone is enough:
 docker compose -f deployments/docker-compose.stack.yml --profile full up -d
 ```
 
+**From scratch (no images yet):** run `pwsh -File scripts/up-stack.ps1` (or
+`./scripts/up-stack.sh`) instead of a raw `docker compose up -d`. It computes the git build
+identity (required by the R486 guard in the Dockerfiles), builds only the images that are missing
+and brings the stack up; see [up-from-scratch.md](docs/operations/up-from-scratch.md).
+
 A plain `up -d` on a machine without images builds them itself, but the build needs the identity
 build-args (`GIT_COMMIT` and others) from the process environment; without them the guard in the
 Dockerfile stops the build.

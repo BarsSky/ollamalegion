@@ -3,12 +3,22 @@
 **Канонический файл — `docker-compose.stack.yml`.** Всё остальное в этой папке
 либо историческое, либо узкоспециальное. Если вы разворачиваете стек впервые —
 читайте [../README.md](../README.md) и [../docs/operations/deployment-stack.ru.md](../docs/operations/deployment-stack.ru.md),
-а из этой папки вам нужны только два файла:
+а из этой папки вам нужны только `docker-compose.stack.yml` и `.env`:
 
 ```bash
-cp .env.example .env                          # один раз
-docker compose -f docker-compose.stack.yml --profile full up -d
+# из корня репозитория; сабмодуль c/llama.cpp обязателен
+git clone --recurse-submodules <repo> ollamalegion && cd ollamalegion
+cp deployments/.env.example deployments/.env  # один раз: задать CPPWORKER_API_TOKEN
+pwsh -File scripts/up-stack.ps1               # или: ./scripts/up-stack.sh
 ```
+
+Почему не прямой `docker compose up -d`: на машине без образов он уходит в
+сборку и падает на «страже идентичности» — build-args (`GIT_COMMIT`,
+`GIT_COMMIT_FULL`, `BUILD_DATE`, для cppworker ещё `LLAMA_BUILD` и `RPC_PROTO`)
+считает из git скрипт `scripts/up-stack.ps1` (bash-близнец `scripts/up-stack.sh`).
+Порядок и частые отказы — в [docs/operations/up-from-scratch.ru.md](../docs/operations/up-from-scratch.ru.md).
+Если образы уже собраны, прямой `up -d` тоже работает: compose ничего не
+пересобирает, пока образ есть.
 
 ## Профили stack.yml
 

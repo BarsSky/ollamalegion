@@ -54,6 +54,11 @@ docker compose -f docker-compose.stack.yml --profile balancer up -d
 docker compose -f docker-compose.stack.yml --profile worker --profile legacy-agent up -d
 ```
 
+> **С нуля, когда образов ещё нет** — не этим блоком, а скриптом: прямой `up -d`
+> уходит в сборку и падает на страже идентичности (build-args считает
+> `scripts/up-stack.ps1` / `scripts/up-stack.sh`). Порядок —
+> [up-from-scratch.ru.md](up-from-scratch.ru.md).
+
 Проверить, какие сервисы попадут в профиль, **не запуская** их:
 
 ```bash

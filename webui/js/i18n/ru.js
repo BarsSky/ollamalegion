@@ -60,6 +60,11 @@ window.I18N_RU = {
   // Header
   "header.dashboard": "Ollama Legion",
   "header.monitor": "Монитор кластера",
+  // R690 (2026-11-22): «Состояние» стало SPA-страницей (data-page="health"),
+  // поэтому заголовок H1 собирается кодом: 'header.' + page (app.js → switchPage).
+  // Без этого ключа краснеет scripts/check_webui_i18n_keys.py, а оператор видел бы
+  // в шапке сырой литерал header.health (ровно дефект R675 у «Виртуальных моделей»).
+  "header.health": "Состояние кластера",
   "header.backends": "Управление бэкендами",
   "header.models": "Доступные модели",
   "header.sessions": "Активные сессии",

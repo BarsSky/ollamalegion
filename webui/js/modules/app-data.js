@@ -227,6 +227,13 @@
             case 'monitor':
                 sendMonitorConfig();
                 break;
+            case 'health':
+                // R690 (2026-11-22): «Состояние» — iframe, как монитор. Конфиг
+                // (apiBase/apiToken/lang) и состояние паузы отправляются на
+                // КАЖДЫЙ проход этой страницы: страховка от гонки R679, когда
+                // документ фрейма ещё не зарегистрировал обработчик postMessage.
+                sendHealthConfig();
+                break;
             case 'virtual-models':
                 // R595: страница переехала из отдельного virtual-models.html в SPA.
                 if (window.VirtualModelsPage) {
@@ -423,6 +430,101 @@
     /** syncMonitorIframePause — отправить текущее состояние паузы в iframe. */
     function syncMonitorIframePause() {
         postMonitorPause(monitorIframeMustPause());
+    }
+
+    // =====================================================================
+    // R690 (2026-11-22): СТРАНИЦА «СОСТОЯНИЕ» В IFRAME — тот же контракт,
+    // что у монитора (R686/R493), с одним осознанным отличием: документ
+    // грузится при ПЕРВОМ открытии страницы, а не на старте панели.
+    //
+    // ПОЧЕМУ НЕ НА СТАРТЕ. health.html сразу после загрузки делает запрос
+    // /api/v1/health/detailed. Монитор грузится в init() и потому успевает
+    // сходить в API один раз даже на дашборде — это компромисс R686 (адрес
+    // обязан остаться в разметке, а запуск — только у инициализированной
+    // панели). У «Состояния» такой нужды нет: данные нужны только тогда, когда
+    // страница открыта (правило R493: «монитор не открыт ⇒ он молчит»), а
+    // стартовая загрузка документа означала бы запрос к API на дашборде, где
+    // этих данных никто не видит. Поэтому src выставляется в switchPage.
+    // =====================================================================
+
+    /**
+     * ensureHealthFrame — применить адрес из data-src при первом входе на страницу.
+     *
+     * Адрес ЖИВЁТ В РАЗМЕТКЕ (data-src), а не здесь: общий ?v= cache-токен
+     * статики подставляет сборка (docker/webui/Dockerfile → sed по *.html), и
+     * ссылка, переехавшая в JS, перестала бы обновляться — браузер держал бы
+     * старый health.html (та же причина, что у монитора в R686).
+     */
+    function ensureHealthFrame() {
+        var frame = document.getElementById('healthFrame');
+        if (!frame || !frame.getAttribute) return null;
+        var src = frame.getAttribute('data-src') || '';
+        if (src && !frame.getAttribute('src')) {
+            frame.setAttribute('src', src);
+        }
+        return frame;
+    }
+
+    /** sendHealthConfig — apiBase/apiToken/lang + текущее состояние паузы. */
+    function sendHealthConfig() {
+        var frame = document.getElementById('healthFrame');
+        if (!frame || !frame.contentWindow) return;
+        var CFG = window.WEBUI_CONFIG || {};
+        // R60.16.1 (тот же fallback, что у монитора): пустой API_BASE (дефолт
+        // entrypoint) означает same-origin; отдаём origin, иначе fetch внутри
+        // фрейма уйдёт на "" + путь и потеряет хост в отдельных конфигурациях.
+        var apiBase = CFG.API_BASE || (window.location && window.location.origin) || '';
+        var lang = 'ru';
+        try { lang = localStorage.getItem('ollamalegion_lang') || 'ru'; } catch (e) { /* приватный режим */ }
+        try {
+            frame.contentWindow.postMessage({
+                type: 'ollamalegion-config',
+                apiBase: apiBase,
+                apiToken: CFG.API_TOKEN || '',
+                lang: lang
+            }, '*');
+        } catch (e) { /* iframe ещё не загрузился — не критично */ }
+        // R493/R679: вместе с конфигом сообщаем паузу. Сообщение может потеряться
+        // (обработчик в документе фрейма регистрируется позже), поэтому пауза
+        // повторяется на каждый load фрейма (app.js → init) и на каждый проход
+        // страницы (refreshPage → case 'health').
+        syncHealthIframePause();
+    }
+
+    /**
+     * healthIframeMustPause — должен ли цикл «Состояния» молчать прямо сейчас.
+     *
+     * Правило РОВНО ТО ЖЕ, что у монитора (четыре повода): страница не
+     * открыта, вкладка скрыта, сессия истекла, авто-обновление на паузе.
+     * Разные правила у двух iframe-страниц означали бы, что «пауза» в панели
+     * значит для них разное — ровно тот класс расхождений, из-за которого
+     * появился R493.
+     */
+    function healthIframeMustPause() {
+        if (getCurrentPage() !== 'health') return true;
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return true;
+        if (window.SessionExpiry && typeof window.SessionExpiry.isExpired === 'function' &&
+            window.SessionExpiry.isExpired()) {
+            return true;
+        }
+        if (window.DataRefresh && typeof window.DataRefresh.isAuto === 'function') {
+            return !window.DataRefresh.isAuto();
+        }
+        return false;
+    }
+
+    /** syncHealthIframePause — отправить текущее состояние паузы во фрейм. */
+    function syncHealthIframePause() {
+        postHealthPause(healthIframeMustPause());
+    }
+
+    /** postHealthPause — сообщение паузы (тот же канал, что у монитора). */
+    function postHealthPause(paused) {
+        var frame = document.getElementById('healthFrame');
+        if (!frame || !frame.contentWindow) return;
+        try {
+            frame.contentWindow.postMessage({ type: 'ollamalegion-pause', paused: !!paused }, '*');
+        } catch (e) { /* iframe ещё не загрузился — не критично */ }
     }
 
     /**
@@ -644,10 +746,18 @@
             if (document.visibilityState === 'hidden') {
                 stopPeriodicRefresh();
                 syncMonitorIframePause();
+                // R690: цикл «Состояния» тоже останавливается на скрытой вкладке
+                // (у страницы есть и свой visibilitychange, но панель обязана
+                // сказать это сама: «пауза» в панели не должна значить разное
+                // для двух iframe-страниц).
+                syncHealthIframePause();
                 if (window.DataRefresh && window.DataRefresh.isAuto()) stopOpsAutoRefresh();
                 return;
             }
             syncMonitorIframePause();
+            // R690: возврат на вкладку = немедленное обновление данных health
+            // (переход «пауза → работа» в js/modules/health-poll.js).
+            syncHealthIframePause();
             if (window.DataRefresh && window.DataRefresh.isAuto()) startOpsAutoRefresh();
             startPeriodicRefresh();
             if (window.DataRefresh && !window.DataRefresh.isAuto()) return;
@@ -688,6 +798,16 @@
             // (fetchAllSafe); кнопка «Обновить» раньше их не касалась вовсе.
             if (typeof window.fetchAllSafe === 'function') return window.fetchAllSafe();
             sendMonitorConfig();
+            return true;
+        });
+        // R690 (2026-11-22): «Состояние» — по образцу монитора. Своих запросов у
+        // панели для этой страницы нет (данные тянет сам health.html по своему
+        // интервалу), поэтому провайдер ровно тот же: переотправить конфиг и
+        // состояние паузы. Заодно это снимает с панели общий 5-секундный опрос
+        // на странице «Состояние»: hasProvider('health') = true, дублировать
+        // чужие данные вторым запросом незачем (см. data-refresh.js → hasProvider).
+        DR.register('health', function () {
+            sendHealthConfig();
             return true;
         });
         // R513 (2026-11-19): «Настройки» — единственная страница, которую тик
@@ -1027,6 +1147,12 @@
             sendMonitorConfig: sendMonitorConfig,
             monitorIframeMustPause: monitorIframeMustPause,
             syncMonitorIframePause: syncMonitorIframePause,
+            // R690: страница «Состояние» в iframe — тот же контракт, что у монитора.
+            ensureHealthFrame: ensureHealthFrame,
+            sendHealthConfig: sendHealthConfig,
+            healthIframeMustPause: healthIframeMustPause,
+            syncHealthIframePause: syncHealthIframePause,
+            postHealthPause: postHealthPause,
             refreshCurrentPage: refreshCurrentPage,
             startPeriodicRefresh: startPeriodicRefresh,
             postMonitorPause: postMonitorPause,

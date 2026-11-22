@@ -13,15 +13,27 @@
        diagnostic page поверх endpoint /api/v1/health/detailed.
        Auto-refresh каждые 5 сек; pause/play кнопка для удобства. -->
   <script>
+    // R690 (2026-11-22): ТЕМ В ПАНЕЛИ СЕМЬ, А ЭТОТ СКРИПТ ЗНАЛ ДВЕ.
+    //
+    // ЖИВОЙ ДЕФЕКТ. Здесь стояло `if (stored === 'dark' || stored === 'light')`,
+    // то есть при теме linear/nvidia/vercel/sentry/mint страница молча
+    // открывалась в тёмной: `data-theme` не выставлялся вовсе, и дальше работал
+    // системный prefers-color-scheme. Для отдельной вкладки это было «не так
+    // красиво», но после R690 страница живёт ВНУТРИ панели (как монитор), где
+    // расхождение оформления видно сразу — «чужое пятно» рядом с панелью
+    // (ровно на этот класс дефекта указывает заголовок health-css-tokens.test.js).
+    //
+    // Теперь значение из localStorage применяется КАК ЕСТЬ: имена тем знает
+    // css/themes.css, а список здесь дублировать не нужно — дубликат и разошёлся.
     (function() {
       try {
         var stored = localStorage.getItem('ollamalegion_theme');
-        if (stored === 'dark' || stored === 'light') {
+        if (stored) {
           document.documentElement.setAttribute('data-theme', stored);
-        } else {
-          var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
-          document.documentElement.setAttribute('data-theme', prefersLight ? 'light' : 'dark');
+          return;
         }
+        var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+        document.documentElement.setAttribute('data-theme', prefersLight ? 'light' : 'dark');
       } catch (e) {
         document.documentElement.setAttribute('data-theme', 'dark');
       }
@@ -119,6 +131,19 @@
     .conn-status.disconnected .dot { background: var(--danger, #ef4444); }
     .conn-status.connecting .dot { background: var(--warning, #f59e0b); animation: pulse 1.5s infinite; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* R690 (2026-11-22): СТРАНИЦА ВНУТРИ ПАНЕЛИ (iframe) — ЧАСТЬ ИНТЕРФЕЙСА.
+       Тот же приём, что у монитора (css/monitor-app.css: html.monitor-embedded):
+       свой селектор языка, чип пользователя и полоса входа дублировали бы шапку
+       панели — язык и вход там ОДНИ на всё приложение (R238d). Класс ставит
+       скрипт страницы, а не разметка: тот же файл обязан остаться рабочим и как
+       отдельная страница /health.html (прямой URL). */
+    html.health-embedded #langSelect,
+    html.health-embedded #authUserChip,
+    html.health-embedded #authBanner { display: none !important; }
+    /* Ссылка «← Dashboard» уводила бы ВНУТРЕННИЙ фрейм на дашборд: оператор
+       увидел бы панель внутри панели. Внутри панели навигация — это её меню. */
+    html.health-embedded #backLink { display: none !important; }
   </style>
   <!-- F.γ (2026-06-28): inline i18n (RU+EN), чтобы страница работала автономно
        без отдельных js/i18n/* файлов (эти скрипты не обслуживаются под balancer'ом
@@ -129,7 +154,28 @@
     var EN={"health.title":"Cluster Health","health.status.healthy":"healthy","health.status.degraded":"degraded","health.status.unhealthy":"unhealthy","health.status.empty":"empty","health.card.score":"Health Score","health.card.total":"Total Backends","health.card.healthy":"Healthy","health.card.unhealthy":"Unhealthy","health.card.errors":"Recent Errors","health.card.healthy_pct":"of total","health.card.unhealthy_pct":"down","health.card.with_agents":"with agents","health.card.agents":"with agents","health.section.backends":"Backends","health.section.errors":"Recent Errors","health.col.id":"ID","health.col.host":"Host:Port","health.col.type":"Type","health.col.status":"Status","health.col.latency":"Avg Latency","health.col.fails":"Fails","health.col.agent":"Agent","health.col.last_error":"Last Error","health.time.just_now":"just now","health.time.ago":"ago","health.pause":"\u23f8 Pause","health.resume":"\u25b6 Resume","health.refresh":"\ud83d\udd04 Refresh","health.back":"\u2190 Dashboard","health.connected":"Connected","health.disconnected":"Disconnected","health.connecting":"Connecting\u2026","health.error":"Error: ","health.loading":"Loading\u2026","health.no_errors":"No recent errors. Cluster is operating normally.","health.no_backends":"No backends registered"};
     var lang=(navigator.language||navigator.userLanguage||"ru").toLowerCase().indexOf("ru")===0?"ru":"en";
     try{var s=localStorage.getItem("ollamalegion_lang");if(s==="ru"||s==="en")lang=s;}catch(e){}
-    window.I18N={lang:lang,t:function(k,fb){var d=(lang==="ru")?RU:EN;return(d&&d[k])||fb||k;},setLang:function(l){lang=l;try{localStorage.setItem("ollamalegion_lang",l);}catch(e){}}};
+    // R690 (2026-11-22): `lang` ОБЯЗАН быть ЖИВЫМ свойством.
+    //
+    // Было: значение лежало ТОЛЬКО в замыкании, а setLang оставлял window.I18N.lang
+    // равным языку на момент загрузки. Из-за этого страница не могла ответить на
+    // вопрос «а какой язык сейчас» иначе как повторной подстановкой всех текстов,
+    // а панель (R690: язык приходит из неё, как у монитора) не могла понять,
+    // нужно ли вообще что-то менять: каждый лишний setLang — это лишняя запись
+    // в localStorage и storage-событие во всех открытых вкладках панели.
+    // Теперь t() читает window.I18N.lang, а setLang его обновляет и ставит
+    // атрибут lang на <html> — тем же способом, что js/i18n/index.js.
+    window.I18N={
+      lang:lang,
+      t:function(k,fb){var d=(window.I18N.lang==="ru")?RU:EN;return(d&&d[k])||fb||k;},
+      setLang:function(l){
+        if(l!=="ru"&&l!=="en")return window.I18N.lang;
+        window.I18N.lang=l;
+        try{localStorage.setItem("ollamalegion_lang",l);}catch(e){}
+        try{document.documentElement.setAttribute("lang",l);}catch(e){}
+        return l;
+      }
+    };
+    try{document.documentElement.setAttribute("lang",lang);}catch(e){}
   })();
   </script>
 </head>
@@ -154,7 +200,7 @@
         </select>
         <button id="pauseBtn" onclick="togglePause()" data-i18n="health.pause">⏸ Pause</button>
         <button id="refreshBtn" onclick="loadNow()" class="primary" data-i18n="health.refresh">🔄 Refresh</button>
-        <a href="/" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-primary);text-decoration:none;font-size:13px" data-i18n="health.back">← Dashboard</a>
+        <a href="/" id="backLink" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-primary);text-decoration:none;font-size:13px" data-i18n="health.back">← Dashboard</a>
         <!-- R60.14 (2026-09-07): language picker. health.html uses its own
              inline I18N system (line 122) so we wire onchange to I18N.setLang.
              Same ollamalegion_lang localStorage key — synced with index.html + monitor.html. -->
@@ -219,6 +265,12 @@
     </div>
   </div>
 
+  <!-- R690 (2026-11-22): цикл обновления вынесен в модуль ради проверяемости
+       (см. комментарий в начале следующего скрипта). Грузится ПЕРЕД ним и без
+       defer: скрипт страницы выполняет boot() сразу, если документ уже разобран,
+       и ему нужен window.HealthPoll. ?v= — общий cache-токен сборки
+       (docker/webui/Dockerfile заменяет его на хеш содержимого статики). -->
+  <script src="js/modules/health-poll.js?v=R425"></script>
   <script>
   // F.γ (2026-06-28): session F — health page logic.
   // Auto-refresh + i18n + render HealthReport from /api/v1/health/detailed.
@@ -238,8 +290,17 @@
       }
     } catch (e) { /* ignore */ }
 
-    var refreshTimer = null;
-    var paused = false;
+    // R690 (2026-11-22): ЦИКЛ ОБНОВЛЕНИЯ — В ОТДЕЛЬНОМ МОДУЛЕ.
+    //
+    // Почему не здесь. health.html перестал быть отдельной вкладкой: он живёт в
+    // iframe панели (как monitor.html с R238d/R493), поэтому у его 5-секундного
+    // цикла появились правила: не работать, пока страница панели не открыта, не
+    // молотить в скрытой вкладке, замолкать при истёкшей сессии и обновлять
+    // данные СРАЗУ после возврата, а не через полный интервал. Это поведение, а
+    // не разметка: проверять его регуляркой по HTML нельзя, поэтому логика
+    // вынесена в js/modules/health-poll.js (её гоняет
+    // webui/tests/health-spa-r690.test.js на подменённых таймерах).
+    var poll = null;
 
     function t(key, fallback) {
       if (window.I18N && typeof window.I18N.t === 'function') {
@@ -257,11 +318,156 @@
         var text = t(key, els[i].textContent);
         if (text) els[i].textContent = text;
       }
+      // Кнопка паузы подписана СОСТОЯНИЕМ, а не атрибутом: после смены языка
+      // data-i18n вернул бы «⏸ Pause» даже когда цикл на паузе.
+      renderPauseButton();
     }
+
+    // renderPauseButton — подпись кнопки по фактическому состоянию паузы.
+    function renderPauseButton() {
+      var btn = document.getElementById('pauseBtn');
+      if (!btn) return;
+      var userPaused = !!(poll && poll.isPausedBy('user'));
+      // R690: БЕЗ своего префикса-иконки. В словаре строки уже с иконкой
+      // («⏸ Пауза» / «⏸ Pause»), поэтому «'⏸ ' + перевод» давал в кнопке
+      // «⏸ ⏸ Пауза» — тот же класс дефекта, что был у монитора (R18e).
+      btn.textContent = userPaused
+        ? t('health.resume', 'Resume')
+        : t('health.pause', 'Pause');
+    }
+
+    // ---- Тема / язык / принадлежность панели (R690) -----------------------
+    //
+    // МЕХАНИЗМ ТОТ ЖЕ, ЧТО У МОНИТОРА, и это осознанно: изобретать третий канал
+    // (событие через postMessage на каждую смену темы) значило бы, что панель
+    // должна помнить про каждую страницу отдельно. Монитор получает тему так
+    // (js/monitor/i18n-theme.js → syncTheme):
+    //   1. читает localStorage ollamalegion_theme (страница-страница, прямая);
+    //   2. читает data-theme РОДИТЕЛЬСКОГО документа — это и есть «тема панели»
+    //      в момент загрузки (same-origin, поэтому доступно);
+    //   3. слушает storage-событие: смена темы в панели пишется в localStorage и
+    //      приходит сюда, хотя документ — другой.
+    // Язык: атрибут lang родителя при загрузке, языковой пакет в
+    // ollamalegion-config (его отправляет панель) и то же storage-событие.
+    var THEME_ATTR = 'data-theme';
+
+    function applyTheme(theme) {
+      if (!theme) return false;
+      try { document.documentElement.setAttribute(THEME_ATTR, String(theme)); } catch (e) { return false; }
+      return true;
+    }
+
+    function applyLang(lang) {
+      if (lang !== 'ru' && lang !== 'en') return false;
+      if (window.I18N && typeof window.I18N.setLang === 'function') {
+        // setLang обновляет живое свойство, <html lang> и localStorage — как
+        // js/i18n/index.js (те же побочные эффекты, что у панели).
+        window.I18N.setLang(lang);
+      }
+      applyI18n(document);
+      return true;
+    }
+
+    // embedded — страница открыта В панели (iframe), а не по прямому URL.
+    function embedded() {
+      try { return !!(window.parent && window.parent !== window); } catch (e) { return false; }
+    }
+
+    // applyDensity — плотность интерфейса («обычная»/«плотная») из панели.
+    //
+    // ЗАЧЕМ. Плотность в панели — это АТРИБУТ body[data-density] и набор
+    // токенов в css/themes.css: [data-density="dense"] уменьшает --font-size-*
+    // и --space-* на 15 %. Внутри iframe это отдельный документ, поэтому без
+    // переноса значения страница осталась бы «обычной» на фоне плотной панели —
+    // тот же разъезд оформления, что был с темой. Источник у панели один:
+    // localStorage ollamalegion_density (js/app-core.js → initDensity), плюс
+    // атрибут на body родителя как факт текущего состояния.
+    function applyDensity(density) {
+      var d = (density === 'dense') ? 'dense' : 'normal';
+      try { document.body.setAttribute('data-density', d); } catch (e) { return false; }
+      return true;
+    }
+
+    function syncFromPanel() {
+      // Класс нужен CSS: свой селектор языка и ссылка «← Dashboard» внутри
+      // панели дублировали бы её собственное меню (тот же приём у монитора:
+      // html.monitor-embedded в css/monitor-app.css).
+      if (embedded()) {
+        try { document.documentElement.classList.add('health-embedded'); } catch (e) {}
+        try {
+          var pd = window.parent.document.documentElement;
+          var parentTheme = pd.getAttribute(THEME_ATTR);
+          if (parentTheme) applyTheme(parentTheme);
+          var parentLang = pd.getAttribute('lang');
+          if (parentLang && parentLang !== (window.I18N && window.I18N.lang)) {
+            applyLang(parentLang);
+          }
+          var parentDensity = window.parent.document.body &&
+            window.parent.document.body.getAttribute('data-density');
+          if (parentDensity) applyDensity(parentDensity);
+        } catch (e) { /* другая origin — живём автономно, как отдельная страница */ }
+      }
+      // Прямой URL (и панель в другой вкладке): значение из localStorage.
+      try {
+        var savedTheme = localStorage.getItem('ollamalegion_theme');
+        if (savedTheme) applyTheme(savedTheme);
+        var savedLang = localStorage.getItem('ollamalegion_lang');
+        if (savedLang && savedLang !== (window.I18N && window.I18N.lang)) applyLang(savedLang);
+        var savedDensity = localStorage.getItem('ollamalegion_density');
+        if (savedDensity) applyDensity(savedDensity);
+      } catch (e) { /* приватный режим: остаёмся на теме из <head> */ }
+    }
+
+    // Смена темы/языка/плотности в панели приходит storage-событием (тот же
+    // документ-предок пишет localStorage). Это и есть «страница меняет
+    // оформление вместе с панелью» без опроса и без нового канала.
+    window.addEventListener('storage', function (e) {
+      if (!e) return;
+      if (e.key === 'ollamalegion_theme' && e.newValue) applyTheme(e.newValue);
+      if (e.key === 'ollamalegion_lang' && e.newValue) applyLang(e.newValue);
+      if (e.key === 'ollamalegion_density' && e.newValue) applyDensity(e.newValue);
+    });
+
+    // ---- Контракт с панелью (те же типы сообщений, что у монитора) --------
+    //
+    // ollamalegion-pause  — {paused:true|false} пауза цикла (страница не видна,
+    //                       вкладка скрыта, сессия истекла, авто на паузе);
+    // ollamalegion-config — {apiBase, apiToken, lang} параметры панели.
+    // Ровно этот набор панель отправляет монитору (sendMonitorConfig /
+    // postMonitorPause): второго канала для «ещё одной страницы в iframe» нет.
+    //
+    // ЧЕГО ЗДЕСЬ НЕТ И ПОЧЕМУ. Панель НЕ дёргает страницу на каждом своём тике
+    // (у монитора это делает провайдер DataRefresh 'monitor'): у «Состояния»
+    // свой интервал, и второй запрос по тику панели означал бы опрос вдвое чаще,
+    // чем выбрал оператор. Ручное обновление — кнопка на самой странице.
+    window.addEventListener('message', function (e) {
+      var d = e && e.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'ollamalegion-pause') {
+        if (poll) poll.setPaused('remote', !!d.paused);
+        return;
+      }
+      if (d.type === 'ollamalegion-config') {
+        // Пустые значения НЕ затирают автономные: панель может прислать apiBase
+        // пустым (nginx сам проксирует /api), тогда работаем по своей логике.
+        if (d.apiBase) apiBase = String(d.apiBase).replace(/\/+$/, '');
+        if (d.apiToken !== undefined) apiToken = d.apiToken || '';
+        if (d.lang) applyLang(d.lang);
+      }
+    });
+
+    // Скрытая вкладка — своя, ЛОКАЛЬНАЯ причина: панель может быть не активна, а
+    // браузер всё равно рисует вкладку в фоне. Повод отдельный от 'remote',
+    // иначе возврат вкладки включал бы цикл на странице, с которой ушли.
+    document.addEventListener('visibilitychange', function () {
+      if (poll) poll.setPaused('hidden', document.visibilityState === 'hidden');
+    });
 
     // R60.14 (2026-09-07): wire up #langSelect for health.html standalone
     // (uses inline I18N, not window.I18N.setLang). On change, update
     // inline I18N dict and re-apply to all data-i18n elements.
+    // R690: внутри панели селектор скрыт (html.health-embedded) — язык там один
+    // на всё приложение, и приходит он из панели (см. syncFromPanel/applyLang).
     (function() {
       var sel = document.getElementById('langSelect');
       if (!sel) return;
@@ -274,11 +480,7 @@
       sel.addEventListener('change', function() {
         var l = this.value;
         if (l !== 'ru' && l !== 'en') return;
-        try { localStorage.setItem('ollamalegion_lang', l); } catch (e) {}
-        if (window.I18N && window.I18N.setLang) {
-          window.I18N.setLang(l);
-        }
-        applyI18n(document);
+        applyLang(l);
       });
     })();
 
@@ -458,37 +660,62 @@
         .catch(function(err) {
           setConnStatus('disconnected');
           console.error('health fetch failed', err);
-          document.getElementById('connText').textContent = t('health.error', 'Error: ') + err.message;
+          var txt = document.getElementById('connText');
+          if (txt) txt.textContent = t('health.error', 'Error: ') + err.message;
         });
     }
 
-    function schedule() {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      if (paused) return;
-      var ms = parseInt(document.getElementById('intervalSelect').value, 10) || 5000;
-      refreshTimer = setTimeout(function() { loadNow(); schedule(); }, ms);
+    // currentInterval — интервал из селектора страницы (2/5/10/30 с). Цикл
+    // спрашивает его ПЕРЕД каждой постановкой таймера, поэтому смена значения
+    // применяется сама, без перезагрузки страницы.
+    function currentInterval() {
+      var sel = document.getElementById('intervalSelect');
+      var ms = sel ? parseInt(sel.value, 10) : 0;
+      return ms > 0 ? ms : 5000;
     }
 
     window.loadNow = loadNow;
     window.togglePause = function() {
-      paused = !paused;
-      var btn = document.getElementById('pauseBtn');
-      btn.textContent = paused ? '▶ ' + t('health.resume', 'Resume') : '⏸ ' + t('health.pause', 'Pause');
-      if (!paused) schedule();
-      else if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+      if (!poll) return;
+      // Локальный повод 'user': пауза оператора не снимается сообщением панели.
+      poll.setPaused('user', !poll.isPausedBy('user'));
+      renderPauseButton();
     };
+
+    /**
+     * boot — создать цикл и загрузить первую порцию данных.
+     *
+     * Первый запрос делает boot, а не цикл: иначе первое открытие страницы давало
+     * бы два запроса подряд (свой + «на снятии паузы», см. health-poll.js).
+     */
+    function boot() {
+      syncFromPanel();
+      applyI18n(document);
+      if (window.HealthPoll && typeof window.HealthPoll.create === 'function') {
+        poll = window.HealthPoll.create({
+          load: loadNow,
+          interval: currentInterval
+        });
+        // Диагностический якорь (как _state/_providers у data-refresh.js): по нему
+        // видно, ПОЧЕМУ цикл молчит прямо сейчас — 'remote' (ушли со страницы
+        // панели), 'hidden' (вкладка скрыта), 'auth' или 'user'. Без этого
+        // «запросов нет» неотличимо от «цикл умер».
+        window.healthPoll = poll;
+      } else {
+        // Без модуля страница обязана остаться рабочей: данные загрузим, но
+        // цикла не будет. Молча — значит «через час никто не заметит», поэтому
+        // это ошибка в консоли, а не тишина.
+        console.error('health.html: нет js/modules/health-poll.js — автообновление выключено');
+      }
+      loadNow();
+      if (poll) poll.start();
+    }
 
     // Boot
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', function() {
-        applyI18n();
-        loadNow();
-        schedule();
-      });
+      document.addEventListener('DOMContentLoaded', boot);
     } else {
-      applyI18n();
-      loadNow();
-      schedule();
+      boot();
     }
   })();
   </script>

@@ -194,6 +194,28 @@ const ui = (function () {
                 monitorFrameEl.setAttribute('src', monitorSrc);
             }
         }
+        // R690 (2026-11-22): СТРАНИЦА «СОСТОЯНИЕ» — iframe с ТЕМ ЖЕ контрактом,
+        // что у монитора, но с одним осознанным отличием: src здесь НЕ ставится.
+        //
+        // ПОЧЕМУ. health.html сразу после загрузки делает запрос
+        // /api/v1/health/detailed. У монитора стартовая загрузка — компромисс
+        // R686 (его `load` ловится здесь, и первый опрос гасится паузой), а
+        // «Состояние» можно не грузить вовсе, пока страницу не открыли: адрес
+        // живёт в data-src разметки (сборка подставляет туда общий ?v=), а
+        // применяет его switchPage → ensureHealthFrame. Итог: на дашборде
+        // iframe страницы «Состояние» НЕ существует, и запросов от него нет
+        // (замер: 0 за 10 с).
+        //
+        // Обработчик load регистрируется ДО первой возможной загрузки документа:
+        // иначе конфиг и пауза ушли бы в пустоту (ровно гонка R679 у монитора —
+        // обработчик postMessage в документе фрейма регистрируется позже, чем
+        // родитель отправляет первое сообщение).
+        var healthFrameEl = document.getElementById('healthFrame');
+        if (healthFrameEl && healthFrameEl.addEventListener) {
+            healthFrameEl.addEventListener('load', function () {
+                try { sendHealthConfig(); } catch (e) { /* iframe не готов */ }
+            });
+        }
         setupVisibilityRefresh();
 
         // Initial data load — cluster state first, drives connection status
@@ -310,6 +332,14 @@ const ui = (function () {
         // невидимого iframe. Уходя со страницы, останавливаем его цикл; возвращаясь
         // — возобновляем (если авто-обновление не на паузе и вкладка видима).
         syncMonitorIframePause();
+        // R690 (2026-11-22): «Состояние» — тот же контракт, что у монитора, но
+        // документ грузится здесь, при ПЕРВОМ входе на страницу (ensureHealthFrame
+        // читает data-src). На старте панели его не грузим: health.html сразу
+        // делает запрос /api/v1/health/detailed, а на дашборде этих данных никто
+        // не видит (правило R493). Возврат на страницу снимает паузу, и страница
+        // обновляет данные СРАЗУ — переход «пауза → работа» в health-poll.js.
+        if (page === 'health') ensureHealthFrame();
+        syncHealthIframePause();
 
         if (page === 'backends' || page === 'models' || page === 'image') {
             fetchClusterState();
@@ -328,11 +358,13 @@ const ui = (function () {
     // Было: `'help'` — страницы `#help-page` в index.html НЕТ (help — это раздел
     // внутри «Справки и шаблонов»), а `'agents'` — есть `#agents-page`, но
     // страницы не было в списке, поэтому ссылка ?page=agents молча открывала
-    // дашборд. `virtual-models`, `health`, `monitor` — отдельные html/iframe, их
-    // SPA-роутер не открывает; первые две в списке отсутствуют осознанно (клик
-    // по ним отдаётся браузеру, см. app-listeners.js → setupNavigation).
+    // дашборд.
+    // R690 (2026-11-22): `health` переехал из «отдельных html» в SPA-страницу с
+    // iframe (как монитор), поэтому он обязан быть в списке: иначе ссылка
+    // ?page=health молча открывала дашборд, а F5 терял открытую страницу.
+    // `virtual-models` — тоже SPA с R595. Отдельных html-страниц в меню больше нет.
     function pageFromURL() {
-        var known = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'virtual-models', 'agents', 'logs', 'diagnostics', 'reference', 'settings'];
+        var known = ['dashboard', 'monitor', 'health', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'virtual-models', 'agents', 'logs', 'diagnostics', 'reference', 'settings'];
         var candidate = '';
         try {
             // ?page= приоритетнее хэша: так адрес, записанный switchPage
@@ -392,7 +424,14 @@ const ui = (function () {
             // неработающем пакете переводов заголовок молча схлопывался в
             // 'Dashboard' — то есть подменял раздел чужим именем. Ключ
             // header.virtual-models для i18n добавлен в ru.js/en.js.
-            'virtual-models': 'Virtual models'
+            'virtual-models': 'Virtual models',
+            // R690 (2026-11-22): «Состояние» стало SPA-страницей (data-page=
+            // "health"), и заголовок в шапке собирается как 'header.' + page
+            // (см. switchPage ниже). Здесь — только fallback на случай, когда
+            // пакет переводов не поднялся; сам ключ header.health добавлен в
+            // ru.js/en.js (его наличие для каждой data-page требует
+            // scripts/check_webui_i18n_keys.py).
+            health: 'Cluster Health'
         };
         return titles[page] || 'Dashboard';
     }
@@ -1005,6 +1044,11 @@ const ui = (function () {
     var sendMonitorConfig = dataUi.sendMonitorConfig;
     var monitorIframeMustPause = dataUi.monitorIframeMustPause;
     var syncMonitorIframePause = dataUi.syncMonitorIframePause;
+    // R690 (2026-11-22): «Состояние» в iframe — тот же контракт, что у монитора.
+    var ensureHealthFrame = dataUi.ensureHealthFrame;
+    var sendHealthConfig = dataUi.sendHealthConfig;
+    var syncHealthIframePause = dataUi.syncHealthIframePause;
+    var postHealthPause = dataUi.postHealthPause;
     var refreshCurrentPage = dataUi.refreshCurrentPage;
     var startPeriodicRefresh = dataUi.startPeriodicRefresh;
     var postMonitorPause = dataUi.postMonitorPause;
@@ -1190,6 +1234,22 @@ const ui = (function () {
             var frame = document.getElementById('monitorFrame');
             if (frame && frame.addEventListener) { frame.addEventListener('load', sendPause, { once: true }); }
         } catch (e) { /* нет iframe — не критично */ }
+        // R690 (2026-11-22): «Состояние» — ВТОРАЯ iframe-страница со своим
+        // циклом (5 с, запрос /api/v1/health/detailed). Правило R679 буквальное:
+        // пока цикл не остановлен, каждый его тик — снова 401 в консоли, то есть
+        // часть «потока ошибок». Гасим тем же сообщением и тем же способом, что
+        // монитор: сразу, повтором и по load (обработчик в документе фрейма
+        // регистрируется позже первого сообщения).
+        var sendHealthPause = function () {
+            try { postHealthPause(true); } catch (e) { /* iframe ещё не загружен */ }
+        };
+        sendHealthPause();
+        setTimeout(sendHealthPause, 500);
+        setTimeout(sendHealthPause, 1500);
+        try {
+            var healthFrame = document.getElementById('healthFrame');
+            if (healthFrame && healthFrame.addEventListener) { healthFrame.addEventListener('load', sendHealthPause, { once: true }); }
+        } catch (e) { /* нет iframe — не критично */ }
         return true;
     }
     window.App = window.App || {};
@@ -1226,6 +1286,10 @@ const ui = (function () {
             // R679: монитор в iframe тоже надо разбудить (на странице «Монитор»
             // он был остановлен вместе с остальными каналами).
             syncMonitorIframePause();
+            // R690: «Состояние» — по тому же правилу. Переход «пауза → работа»
+            // внутри health-poll.js сразу перечитывает данные, поэтому
+            // возвращённая сессия не оставляет страницу с старыми цифрами.
+            syncHealthIframePause();
             // Перечитываем данные активной страницы: панель не должна остаться
             // пустой до следующего тика авто-обновления.
             fetchClusterState().then(function () {

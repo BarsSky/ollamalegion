@@ -132,7 +132,17 @@
                      прокручиваемого списка, поэтому виден всегда — именно это и
                      было причиной появления R481 (на невысоком экране пункт
                      списка уезжал за границу `nav`). -->
-                <a href="health.html" target="_blank" rel="noopener" class="nav-item" data-page="health">
+                <!-- R690 (2026-11-22): «Состояние» — ТА ЖЕ ИНТЕГРАЦИЯ, ЧТО У
+                     «МОНИТОРА». Было href="health.html" target="_blank"
+                     rel="noopener": клик открывал НОВУЮ ВКЛАДКУ, панель не
+                     переключалась, а страница жила своей темой и своим языком
+                     (жалоба заказчика дословно: «сейчас она открывается в новом
+                     окне, а лучше бы как монитор интегрирована»).
+                     Теперь это обычный SPA-переход (#health), а сам файл
+                     health.html остался: панель ходит в него через iframe, прямой
+                     URL /health.html и панель балансера (/health) работают как
+                     раньше (решение владельца из internal/api/panel_static_routes_r134_test.go). -->
+                <a href="#health" class="nav-item" data-page="health">
                     <span class="nav-icon-wrap"><i class="fas fa-heartbeat fa-fw"></i></span> <span data-i18n="nav.health">Состояние</span>
                 </a>
                 <!-- R493 (2026-11-17): страница «Справка и шаблоны» — записи-справка
@@ -1171,6 +1181,23 @@
                      браузер держал бы старый monitor.html. Здесь адрес остаётся в
                      разметке, а его ПРИМЕНЕНИЕ — в init() (webui, модуль app). -->
                 <iframe id="monitorFrame" data-src="monitor.html?v=R425" class="monitor-iframe"></iframe>
+            </div>
+
+            <!-- Health Page (R690, 2026-11-22) -->
+            <div class="page" id="health-page">
+                <!-- R690: ТОТ ЖЕ ПРИЁМ, ЧТО У МОНИТОРА (R686) — адрес лежит в
+                     data-src, без src, поэтому браузер не грузит документ сам.
+                     Разница одна: у монитора src ставится в init(), а здесь —
+                     при ПЕРВОМ открытии страницы (app.js → switchPage →
+                     ensureHealthFrame). Причина: health.html сразу после загрузки
+                     делает запрос /api/v1/health/detailed, и загрузка документа на
+                     старте панели означала бы обращение к API на дашборде, где
+                     этих данных никто не видит (у монитора ровно это и дало 76 %
+                     фоновых запросов WebUI — R493).
+                     ?v= остаётся в разметке: общий cache-токен статики подставляет
+                     сборка (docker/webui/Dockerfile → sed по *.html), и ссылка,
+                     переехавшая в JS, перестала бы обновляться. -->
+                <iframe id="healthFrame" data-src="health.html?v=R425" class="health-iframe"></iframe>
             </div>
 
             <!-- Logs Page -->

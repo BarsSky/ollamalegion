@@ -60,6 +60,11 @@ window.I18N_EN = {
   // Header
   "header.dashboard": "Ollama Legion",
   "header.monitor": "Cluster Monitor",
+  // R690 (2026-11-22): "Состояние" became an SPA page (data-page="health"), so the
+  // H1 is built in code: 'header.' + page (app.js → switchPage). Without this key
+  // scripts/check_webui_i18n_keys.py fails and the header shows the raw literal
+  // header.health (exactly defect R675 for "Virtual models").
+  "header.health": "Cluster Health",
   "header.backends": "Backend Management",
   "header.models": "Available Models",
   "header.sessions": "Active Sessions",

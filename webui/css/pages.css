@@ -1514,6 +1514,19 @@
     background: var(--bg-primary);
 }
 
+/* R690 (2026-11-22): страница «Состояние» в панели (iframe, как «Монитор»).
+   Геометрия повторяет .monitor-iframe осознанно: две iframe-страницы обязаны
+   занимать одно и то же место, иначе при переключении разделов «дёргается»
+   высота. Отдельный класс, а не общий с монитором, чтобы правка одной страницы
+   не меняла вторую. */
+.health-iframe {
+    width: 100%;
+    height: calc(100vh - 120px);
+    border: none;
+    border-radius: var(--radius);
+    background: var(--bg-primary);
+}
+
 .monitor-legend {
     display: flex;
     gap: 20px;

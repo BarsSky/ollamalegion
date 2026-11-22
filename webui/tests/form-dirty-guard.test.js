@@ -30,6 +30,12 @@
 //       (б) данные продолжают обновляться, когда форма защищена;
 //       (в) поле, которое оператор менял, защищено и БЕЗ «грязной» страницы
 //           (TTL истёк / форма сохранена), а вернул базовое — снова управляется.
+//   (6) ТИК АВТО-ОБНОВЛЕНИЯ (R678): при несохранённой правке (страница «грязная»,
+//       фокус уже ушёл) тик обязан дойти до провайдеров «Настроек» и обновить ОБА
+//       пути данных раздела — SettingsRegistry.load() и loadSettings() → Api.config,
+//       не тронув поле оператора. Это ровно пункт «б) данные страницы обновляются
+//       тиками» живой приёмки (check-forms.js). Заодно фиксируется обратное:
+//       «грязная» страница БЕЗ SafeForm (gguf-*) по-прежнему глушит тик (R662).
 //
 // Запуск: node webui/tests/form-dirty-guard.test.js
 'use strict';
@@ -243,9 +249,18 @@ function buildSettingsStack(opts) {
     const elements = Object.create(null);
     const docListeners = {};
     const counters = { configGets: 0, badgeUpdates: 0 };
+    // R678: стенд тика авто-обновления. Считаем ТРИ независимые вещи: дошёл ли тик
+    // до DataRefresh.refresh(<страница>), исполнялись ли зарегистрированные
+    // провайдеры и сколько раз реально загрузился реестр горячих настроек.
+    // Именно эти счётчики читает живая приёмка (пункт «б»).
+    const dr = { refreshCalls: [], providers: Object.create(null), registryLoads: 0 };
+    let tickFn = null;
     let activeElement = null;
 
-    const settingsPage = makeEl('settings-page');
+    // Страница, на которой стоит оператор. R678: переключаемая — на ней же
+    // проверяется, что заслон R662 для страниц БЕЗ SafeForm остался.
+    const pageName = options.page || 'settings';
+    const settingsPage = makeEl(pageName + '-page');
 
     function field(id, props) {
         const el = makeEl(id, Object.assign({ parentNode: settingsPage }, props || {}));
@@ -266,7 +281,7 @@ function buildSettingsStack(opts) {
         setActiveElement(el) { activeElement = el || null; },
         getElementById(id) {
             if (elements[id]) return elements[id];
-            if (id === 'settings-page') return settingsPage;
+            if (id === settingsPage.id) return settingsPage;
             return null;
         },
         querySelector() { return null; },
@@ -297,6 +312,30 @@ function buildSettingsStack(opts) {
     };
 
     const sandboxWindow = {};
+    // R678: двойники реестра обновлений и панели горячих настроек. Двойники
+    // минимальные: тик спрашивает hasProvider/refresh, провайдер «Настроек» зовёт
+    // SettingsRegistry.load() — ровно то, что читает живая приёмка.
+    sandboxWindow.DataRefresh = {
+        register(page, fn) {
+            (dr.providers[page] = dr.providers[page] || []).push(fn);
+            return true;
+        },
+        hasProvider(page) { return !!(dr.providers[page] && dr.providers[page].length); },
+        isAuto() { return true; },
+        markFresh() {},
+        markError() {},
+        refresh(page) {
+            dr.refreshCalls.push(String(page));
+            const list = dr.providers[page] || [];
+            return Promise.all(list.map(function (fn) {
+                return Promise.resolve().then(fn).then(function () { return true; }, function (e) { return e; });
+            }));
+        },
+        _providers: dr.providers
+    };
+    sandboxWindow.SettingsRegistry = {
+        load: function () { dr.registryLoads++; return Promise.resolve([]); }
+    };
     const sandbox = {
         window: sandboxWindow,
         document: documentStub,
@@ -306,6 +345,10 @@ function buildSettingsStack(opts) {
         Api: api,
         setTimeout(fn) { if (typeof fn === 'function') fn(); return 0; },
         clearTimeout() {},
+        // R678: тик заводится настоящим startPeriodicRefresh — таймер фейковый,
+        // тело тика настоящее (его и надо проверить).
+        setInterval(fn) { tickFn = fn; return 1; },
+        clearInterval() {},
         console: console,
         Date: Date,
         JSON: JSON,
@@ -325,7 +368,7 @@ function buildSettingsStack(opts) {
         sessions: [], queue: {}, queueTasks: [], queueHistory: [],
         logs: [], models: [], proxyLogs: [], agents: null
     };
-    const getCurrentPage = function () { return 'settings'; };
+    const getCurrentPage = function () { return pageName; };
 
     const settingsUi = sandboxWindow.AppSettings({
         data: data,
@@ -411,7 +454,33 @@ function buildSettingsStack(opts) {
         },
         safeForm() { return sandboxWindow.SafeForm; },
         formDirty() { return sandboxWindow.FormDirty; },
-        refresh() { return dataUi.refreshPage('settings'); }
+        refresh() { return dataUi.refreshPage('settings'); },
+        /** drRefreshCalls — с какими именами страниц тик звал провайдеров. */
+        drRefreshCalls() { return dr.refreshCalls.slice(); },
+        /** registryLoads — сколько раз исполнился SettingsRegistry.load(). */
+        registryLoads() { return dr.registryLoads; },
+        /**
+         * startTicker — как app.js на старте: зарегистрировать провайдеров страниц
+         * и завести периодический цикл (таймер подменён, тело тика настоящее).
+         */
+        startTicker() {
+            dataUi.registerPageProviders();
+            dataUi.startPeriodicRefresh();
+            assert.ok(typeof tickFn === 'function', 'тик не завёлся: startPeriodicRefresh не создал таймер');
+            return sandboxWindow.DataRefresh.hasProvider(pageName);
+        },
+        /** runTick — один цикл авто-обновления. */
+        runTick() {
+            assert.ok(typeof tickFn === 'function', 'нет тела тика: сначала startTicker()');
+            tickFn();
+        },
+        /** markDirty — на странице есть свежая правка оператора (input/change). */
+        markDirty(page) {
+            sandboxWindow.FormDirty.noteEdit({
+                tagName: 'INPUT', type: 'text', id: 'probe-' + page,
+                parentNode: makeEl(page + '-page')
+            });
+        }
     };
 }
 
@@ -498,6 +567,67 @@ const SERVER_2048 = {
         await flush();
         assert.strictEqual(stack.elements.ctxSize.value, '8192',
             'после возврата к базовому значению поле «залипло» — управление SafeForm не вернулось');
+    });
+
+    // (д) R678: ТИК ПРИ НЕСОХРАНЁННОЙ ПРАВКЕ ОБЯЗАН ОБНОВИТЬ ДАННЫЕ РАЗДЕЛА.
+    //
+    // Живой дефект, ради которого кейс добавлен: приёмка «данные страницы
+    // обновляются тиками» читает SettingsRegistry.load = 0. Причины в коде
+    // бывают две, и обе означают «тик не дошёл до провайдеров страницы»:
+    //   - заслон R662 («грязная» страница глушит тик целиком) — тогда данные
+    //     раздела стоят до ручного обновления;
+    //   - сломанный контракт страницы r675 (в тик уходила функция вместо имени)
+    //     — тогда провайдер 'settings' не вызывался НИ РАЗУ.
+    // Кейс проверяет поведение, а не текст: поднимает настоящий app-data.js,
+    // заводит тик и требует, чтобы при isDirtyPage('settings') === true тик
+    // вызвал ОБА пути данных раздела (Api.config через loadSettings и
+    // SettingsRegistry.load), не тронув поле оператора.
+    await acheck('R676(д): тик при несохранённой правке обновляет «Настройки» (оба пути)', async () => {
+        const stack = buildSettingsStack({ serverConfig: SERVER_2048 });
+        stack.loadSettings();
+        await flush();
+        assert.strictEqual(stack.elements.ctxSize.value, '2048', 'предпосылка: первый рендер залил серверное значение');
+        const configGetsBefore = stack.counters.configGets;
+
+        stack.type('ctxSize', 9999);
+        assert.strictEqual(stack.formDirty().isDirtyPage('settings'), true, 'предпосылка: страница «грязная»');
+        stack.safeForm().resetStats();
+
+        assert.strictEqual(stack.startTicker(), true,
+            'у «Настроек» нет провайдера в DataRefresh — тик не обновит её источники (пункт «б» приёмки)');
+        stack.setServerConfig({ modelAffinity: true, llamaCpp: { contextLength: 4096, batchSize: 256, numGpuLayers: -2 } });
+        stack.runTick();
+        await flush();
+        await flush();
+
+        assert.ok(stack.drRefreshCalls().indexOf('settings') >= 0,
+            'тик не дошёл до провайдеров «Настроек» (refresh вызван с: '
+            + JSON.stringify(stack.drRefreshCalls()) + ') — данные раздела стоят до ручного обновления');
+        assert.ok(stack.registryLoads() > 0,
+            'тик не вызвал SettingsRegistry.load() — панель горячих настроек не обновляется тиками');
+        assert.ok(stack.counters.configGets > configGetsBefore,
+            'тик не вызвал loadSettings → Api.config — серверный конфиг не перечитывается');
+        assert.strictEqual(stack.elements.ctxSize.value, '9999',
+            'тик обновил данные, но заодно стёр ввод оператора: «данные» и «форма» — не «или/или»');
+        assert.ok(stack.safeForm().stats().blocked > 0,
+            'SafeForm не защищал поле — ввод уцелел случайно, а не механизмом');
+    });
+
+    // (е) R662 СОХРАНЁН: страница БЕЗ покрытия SafeForm («грязная») по-прежнему
+    // глушит тик целиком. Снятие заслона там стёрло бы ввод на gguf-*/image-*,
+    // поэтому расширение SAFE_FORM_PAGES обязано быть осознанным.
+    await acheck('R662(е): «грязная» страница без SafeForm по-прежнему глушит тик', async () => {
+        const stack = buildSettingsStack({ serverConfig: SERVER_2048, page: 'gguf' });
+        stack.markDirty('gguf');
+        assert.strictEqual(stack.formDirty().isDirtyPage('gguf'), true, 'предпосылка: страница «грязная»');
+        stack.startTicker();
+        stack.runTick();
+        await flush();
+
+        assert.deepStrictEqual(stack.drRefreshCalls(), [],
+            'тик дошёл до провайдеров «грязной» gguf-страницы: заслон R662 для страниц без SafeForm снят');
+        assert.strictEqual(stack.registryLoads(), 0, 'тик дёрнул реестр горячих настроек с чужой страницы');
+        assert.strictEqual(stack.counters.configGets, 0, 'тик перечитал серверный конфиг на защищённой странице');
     });
 
     // (г) навигация снимает защиту только с покидаемой страницы (app.js).

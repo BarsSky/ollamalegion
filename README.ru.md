@@ -1,539 +1,191 @@
-# OllamaLegion - адаптивный кластер вывода LLM
+# OllamaLegion — балансировщик для llama.cpp / Ollama-стека
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://go.dev/)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
-[![CI test](https://github.com/BarsSky/ollamalegion/actions/workflows/test.yml/badge.svg?branch=centurion)](https://github.com/BarsSky/ollamalegion/actions/workflows/test.yml)
+[English version](README.md)
 
-> [English](README.md) | **Русский** (текущий)
+OllamaLegion собирает одну или несколько машин с потребительскими GPU в единый пул вывода
+за одним адресом. Балансировщик распределяет запросы между бэкендами `llama.cpp` (текст) и
+`stable-diffusion.cpp` (картинки), сам выбирает узел по свободным ресурсам, поднимает модель
+там, где её нет в памяти, и отдаёт WebUI для управления кластером. Клиенты работают через
+привычные API: **Ollama**, **OpenAI** и A1111 (`/sdapi/v1/*`).
 
-OllamaLegion собирает одну или несколько машин с потребительскими GPU в единый
-самонастраивающийся кластер вывода за одним адресом. Балансировщик распределяет запросы
-между бэкендами `llama.cpp` (текст) и `stable-diffusion.cpp` (картинки), сам подбирает
-безопасные параметры модели (контекст, тип KV-кэша, число слоёв на GPU), раскладывает
-часть слоёв на донорный узел по `llama.cpp` RPC и отдаёт WebUI с дашбордами, мониторингом,
-ролями и демо-режимом.
+Что берёт на себя балансировщик:
 
-Клиенты продолжают работать через привычные API: **Ollama**, **OpenAI** и A1111
-(`/sdapi/v1/*`).
+- **Маршрутизация** — выбор бэкенда по GPU/VRAM/CPU/RAM, привязка модели и сессии клиента.
+- **Очередь допуска** — вместо мгновенного 503 ждём слот (`LB_ADMISSION_WAIT_SEC`) или бэкенд (`LB_BACKEND_WAIT_SEC`).
+- **Окно контекста на слот** — при нескольких слотах суммарное окно делится между ними.
+- **Холодная загрузка** — модель, которой нет в памяти, поднимается на свободном бэкенде.
+- **WebUI** — узлы и раскладка, очередь, сессии, модели, логи, диагностика, роли `admin`/`viewer`.
 
-## Содержание
-
-- [Зачем нужен OllamaLegion](#зачем-нужен-ollamalegion)
-- [Быстрый старт](#быстрый-старт)
-- [Архитектура](#архитектура)
-- [Порты](#порты)
-- [Возможности](#возможности)
-- [Производительность](#производительность)
-- [Сборка](#сборка)
-- [Сценарии развёртывания](#сценарии-развёртывания)
-- [Конфигурация](#конфигурация)
-- [Структура проекта](#структура-проекта)
-- [Документация](#документация)
-- [Безопасность](#безопасность)
-- [Коммиты и авторство](#коммиты-и-авторство)
-- [Лицензия](#лицензия)
-- [Последние изменения](#последние-изменения)
-
-## Зачем нужен OllamaLegion
-
-- **Один адрес вместо N бэкендов.** Клиенты (Cline, Open WebUI, curl, SDK) видят один хост,
-  а балансер выбирает бэкенд по ресурсам, а не по кругу. Привязка сессий и моделей уже
-  внутри.
-- **Ручная настройка параметров не нужна.** AutoTune читает фактическую VRAM/RAM и
-  архитектуру модели (`/api/gguf`, `/api/show`), выставляет `n_ctx`, тип KV-кэша и
-  `num_gpu_layers` по тому, что реально влезает, и сверяет применённый план с фактом.
-- **Больше модели на том же железе.** Раскладка слоёв отправляет часть из них на донорный
-  узел по `llama.cpp` RPC: замерено **20/66 -> 48/66 слоёв на GPU** и **~2.9x скорости
-  генерации** на 27B Q4 с двумя картами по 8 ГБ
-  ([замер](docs/features/rpc-benchmark-qwen38.ru.md)). Пропал донор - гард возвращает локальную загрузку
-  вместо отказа.
-- **Текст и картинки за одним балансером.** Воркер `image_cpp` (`sd-server`) регистрируется
-  рядом с текстовыми; маршрутизация идёт по типу бэкенда и по явным признакам запроса
-  (`/v1/images/*`, `/sdapi/v1/*`, префикс модели `sd:`).
-- **Деградирует, а не падает.** RAM-fallback, лестница KV-кэша (`f16 -> q8_0 -> q4_0`),
-  частичный offload, запасной путь reload->load, кламп `n_ctx` и watchdog, который
-  объясняет, почему загрузка была снята.
-- **Всё видно и есть что показать.** WebUI: дашборды GPU/CPU/RAM, очередь, сессии, операции
-  с моделями, история AutoTune, вход с ролями (администратор / гость) и CSRF, плюс
-  **демо-режим** - синтетический сценарий работы кластера для гостя без доступа к стенду.
-- **Без облака, аккаунта и вендора.** Всё работает на ваших машинах, лицензия MIT. Режим
-  CPU/stub (`-tags llama_stub`) позволяет собирать, тестировать и показывать без GPU.
+Архитектура коротко: клиент -> балансер (`:18080` Ollama, `:18079` OpenAI) -> выбор бэкенда,
+preflight окна и очередь -> `cppworker` (llama.cpp, `:18092`) или `imageworker` (sd.cpp,
+`:18093`); часть слоёв может уйти на донорный узел по llama.cpp RPC. Подробнее —
+[жизненный цикл запроса](docs/architecture/request-lifecycle.ru.md) и
+[балансировка и сессии](docs/architecture/balancing-guide.ru.md).
 
 ## Быстрый старт
 
-Требуется: Docker 24+ с Compose v2, Git, NVIDIA драйвер + NVIDIA Container Toolkit (для
-GPU-режима). Сборка без GPU возможна, см. [Сборка](#сборка).
+### Требования
 
-```bash
-# 1. Клонировать. --recurse-submodules ОБЯЗАТЕЛЕН: c/llama.cpp - закреплённый сабмодуль.
+- Docker 24+ с Compose v2; для GPU-воркера — драйвер NVIDIA и `nvidia-container-toolkit`.
+- Git с сабмодулями: `c/llama.cpp` — фиксированный сабмодуль, без него `cppworker` не собрать.
+- Минимальный готовый пресет — 8 ГБ VRAM (`rtx30-8gb`); балансеру хватает ~512 МБ ОЗУ.
+- Команды даны для Windows/PowerShell 7 (`pwsh`), bash-эквиваленты — в комментариях.
+
+### Окружение (один раз)
+
+```powershell
 git clone --recurse-submodules https://github.com/BarsSky/ollamalegion.git
 cd ollamalegion
-# если уже клонировали без флага: git submodule update --init --recursive
-
-# 2. Подготовить env-файлы (один раз)
-cp deployments/.env.example deployments/.env
-cp deployments/.env.bundled-with-agent.example deployments/.env.bundled-with-agent
+Copy-Item deployments/.env.example deployments/.env              # bash: cp deployments/.env.example deployments/.env
+Copy-Item deployments/.env.bundled-with-agent.example deployments/.env.bundled-with-agent
 ```
 
-```bash
-# 3. Задать API-токен - ровно в одном месте:
-#    deployments/.env -> CPPWORKER_API_TOKEN
-#    compose выводит из него LB_API_TOKEN / API_TOKEN / BALANCER_TOKEN.
+Обязательное в `deployments/.env`:
 
-# 4. Собрать и поднять всё на одной машине
-export DOCKER_BUILDKIT=1
-export CUDA_ARCH=86          # 61 = GTX 10xx, 75 = RTX 20xx, 86 = RTX 30xx, 89 = RTX 40xx, 90 = RTX 50xx
+| Переменная | Зачем |
+|---|---|
+| `CPPWORKER_API_TOKEN` | единый токен стека (балансер, воркеры, WebUI); публичный дефолт `changeme-bundled-with-agent-token` — смените |
+| `LB_ADMIN_USER`, `LB_ADMIN_PASSWORD` | первый администратор WebUI (логин живёт в балансере, не в WebUI) |
+| `BALANCER_TAG`, `WEBUI_TAG`, `CPPWORKER_GPU_TAG`, `IMAGE_WORKER_TAG`, `AGENT_TAG` | теги образов; скрипт выпуска пишет их сам |
+
+`CUDA_ARCH` (в примере `75;86;120`) задаётся там же и определяет архитектуры сборки `cppworker`.
+
+### Запуск
+
+```powershell
+pwsh -File scripts/release-all.ps1 -Tag <тег>   # сборка с идентичностью, теги в .env, раскатка
+```
+
+Когда образы нужных тегов уже есть, достаточно compose:
+
+```bash
 docker compose -f deployments/docker-compose.stack.yml --profile full up -d
 ```
 
-В PowerShell: `$env:DOCKER_BUILDKIT=1`, `$env:CUDA_ARCH=86`, затем та же команда
-`docker compose ... up -d`. Флаг `--env-file` **не** нужен: compose сам читает
-`deployments/.env`, а флаг подменяет его целиком (теряются `CUDA_ARCH` и токен).
+Прямой `up -d` на машине без образов соберёт их сам, но сборке нужны build-arg'и идентичности
+(`GIT_COMMIT` и др.) из окружения процесса — без них стража в Dockerfile останавливает сборку.
 
-После запуска:
+### Адреса после старта
 
 | Адрес | Что это |
 |---|---|
-| http://localhost:18080 | Ollama-совместимый API (сюда смотрят клиенты) |
-| http://localhost:18079 | OpenAI-совместимый API + image API |
-| http://localhost:18081 | Management API (только админ, наружу не выставлять) |
-| http://localhost:18083 | WebUI |
+| `http://localhost:18080` | Ollama-native: `/api/chat`, `/api/generate`, `/api/tags`, `/api/ps` |
+| `http://localhost:18079` | OpenAI: `/v1/chat/completions`, `/v1/models`, `/v1/images/*`, `/sdapi/v1/*` |
+| `http://localhost:18081` | admin API: бэкенды, очередь, метрики, WebSocket; наружу не публикуйте |
+| `http://localhost:18083` | WebUI |
+| `:18092`, `:18093` | `cppworker` и `imageworker` — служебные, для внутренней сети |
 
-Проверка:
+Внешние порты — `LB_PORT`, `LB_OPENAI_PORT`, `LB_ADMIN_PORT`, `WEBUI_PORT`, `CPPWORKER_PORT_HOST`,
+`SDWORKER_PORT`.
 
-```bash
-curl -s localhost:18081/api/v1/backends | jq '.backends[] | {id, host, type, status}'
-```
-
-Новое железо или миграция? Начните с пресета под GPU (RTX 30xx/40xx/50xx, A10):
-`python scripts/apply-hardware-preset.py <name>` - [RU](docs/getting-started/hardware-presets.ru.md) /
-[EN](docs/getting-started/hardware-presets.ru.md).
-
-## Архитектура
-
-```
-Клиент (Cline / Open WebUI / SDK / curl)
-  -> Балансер :18080 (Ollama) / :18079 (OpenAI, картинки) / :18081 (управление)
-       |-- маршрутизация: resource-aware scoring, привязка сессий и моделей
-       |-- preflight n_ctx: 4 фазы, auto-reload с запасом по VRAM
-       |-- раскладка слоёв: RPC-координатор -> донорный узел (llama.cpp RPC :50052)
-       |-- CppWorker :18092  вывод llama.cpp (адаптивный загрузчик, KV-fallback, reload/load)
-       |     + встроенный агент метрик :18034
-       |-- ImageWorker :18093  sd.cpp (image_cpp) + встроенный агент метрик :18033
-       +-- WebSocket :18081/ws  живые события (очередь, бэкенды, autotune)
-  -> WebUI :18083 дашборды, мониторинг, очередь, сессии, настройки, демо-режим
-```
-
-Метрики для чистых **Ollama**-бэкендов собирает отдельный контейнер на `:18032`
-(профиль `legacy-agent`) - см. [Порты](#порты).
-
-## Порты
-
-| Порт | Компонент | Назначение |
-|---|---|---|
-| 18080 | Балансер | Прокси Ollama API (+ поверхность `/v1/*`) |
-| 18079 | Балансер | OpenAI-поверхность (`/v1/chat/completions`, `/v1/images/generations`, `/sdapi/v1/*`) |
-| 18081 | Балансер | Management API + WebSocket (наружу не выставлять) |
-| 18092 | CppWorker | Вывод llama.cpp |
-| 18093 | ImageWorker | API sdworker (`/api/image/*`, `/api/hf/*`) |
-| 18034 | CppWorker | Метрики **встроенного** агента (`CPPWORKER_AGENT_EMBEDDED=on`) |
-| 18033 | ImageWorker | Метрики **встроенного** агента (`IMAGE_WORKER_AGENT_EMBEDDED=on`) |
-| 18032 | Agent (внешний) | Метрики только для **Ollama**-бэкендов |
-| 18083 | WebUI | Дашборд |
-
-Порты встроенных агентов разнесены специально: два процесса не должны слушать один порт, а
-балансер опрашивает `agentPort` конкретной записи. Внешний агент и встроенный на одном
-бэкенде одновременно не запускаются - метрики «мигают», в частности `gpu.uuids`, по которому
-балансер понимает, что два бэкенда делят одну физическую GPU.
-
-## Возможности
-
-### AutoTune - параметры по факту
-
-Определяет sub-optimal состояние загруженных моделей и применяет лучший план через
-асинхронный reload (ручное управление сохраняется per-model). Бюджет = свободная VRAM +
-occupancy самой модели (перезагрузка её выгружает), единицы байты/МБ не путаются,
-архитектура (`n_kv_heads`, `head_dim`) берётся из `/api/show`, тип KV выбирается по
-фактическому `n_ctx`, а «success» без изменения конфигурации невозможен. Есть глобальный и
-per-model тумблеры, живые обновления по WebSocket, история событий и таймлайн в WebUI.
-Ручное применение:
+### Проверка и первая модель
 
 ```bash
-curl -s -X POST localhost:18081/api/v1/admin/autotune/<backendID>/apply
+TOKEN=$(grep '^CPPWORKER_API_TOKEN=' deployments/.env | cut -d= -f2)
+# PowerShell: $TOKEN = ((Get-Content deployments/.env | ? { $_ -match '^CPPWORKER_API_TOKEN=' }) -split '=',2)[1]
+curl -s http://localhost:18081/api/v1/ping                                # 200 — балансер жив
+curl -s http://localhost:18081/api/v1/health                              # здоровье без токена
+curl -s -H "X-API-Token: $TOKEN" http://localhost:18081/api/v1/backends   # бэкенды и статусы
+curl -s http://localhost:18080/api/tags | jq -r '.models[].name'          # модели на диске
 ```
 
-Документация: [API](docs/api/api.ru.md#autotune-api-r541--r552-2026-08-24), живая проверка
-`pwsh -File scripts/verify-autotune-r230.ps1`.
-
-### Раскладка слоёв по RPC (донорный узел)
-
-Слои делятся между GPU мастера, донорным узлом и CPU. Обе стороны обязаны иметь один коммит
-`llama.cpp` и одну архитектуру; у режима есть выключатель и свой учёт ёмкости. Правила,
-добытые живыми падениями: [docs/architecture/rpc-layout-rules.ru.md](docs/architecture/rpc-layout-rules.ru.md); жизненный
-цикл: [docs/operations/rpc-donor-vram-lifecycle.ru.md](docs/operations/rpc-donor-vram-lifecycle.ru.md); обновление и
-откат донора: [docs/operations/donor-update.ru.md](docs/operations/donor-update.ru.md).
-
-### Генерация изображений на том же балансере
-
-`imageworker` (stable-diffusion.cpp / `sd-server`, сборка на Vulkan - работает и на старых
-картах без CUDA) регистрируется как бэкенд `image_cpp`. Клиенты используют OpenAI images,
-A1111 и sdworker API. Модели: GGUF/safetensors с Hugging Face, per-model профили.
-Документация: [docs/features/image-generation.ru.md](docs/features/image-generation.ru.md).
-
-### WebUI
-
-Дашборды (GPU/CPU/RAM, очередь, сессии, операции с моделями), панель топологии и раскладки
-RPC, живые логи, настройки, управление пользователями с ролями (`admin` / `viewer`) и CSRF,
-плюс **демо-режим** (`WEBUI_DEMO_MODE=1`, только через env): детерминированный синтетический
-сценарий - клиенты -> балансер -> очередь -> донор RPC -> AutoTune - для гостя без входа и без
-единого запроса к реальному кластеру.
-Документация: [вход и роли](docs/features/webui-auth.ru.md), [демо-режим](docs/features/webui-demo.ru.md).
-
-### Совместимость с клиентами
-
-Ollama, OpenAI (chat/completions, инструменты, стрим) и A1111 обслуживает один балансер.
-Стрим следует одному контракту: размышления не дублируются в `content`, маркеры вида
-`</think>` не доезжают до клиента, `[DONE]` приходит ровно один раз и последним событием.
-Проверки: `node scripts/verify-stream-r231.js`, `node scripts/clients/contract-suite.js`,
-агентский цикл: [docs/features/cline-agent-loop.ru.md](docs/features/cline-agent-loop.ru.md).
-
-## Производительность
-
-Раскладка слоёв по RPC, один запрос (58 токенов промпта, `num_predict=96`, `temperature=0`),
-модель `Qwen3.8-27B-UD-Q4_K_M` (15.33 GiB), `ctx=16384`, KV `q8_0`. Мастер: 8 ГБ VRAM.
-Донор: второй узел, 8 ГБ VRAM, RPC `:50052`, канал ~8.9 Гбит/с.
-
-| | RPC выкл | RPC вкл | Дельта |
-|---|---|---|---|
-| слоёв на GPU | 20/66 (46 в RAM) | **26 CUDA + 22 RPC = 48/66**, CPU 18 | +28 слоёв |
-| загрузка модели | 278 с | 285 с | +2.5 % |
-| 96 токенов | 126-147 с | **45-49 с** | - |
-| скорость | **0.65-0.77 tok/s** | **1.95-2.15 tok/s** | **~2.9x** |
-| средняя задержка | 136 с | **46 с** | **-66 %** |
-
-Методика и воспроизведение: [docs/features/rpc-benchmark-qwen38.ru.md](docs/features/rpc-benchmark-qwen38.ru.md),
-`pwsh -File scripts/bench-rpc-qwen38.ps1 -Mode both`.
-
-> Большие модели: загрузка 15 ГБ с медленного диска дольше дефолтного watchdog - выставьте
-> `CPPWORKER_LOAD_STALL_SEC=1200` в `deployments/.env`, иначе на 300 с загрузка снимается с
-> «model load cancelled».
-
-## Сборка
-
-Все команды выполняются из корня репозитория. `DOCKER_BUILDKIT=1` важен: Go-only изменения
-собираются за ~30 с благодаря кэшу CUDA-слоёв.
+WebUI — `http://localhost:18083`, вход парой `LB_ADMIN_USER`/`LB_ADMIN_PASSWORD`. Первый запрос
+к незагруженной модели обслуживается столько, сколько длится загрузка (27B Q4 на A10 — минуты):
+балансер ждёт до `LB_AUTO_LOAD_WAIT_SEC` (в этом compose 900 с), затем отдаёт `503` с `Retry-After`.
 
 ```bash
-export DOCKER_BUILDKIT=1
-export CUDA_ARCH=86   # 61 = Pascal (GTX 10xx), 75, 86, 89, 90
-docker compose -f deployments/docker-compose.stack.yml --profile full build            # всё
-docker compose -f deployments/docker-compose.stack.yml --profile full build cppworker-gpu
-docker compose -f deployments/docker-compose.stack.yml --profile full build imageworker
-docker compose -f deployments/docker-compose.stack.yml --profile full build loadbalancer
-docker compose -f deployments/docker-compose.stack.yml --profile full build webui
+curl -s -H "X-API-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"model":"<имя>","messages":[{"role":"user","content":"hi"}],"stream":false}' \
+  http://localhost:18080/api/chat
 ```
 
-У каждого сервиса есть `build:`, поэтому `up -d` сам соберёт отсутствующий образ - локальный
-реестр не обязателен. Скрипт-помощник (сам подставляет тег и префикс реестра):
-`pwsh -File scripts/build-containers.ps1 -CppWorker -CudaArch 86 -Tag <тег>`;
-`imageworker` собирается через compose (в скрипте для него флага нет).
-
-Замечания:
-
-- **CUDA 13 снял поддержку Pascal** (GTX 10xx). Для 1070/1080 оставайтесь на CUDA 12.x и
-  собирайте с `CUDA_ARCH=61`; картинки идут через Vulkan и от CUDA-архитектуры не зависят.
-- **Свой реестр образов** - одна переменная `IMAGE_REGISTRY` в `deployments/.env` (адрес
-  **со слэшем на конце**). Скрипты сборки читают её же, поэтому собранный образ получает
-  ровно то имя, которое ищет compose.
-- CPU/stub-сборка без GPU: `-tags llama_stub` (используется юнит-тестами и CI).
-
-## Сценарии развёртывания
-
-Один compose-файл `deployments/docker-compose.stack.yml`, четыре сценария
-([подробно](docs/operations/deployment-stack.ru.md)):
-
-| Сценарий | Команда | Что поднимается |
-|---|---|---|
-| Всё на одной машине | `--profile full` | cppworker + imageworker + balancer + webui |
-| Только бэкенды, балансер на другой машине | `--profile worker` | cppworker + imageworker |
-| Только управление, бэкенды регистрируются сами | `--profile balancer` | balancer + webui |
-| Откат: внешний сборщик метрик | `--profile worker --profile legacy-agent` | набор worker + контейнер `agent` |
-
-Удалённым воркерам нужны две переменные в `deployments/.env.bundled-with-agent`:
-`BALANCER_URL=http://<хост-балансера>:18081` (management API, не 18080) и
-`BACKEND_HOST=<адрес, видимый с балансера>`.
+### Остановка и обновление
 
 ```bash
-# только текстовый воркер, на своей машине
-docker compose -f deployments/docker-compose.stack.yml --profile worker up -d cppworker-gpu
-# только image-воркер, к тому же балансеру
-SDWORKER_BALANCER_URL=http://<хост-балансера>:18081 \
-  docker compose -f deployments/docker-compose.stack.yml --profile worker up -d imageworker
+docker compose -f deployments/docker-compose.stack.yml --profile full down     # тома сохраняются
+docker compose -f deployments/docker-compose.stack.yml --profile full down -v  # вместе с состоянием
 ```
 
-Оба воркера - независимые сервисы: свой порт, свой каталог моделей, свой движок. Любой из них
-работает без второго, и оба могут жить на разных машинах за одним балансером.
-
-> **Имена переменных агента.** Агент читает `BACKEND_TYPE`, `CPPWORKER_URL`, `NODE_LABELS`,
-> `GPU_MODE`, `COLLECT_INTERVAL`, `HEARTBEAT_INTERVAL`. Имена вида `AGENT_BACKEND_TYPE`
-> **не читаются**: бэкенд зарегистрируется как Ollama. В каноническом compose имена верные.
->
-> **Вместимость.** `AGENT_MAX_CONCURRENT_REQUESTS` должен совпадать с реальным
-> `n_parallel` воркера (по умолчанию 1). Завышенное значение даёт ложные «свободные слоты» и
-> зависания у клиента (Cline).
-
-## Конфигурация
-
-Дефолты - из `deployments/.env.bundled-with-agent.example` и
-`config/cppworker-defaults.json` (`defaultCtxSize=32768`).
-
-```bash
-CPPWORKER_CTX_SIZE=32768            # контекст по умолчанию
-CPPWORKER_GPU_LAYERS=20             # слоёв на GPU (-1 = все, -2 = авто)
-CPPWORKER_AUTO_OFFLOAD=true         # авто gpuLayers
-CPPWORKER_AUTO_TUNE_NCTX=true       # авто n_ctx
-CPPWORKER_AUTO_KV_CACHE=true        # авто kvCacheType (q4_0/q8_0/f16)
-CPPWORKER_RAM_FALLBACK_N_CTX=true   # RAM fallback при нехватке VRAM
-CPPWORKER_LOAD_STALL_SEC=1200       # watchdog загрузки для 15-ГБ моделей
-```
-
-Конфиг балансера (`config/config.example.json`), авто-reload `n_ctx`:
-
-```json
-{
-  "balancing": {
-    "firstByteTimeout": 30,
-    "nctxReload": {
-      "auto_reload_n_ctx": true,
-      "auto_reload_max_n_ctx": 131072,
-      "auto_reload_vram_safety_factor": 0.85,
-      "auto_reload_timeout_sec": 120
-    }
-  }
-}
-```
-
-ENV-overrides для `nctxReload` важнее файла: `LB_NCTX_RELOAD_ENABLED`,
-`LB_NCTX_RELOAD_MAX_N_CTX`, `LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR`,
-`LB_NCTX_RELOAD_TIMEOUT_SEC`.
-
-Полный справочник переменных: [docs/api/env-vars.ru.md](docs/api/env-vars.ru.md).
-
-## Структура проекта
-
-```
-cmd/
-  balancer/      HTTP-прокси + management API (18080/18081/18079)
-  cppworker/     сервер вывода llama.cpp (18092): адаптивный загрузчик, lazyload, кламп n_ctx
-  agent/         метрики GPU/CPU/RAM (18032) для Ollama-бэкендов
-  imageworker/   image-бэкенд sd.cpp (18093) + встроенный агент метрик
-  rpcworker/     RPC-воркер для распределённого вывода
-internal/
-  api/           REST-хендлеры, роуты, авторизация, rate limit
-  balancer/      маршрутизация, scoring, сессии, reload n_ctx, RPC-диспетчер
-  cppbackend/    Go-обёртка над C-мостом (параметры, KV-кэш)
-  rpccoordinator/ rpcworker/ rptensor/  распределённый вывод
-  modelreplication/ virtualmodel/       группы репликации, alias-on-pool
-c/               C-мост к llama.cpp; llama.cpp и ggml - сабмодули
-deployments/     docker-compose.stack.yml + примеры env (профили full/worker/balancer)
-config/          конфиг балансера, дефолты cppworker, примеры env
-scripts/         сборка, бенчмарки, e2e, доктора, проверка демо
-docs/            документация (RU + EN)
-plans/           roadmap и отчёты по фазам
-```
+Обновление — новый выпуск через `scripts/release-all.ps1 -Tag <новый-тег>`; только перепин тегов
+без сборки и раскатки — тот же скрипт с `-SkipBuild -NoDeploy`.
 
 ## Документация
 
-- **[Индекс документации (Русский)](docs/README.ru.md)** - единое оглавление всех документов
-- **[Documentation index (English)](docs/README.ru.md)**
-- [Установка](docs/getting-started/installation.ru.md) /
-  [Развёртывание](docs/getting-started/deployment.ru.md) /
-  [Конфигурация](docs/getting-started/configuration.ru.md) /
-  [API](docs/api/api.ru.md) / [Метрики](docs/api/metrics.ru.md) /
-  [Troubleshooting](docs/operations/troubleshooting.ru.md)
-- [Генерация изображений](docs/features/image-generation.ru.md) /
-  [Пресеты под железо](docs/getting-started/hardware-presets.ru.md) /
-  [Параметры моделей](docs/features/cppworker-model-params.ru.md)
-- [Переменные окружения](docs/api/env-vars.ru.md) - все переменные с дефолтами и эффектом
-- Глубокие разборы: [правила RPC-раскладки](docs/architecture/rpc-layout-rules.ru.md),
-  [замер RPC на 27B](docs/features/rpc-benchmark-qwen38.ru.md),
-  [демо-режим WebUI](docs/features/webui-demo.ru.md),
-  [вход и роли WebUI](docs/features/webui-auth.ru.md),
-  [агентский цикл Cline](docs/features/cline-agent-loop.ru.md)
-- [Roadmap и отчёты сессий](docs/plans/README.md) | [Архив](docs/archive/README.ru.md)
+Оглавление всей документации — [docs/README.ru.md](docs/README.ru.md).
 
-## Безопасность
+| Документ | О чём |
+|---|---|
+| [installation.ru.md](docs/getting-started/installation.ru.md) | требования к железу, сборка, stub-режим |
+| [deployment.ru.md](docs/getting-started/deployment.ru.md) | развёртывание: профили, окружения, порты |
+| [configuration.ru.md](docs/getting-started/configuration.ru.md) | `config.json` балансера и env-переопределения |
+| [hardware-presets.ru.md](docs/getting-started/hardware-presets.ru.md) | пресеты под RTX 30xx/40xx/50xx и A10 |
+| [deployment-stack.ru.md](docs/operations/deployment-stack.ru.md) | профили, порты, удалённые воркеры, проверки |
+| [docker-compose-guide.ru.md](docs/operations/docker-compose-guide.ru.md) | какой compose-файл за что отвечает |
+| [deployment-troubleshooting.ru.md](docs/operations/deployment-troubleshooting.ru.md) | живые аварии и ловушки окружения |
+| [troubleshooting.ru.md](docs/operations/troubleshooting.ru.md) | общий разбор отказов по симптомам |
+| [deployments/README.md](deployments/README.md) | что лежит в `deployments/`, какой файл канонический |
+| [request-lifecycle.ru.md](docs/architecture/request-lifecycle.ru.md) | жизненный цикл запроса и его стадии |
+| [balancing-guide.ru.md](docs/architecture/balancing-guide.ru.md) | выбор бэкенда и привязка сессий |
+| [context-numbers.ru.md](docs/architecture/context-numbers.ru.md) | окно контекста: откуда берутся числа |
+| [availability-first-r493.ru.md](docs/architecture/availability-first-r493.ru.md) | почему запрос ждёт при свободных узлах |
+| [window-align-r494.ru.md](docs/architecture/window-align-r494.ru.md) | выравнивание окон копий одной модели |
+| [feature-switches.ru.md](docs/architecture/feature-switches.ru.md) | флаги: что и чем включается |
+| [env-vars.ru.md](docs/api/env-vars.ru.md) | все переменные окружения с дефолтами |
+| [api.ru.md](docs/api/api.ru.md) | REST API управления |
+| [rpc-benchmark-qwen38.ru.md](docs/features/rpc-benchmark-qwen38.ru.md) | замер раскладки слоёв по RPC на 27B |
+| [webui-auth.ru.md](docs/features/webui-auth.ru.md) | вход, роли, CSRF, сессии |
+| [image-generation.ru.md](docs/features/image-generation.ru.md) | генерация изображений на том же балансере |
+| [debts.ru.md](docs/architecture/debts.ru.md) | реестр осознанно не сделанного |
 
-- **Смените API-токен.** Значение по умолчанию (`changeme-bundled-with-agent-token`)
-  известно всем: любой, кто дотянется до admin-порта (18081), получает полный контроль над
-  кластером. Задайте `CPPWORKER_API_TOKEN` в `deployments/.env` и пересоздайте контейнеры.
-- **18081 держите закрытым.** Клиентам нужны только 18079 (OpenAI/картинки) и 18080
-  (Ollama).
-- **Не публикуйте реальные адреса и токены.** В документации используются адреса из RFC 5737
-  (`192.0.2.x`); свои значения держите в `deployments/.env`, файл в `.gitignore`.
-- **Личные данные в git не попадают.** `.env`, `_diag/`, `debug/` (дампы сессий, трейсы)
-  игнорируются; в примерах - placeholder'ы (`example.com`, `192.0.2.x`, `<user>@<host>`).
-- **У WebUI настоящая авторизация.** Сессии, роли и CSRF:
-  [docs/features/webui-auth.ru.md](docs/features/webui-auth.ru.md). Аварийный токен вводит оператор, в образ он не
-  вшивается.
+История выпусков и тегов образов — [CHANGELOG.md](CHANGELOG.md).
 
-## Коммиты и авторство
+## Управление и эксплуатация
 
-Автор коммита берётся из git-конфига: локальный `user.name`/`user.email` в этом репозитории
-важнее глобального.
+Ключевые группы переменных (полный список — [env-vars.ru.md](docs/api/env-vars.ru.md)):
+
+| Группа | Переменные |
+|---|---|
+| Маршрутизация и очередь | `LB_MODEL_AFFINITY`, `LB_SESSION_STICKINESS`, `LB_ADMISSION_WAIT_SEC`, `LB_BACKEND_WAIT_SEC`, `LB_UNIFIED_ADMISSION` |
+| Окно контекста | `LB_NCTX_RELOAD_ENABLED`, `LB_NCTX_RELOAD_MAX_N_CTX`, `LB_NCTX_PREFLIGHT_ENABLED`, `LB_PREFLIGHT_EXACT_TOKENS`, `LB_R459_NEED_RESERVE`, `LB_WINDOW_ALIGN_MAX_N_CTX` |
+| Доступ | `CPPWORKER_API_TOKEN`, `LB_ADMIN_USER`, `LB_ADMIN_PASSWORD`, `LB_ADMIN_ENV_SYNC`, `LB_SESSIONS_FILE` |
+| Воркер | `CPPWORKER_CTX_SIZE`, `CPPWORKER_GPU_LAYERS`, `CPPWORKER_N_PARALLEL`, `CPPWORKER_VRAM_OVERHEAD_MB` |
+| Теги образов | `BALANCER_TAG`, `WEBUI_TAG`, `CPPWORKER_GPU_TAG`, `IMAGE_WORKER_TAG`, `AGENT_TAG`, `CUDA_ARCH` |
+
+Логи и диагностика (в WebUI — страницы «Бэкенды», «Очередь», «Логи», «Диагностика»):
 
 ```bash
-git config --local user.name  "Your Name"
-git config --local user.email "you@example.com"
+docker compose -f deployments/docker-compose.stack.yml logs -f loadbalancer cppworker-gpu
+curl -s -H "X-API-Token: $TOKEN" http://localhost:18081/api/v1/queue/stats
+curl -s -H "X-API-Token: $TOKEN" -o diag.zip http://localhost:18081/api/v1/diag/bundle
 ```
 
-GitHub считает контрибьюторов **по полю author**, поэтому каждая новая identity с отдельной
-почтой становится отдельным контрибьютором. Исторические служебные идентичности сводятся к
-владельцу репозитория файлом [`.mailmap`](.mailmap) без переписывания истории:
-`git shortlog -sne github/centurion | head`.
+Выпуск и проверки:
 
-Если коммитит ассистент или скрипт, задайте ему ту же или осознанно выбранную служебную
-идентичность.
+| Скрипт | Что делает |
+|---|---|
+| `scripts/release-all.ps1` | собрать, протегировать, раскатать; пишет `deployments/.env` и манифест |
+| `scripts/check-image-tags.ps1` | согласованность тегов: compose, `.env`, манифест (docker не нужен) |
+| `scripts/check_webui_assets.py`, `scripts/check_webui_i18n_keys.py`, `scripts/check_webui_refs.js` | статика WebUI: ассеты без CDN, i18n-ключи, вызовы функций |
+| `scripts/check_docs_claims.py` | документация не ссылается на несуществующие файлы и переменные |
 
-## Лицензия
+## Ограничения и известные особенности
 
-MIT - см. [LICENSE.md](LICENSE.md).
+- **Рост окна — только под заявку клиента.** Промпт не влез, а `options.num_ctx` не прислан
+  (Cline не присылает) — модель не перезагружается, клиент получает 413
+  `context_window_exhausted_no_growth_request` с числами `prompt_tokens`,
+  `loaded_window_tokens`, `required_window_tokens`, `requested_n_ctx` и потолками; заявка окна
+  выше загруженного растит окно в фоне ([context-numbers.ru.md](docs/architecture/context-numbers.ru.md)).
+- **Не-стриминговый preflight — прежний контракт:** заявленное окно выше загруженного —
+  синхронная перезагрузка (или `413`, если авто-reload выключен), фонового роста там нет.
+- **Слоты делят окно:** `CPPWORKER_N_PARALLEL=1` по умолчанию, при `parallel=2` сессия получает
+  половину суммарного окна.
+- **Вход принадлежит балансеру:** пользователи и сессии — файлы на томе `balancer_data`
+  (`LB_USERS_FILE`, `LB_SESSIONS_FILE`); `LB_ADMIN_*` перезаписывают пароль при
+  `LB_ADMIN_ENV_SYNC=1`, удаление тома означает потерю входа.
+- **Таймауты по умолчанию выключены:** инференс не ограничен (`LB_REQUEST_TIMEOUT_SEC=0`),
+  зависший поток ловит `LB_STREAM_STALL_ABORT_SEC`, первый байт — `LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC`.
 
-## Последние изменения
+## Статус и лицензия
 
-Полная история с датами, тегами образов и дефектом за каждым исправлением:
-[CHANGELOG.md](CHANGELOG.md). Последнее:
-
-- **v0.7.246 (R486, 2026-11-10) - идентичность сборки печётся в образ.**
-  Образы балансера и воркера были собраны и проштампованы ПРЕДЫДУЩИМ коммитом: в
-  `deployments/.env` лежали `BALANCER_GIT_COMMIT=850923d7` /
-  `CPPWORKER_GIT_COMMIT=361490ec` при HEAD `8b246ffe`, скрипт выпуска не передавал
-  identity build-args вовсе, и `ARG GIT_COMMIT=unknown` молча давал образ с чужим
-  штампом (нашли случайно, по `/api/version` после выкатки). Теперь коммит, дата
-  коммита, дата сборки, автор, сервис, тег образа, коммит/дата llama.cpp и версия
-  протокола RPC запекаются в образ (`-ldflags` + `/app/identity.json` + OCI-метки),
-  `unknown` больше не значение, а каждый Go-сервис при расхождении бинаря с
-  запечённой идентичностью ОТКАЗЫВАЕТСЯ стартовать. Коммита и даты в
-  `deployments/.env` больше нет, а `/api/v1/backends` показывает
-  `workerReleaseMismatch`, если узел из другого релиза.
-- **v0.7.245 (R485, 2026-11-10) - размышления больше не попадают в `content`.**
-  Найдено по живому архиву второго стенда (A10 ×2, Qwen3.8-27B): assistant-сообщения
-  С `tool_calls` несли `content_len=65109 / 18720 / 12113` с текстом планирования —
-  сторож R482 снимал удержание и отдавал размышления как `content`. Клиент сохранял
-  их как прошлый ответ модели, и следующий ход начинался с этого загрязнения
-  («замыкается в себя», инструменты применяются всё хуже). Теперь сторож не снимает
-  удержание, вызванное размышлениями: ответ уходит в терминальной части хода, а
-  размышления отделяются штатным разбором. Видно полем `hold_kept_reasoning` в
-  сводке хода и событием `hold_kept_reasoning` в кольце воркера; аварийный тумблер
-  `CPPWORKER_TOOLS_HOLD_RELEASE_REASONING=1`.
-- **v0.7.244 (R484, 2026-11-10) - один разбор «это стрим?» и настоящий транспорт.**
-  Три предиката стрима расходились в дефолте для запроса без поля `stream`; теперь
-  один разбор с явным дефолтом поверхности (поведение не изменилось). В строке
-  `request trace` и в `/api/v1/proxy/logs` появился фактический `transport`
-  (`stream` | `json`): `stream=true` + `transport=json` — это норма legacy-запроса,
-  а не «сломанный стриминг».
-- **v0.7.243 (R483, 2026-11-10) - где копился ответ и события воркера.**
-  В строке `request trace` появился `first_byte_ms`: по нему видно, держал ли
-  ответ воркер (близко к `duration_ms`) или отдавал сразу. Кольцо сбоев воркера
-  теперь принимает и не-5xx события — `hold_released`, `client_gone`,
-  `client_cancelled`, `unparsed_tool_markup`, `turn_retry` — и они попадают в
-  `failures.json` архива диагностики. Это прямой ответ на «кто виноват» при
-  разборе «ответ одним куском» и «инструмент не применился».
-- **v0.7.242 (R482, 2026-11-10) - инструменты внутри reasoning и поток вместо
-  «одного куска».** На втором стенде (Qwen3.8-27B, Cline) вызов инструмента
-  терялся, если модель кладёт его внутрь блока размышлений: разбор смотрел только
-  видимую часть. Теперь вызов ищется и в reasoning (`tool_calls_from_reasoning` в
-  сводке). Второй симптом — ответ приходит одним куском, если шаблон не
-  закрывает канал размышлений: удержание вывода получило сторож
-  `CPPWORKER_TOOLS_HOLD_MAX_SEC` (20 c) / `CPPWORKER_TOOLS_HOLD_MAX_BYTES`
-  (32 КБ), после снятия ход снова потоковый; финальный «сырой» хвост режется на
-  части, а не отдаётся одной дельтой.
-- **v0.7.241 (R481, 2026-11-10) - «Диагностика», пользователи и логи в WebUI.**
-  Из подвала меню и со страницы логов теперь видно, как открыть «Диагностику» и
-  скачать архив логов (раньше пункт меню уезжал за границу прокрутки, а ссылки
-  на архив не было). Возвращено создание пользователей WebUI: дефолт
-  `LB_USERS_FILE` — `/app/data/users.json` на записываемом томе (раньше
-  `config/users.json` на read-only `../config`), плюс `path`/`hint` в ошибке.
-  Логи переработаны: поля события — отдельным блоком (а не JSON-суффиксом в
-  тексте), поиск и фильтр уровня реально фильтруют, ошибку в прокси-логах можно
-  раскрыть целиком, добавлена выгрузка CSV/JSON, подписи и раздел
-  «Пользователи» локализованы.
-
-- **v0.7.240 (R480, 2026-11-10) - окно сессии по варианту C, TTL метрики, гейт
-  везде.** «Нужное окно» при переезде сессии теперь
-  `max(потребность запроса + резерв, окно АКТИВНОЙ сессии в пределах TTL)`:
-  живая сессия держит широкую копию, остывшая — больше не диктует окно, и
-  переезд решает потребность конкретного запроса. Метрика окна получила срок
-  годности (`LB_R459_COLD_TTL_SEC`, 90 с): «неизвестно» больше не значит
-  «модели нет», переезды не стоят до обновления поллера. Гейт R459 применён и
-  на обходных путях (занятый слот, 503, failover), и в единой очереди: сессия
-  ждёт слот своей копии, а причина `window_too_small` видна в `why_queued`.
-  Долги: P1-4…P1-8 закрыты (`docs/architecture/debts.ru.md`), цена вариантов —
-  `docs/architecture/r459-window-policy-options.ru.md`.
-
-- **v0.7.239 (R480, 2026-11-09) - стадия очереди в логе и чистка мёртвого кода.**
-  Строка `request trace` теперь честно показывает, где был запрос: ожидание в
-  единой очереди — `stage=admission`, отправка воркеру — `upstream`, чтение
-  потока — `stream`, сбой записи клиенту — `client_write`. Раньше все эти три
-  случая выглядели как `select_backend`. Удалены `bindSession`,
-  `acquireSlotWithRetry`, `executeWithFallback` (файл `slot_handler.go` вместе с
-  тестами), `extractModel` и вторая копия обработчика `/health`.
-  Долги: `docs/architecture/debts.ru.md` — P1-9 закрыт, P2-14 закрыт частично.
-
-- **v0.7.238 (R479, 2026-11-09) - паритет типов на /v1 и /ollama.**
-  Запрос на OpenAI-поверхности больше не упирается в 503, когда в кластере нет
-  cppworker: под модель подбирается Ollama-бэкенд и запрос уходит нативно (слот
-  занимается, поток пишется с Flush). Алиасы `/ollama/api/*`, `/ollama/v1/*`,
-  `/openai/v1/*` снимаются до диспетчеризации (ответ несёт `X-LB-Surface-Alias`),
-  `/v1/models` показывает модели обоих пулов. Лимит тела `LB_MAX_REQUEST_BODY_MB`
-  теперь действует и на общем пути (413), вспомогательные чтения не копируют
-  запрос целиком. Диагностика: стадии `preflight`/`client_write`, финальная
-  стадия в `request trace`, обрыв доставки попадает в кольцо сбоев.
-  Долги: `docs/architecture/debts.ru.md` обновлён (P0 1–3 закрыты).
-
-- **v0.7.237 (R477/R478, 2026-11-09) - стадия сбоя в логе, OpenWebUI снова получает ответ.**
-  Причина «модель генерирует токены, ответ не доходит» найдена: гейт R470 стоял в общей
-  функции и на обычном `/api/chat` у reasoning-моделей выбрасывал весь видимый ответ до
-  закрывающего маркера. Теперь он только на tools-пути. Заодно: обёртка ответа больше не
-  объявляет `Hijack` ложно, `X-Backend-ID` ставится после ответа апстрима, R459 снова
-  пускает сессию на живую Ollama-копию, ошибки админских ручек Ollama — 502 вместо пустого
-  200, `/api/show|copy|delete` находят модель по правильному источнику. Диагностика: стадия
-  хода (`select_backend`/`admission`/`preflight`/`upstream`/`stream`/`client_write`) в строке
-  `request trace`, кольцо последних сбоев в сводке/архиве и блок «Последние сбои» в WebUI.
-  Аудит: план рефакторинга — `docs/architecture/refactoring-plan.ru.md`.
-
-- **v0.7.236 (R476, 2026-11-09) - диагностика стенда одним архивом.**
-  Данные для разбора теперь собираются одним нажатием: страница «Диагностика» в WebUI
-  (версии, окно и профили моделей, флаги `set`/`unset`, бэкенды) с копированием блока
-  и значения по клику, плюс `GET /api/v1/diag/bundle` — zip из сводки, логов балансера
-  и архивов воркеров (кольцевой буфер логов, промпт, тело запроса, срывы разбора
-  вызовов). Каждый запрос получает строку `request trace` с `request_id`, тот же id
-  пишется в сводку воркера — ход находится по одному grep'у. Образы: balancer
-  `r261109-1410`, cppworker `gpu-261109-1404`, webui `r261109-1410`.
-  [Заметки о релизе](docs/releases/v0.7.236-release-notes.ru.md)
-
-- **v0.7.235 (R448…R475, 2026-11-07) - окно контекста перестало быть догадкой.**
-  Оценка промпта (эвристика по символам, завышение 1.8–5x) больше ничего не решает:
-  `POST /api/tokenize` даёт точное число токенизатора модели (живой замер 36601 → 10036),
-  413 по физике остаётся только для окна, запрошенного клиентом явно (R466), живая сессия
-  не уводится на копию с меньшим окном (R459), рост окна не блокируется хинтом профиля
-  (R472), размышления не навязываются клиенту без `think` (R470/R471), отказ называет
-  настоящую причину (R460/R461/R468), а вызов, выданный текстом (7 КБ кода + хвост
-  аргументов вместо вызова), больше не уезжает ответом (R474). Образы: balancer
-  `r261106-2329`, cppworker `gpu-261107-1533`, webui `r261106-1716`.
-  [Заметки о релизе](docs/releases/v0.7.235-release-notes.ru.md)
-
-- **R232 (v0.7.211, 2026-10-24) - демо-режим WebUI.** `WEBUI_DEMO_MODE=1` (только env)
-  превращает панель в гостевую read-only витрину: детерминированный сценарий на 150 с
-  (клиенты -> балансер -> очередь -> донор RPC -> AutoTune) с баннером, счётчиками и живой
-  лентой событий. Все `/api/`-, WebSocket- и SSE-запросы перехватываются в браузере, до
-  реального балансера не доходит ничего. [Документация](docs/features/webui-demo.ru.md)
-- **v1.0-rc2 (v0.7.210, 2026-10-24) - релиз исходников.** README с замером RPC, документация
-  приведена к фактическому состоянию (AutoTune R230, контракт стрима Cline R231, ENV,
-  troubleshooting), из дерева убраны личные данные и артефакты стенда.
-  [Release notes](docs/releases/v1.0-rc2-release-notes.ru.md)
-- **R230 / R231 (v0.7.208-209) - корректный AutoTune и контракт стрима Cline.** AutoTune
-  перестал видеть «свободно 0 GB» и советовать `-2/q4_0` (единицы, reload-бюджет,
-  архитектура из `/api/show`, проверка применения); стрим больше не дублирует размышления в
-  `content`, не пропускает маркеры `</think>` и отправляет ровно один финальный `[DONE]`.
+- Последняя запись [CHANGELOG.md](CHANGELOG.md) — 0.7.477 (R679, 2026-11-21).
+- Лицензия MIT — [LICENSE.md](LICENSE.md); документация ведётся на русском, часть файлов — только на нём.

@@ -62,6 +62,7 @@
 | Документ | Русский | English | О чём |
 |---|---|---|---|
 | **Compose-стек** | [RU](operations/deployment-stack.ru.md) | [EN](operations/deployment-stack.md) | Один compose-файл, профили, токены, реестр, диагностика. |
+| **Запуск стека «с нуля»** | [RU](operations/up-from-scratch.ru.md) | [EN](operations/up-from-scratch.md) | Чистая машина без образов: идентичность сборки, args и порядок запуска в одном скрипте. |
 | **Воркер за удалённым балансером** | [RU](operations/deployment-remote-balancer.ru.md) | [EN](operations/deployment-remote-balancer.md) | cppworker + agent на одной машине, балансер на другой. |
 | **Руководство по compose-файлам** | [RU](operations/docker-compose-guide.ru.md) | [EN](operations/docker-compose-guide.md) | Какой compose-файл канонический и что делают исторические. |
 | **Развёртывание агента** | [RU](operations/agent-deployment.ru.md) | [EN](operations/agent-deployment.md) | Агент метрик: режимы GPU и CPU, systemd, Windows, WSL2. |

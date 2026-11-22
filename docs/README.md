@@ -54,6 +54,7 @@ Run, update and debug a live cluster.
 | Document | English | Russian | What it covers |
 |---|---|---|---|
 | **Deployment stack** | [EN](operations/deployment-stack.md) | [RU](operations/deployment-stack.ru.md) | One compose file, profiles, tokens, registry, diagnostics. |
+| **Bringing the stack up from scratch** | [EN](operations/up-from-scratch.md) | [RU](operations/up-from-scratch.ru.md) | Clean machine without images: build identity, args and startup order in one script. |
 | **Worker behind a remote balancer** | [EN](operations/deployment-remote-balancer.md) | [RU](operations/deployment-remote-balancer.ru.md) | cppworker + agent on one machine, balancer on another. |
 | **Compose files guide** | [EN](operations/docker-compose-guide.md) | [RU](operations/docker-compose-guide.ru.md) | Which compose file is canonical and what the historical ones do. |
 | **Agent deployment** | [EN](operations/agent-deployment.md) | [RU](operations/agent-deployment.ru.md) | Metrics agent: GPU and CPU modes, systemd, Windows, WSL2. |

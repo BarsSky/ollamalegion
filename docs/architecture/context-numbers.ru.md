@@ -25,8 +25,8 @@
 
 | Величина | Что это | Где вычисляется / откуда берётся |
 |---|---|---|
-| **total n_ctx** | суммарное окно инстанса; слоты его делят | `internal/cppbackend/backend.go:924` (`EffectiveContextSize`), загрузка — `internal/cppbackend/backend.go:906` (`ContextPerSlot`) для обратного пересчёта |
-| **context_per_seq** | окно ОДНОГО слота (`n_ctx_seq` у llama.cpp) | воркер: `cmd/cppworker/handlers_model.go:1529` (`context_per_seq`), `internal/cppbackend/backend.go:906` |
+| **total n_ctx** | суммарное окно инстанса; слоты его делят | `internal/cppbackend/backend_context.go:64` (`EffectiveContextSize`), загрузка — `internal/cppbackend/backend_context.go:33` (`ContextPerSlot`) для обратного пересчёта |
+| **context_per_seq** | окно ОДНОГО слота (`n_ctx_seq` у llama.cpp) | воркер: `cmd/cppworker/handlers_model.go:1529` (`context_per_seq`), пересчёт — `internal/cppbackend/backend_context.go:33` (`ContextPerSlot`) |
 | **client num_ctx** | что попросил клиент в теле (`options.num_ctx` / `num_ctx`) | `internal/balancer/num_ctx_resolver.go:50` (`ExtractNumCtxFromBody`) |
 | **declared (профиль)** | окно, заявленное оператором в карточке модели | `profile.contextLength` / `profile.contextPerSeq` / `contextLengthMax`; см. `summary.json` → `model_profiles.*.profile` |
 | **growth ceiling** | до какого окна разрешён АВТО-рост | `internal/balancer/nctx_declared_r255.go:139` (`effectiveAutoReloadCeiling`) = `max(env, declared)` |
@@ -46,6 +46,35 @@
 независимых ответа: физика модели (GGUF), политика оператора (профиль),
 политика авто-роста (потолок), потребность конкретного запроса (needed).
 Ошибка начинается там, где одно из них выдают за другое.
+
+### 1.1 Окно — послотовое, а у заявки клиента — один канал
+
+Три факта, без которых таблица выше читается неправильно:
+
+- **Окно задаётся НА СЛОТ.** `n_ctx_seq = GGML_PAD(n_ctx / n_seq_max, 256)`, то
+  есть суммарное `contextLength = context_per_seq × slots`; обратный пересчёт —
+  `ContextPerSlot` (`internal/cppbackend/backend_context.go:33`), а «окно на
+  клиента» задаётся явно через `EffectiveContextSize` (`:64`):
+  `total = PAD256(perSeq) × slots`. При `slots=1` эти числа совпадают, при
+  `slots>1` — нет. Поэтому клиентские поверхности (`/v1/models.context_length`,
+  `X-Model-Context-Length`, `/api/show.context_size`) отдают окно НА СЛОТ, а
+  суммарное — только `/api/show.context_size_total` и агрегат `/api/v1/backends`.
+- **Заявка клиента — одно поле в теле запроса:** `options.num_ctx` (Ollama) или
+  `num_ctx` (OpenAI/generic); читает `ExtractNumCtxFromBody`
+  (`internal/balancer/num_ctx_resolver.go:50`). Это единственное место, где
+  клиент говорит, какое окно ему нужно; профиль модели и бэкенд-дефолт — запасные
+  ступени резолвера, а не заявка.
+- **`X-Cpp-Ctx` — исходящая верхняя граница, а не заявка.** Балансер сам ставит
+  этот заголовок при вызове воркера (`internal/balancer/num_ctx_resolver.go:1099`,
+  `internal/balancer/nctx_reload_handlers.go:316`) и НЕ читает его на входе: в коде
+  балансера нет ни одного `Header.Get("X-Cpp-Ctx")`. Воркер применяет заголовок
+  как ВЕРХНИЙ предел (`cmd/cppworker/nctx_clamp.go`): поднимает `NCtxOverride`
+  только если `num_ctx` в теле нет, а меньшее значение из тела не трогает.
+
+Практическое следствие для оператора: «заявленное окно» ищем только в теле
+запроса (`options.num_ctx`); «какое окно получит клиент» — в `context_per_seq`
+или `X-Model-Context-Length`; а `X-Cpp-Ctx` в дампе воркера — это то, что
+разрешил балансер, а не то, что попросил клиент (R493-12c(3)).
 
 ---
 

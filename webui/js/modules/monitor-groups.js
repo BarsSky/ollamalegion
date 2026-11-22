@@ -18,7 +18,22 @@
 // Карточка ТОЛЬКО ЧИТАЕТ: применение раскладки живёт в окне «Объединение
 // бэкендов» (страница «Бэкенды»), и дублировать запись на мониторе не нужно.
 //
-// Тесты: webui/js/modules/monitor-groups-dom.test.js (mock DOM + mock fetch).
+// R687 (2026-11-22): ПЛАН ЗАПРАШИВАЕТСЯ ТОЛЬКО КОГДА МОНИТОР ВИДЕН.
+//
+// ЖИВОЙ ФАКТ (CDP-замер на стенде, загрузка дашборда 10 с): `POST
+// /api/v1/placement/plan` уходил один раз на каждую загрузку панели, хотя
+// карточка живёт на странице «Монитор», а iframe монитора создаётся при
+// инициализации панели и остаётся скрытым (родитель держит раздел в
+// `.page{display:none}`), пока оператор его не откроет. После R684 запрос
+// отвечает 200 (CSRF ко времени готовности входа), то есть это уже не ошибка, а
+// лишняя работа: план несёт только числа трафика.
+// Факт после правки: загрузка дашборда 10 с — 0 запросов; запрос уходит при
+// первом показе раздела «Монитор» (и, если оператор сразу смотрит на карточку, —
+// по её появлению в кадре). Подробности — у watchVisibility.
+//
+// Тесты: webui/js/modules/monitor-groups-dom.test.js (mock DOM + mock fetch) и
+// webui/tests/monitor-groups-lazy-r687.test.js (ленивость и её отсутствие без
+// IntersectionObserver).
 
 (function () {
     'use strict';
@@ -213,6 +228,117 @@
 
     // --- действия ---------------------------------------------------------
 
+    // trafficPlan — состояние ОДНОГО ленивого запроса чисел трафика (R687).
+    //
+    // started снимается только при ошибке: успех повторно не запрашивается
+    // (числа меняются редко), а неудача — повод попробовать на следующем показе,
+    // а не остаться без трафика навсегда.
+    var trafficPlan = {
+        started: false,
+        intersecting: false, // карточка в кадре
+        pageVisible: false,  // страница «Монитор» показана в родителе
+        observer: null,
+        rootObserver: null
+    };
+
+    // fetchTrafficPlan — запросить план один раз и перерисовать карточку.
+    //
+    // ЭТО НЕ ОСНОВА КАРТОЧКИ. Группы, узлы, роли и VRAM приходят из
+    // renderFromPlacement (их монитор опрашивает сам); здесь только числа
+    // трафика, ради которых и был нужен отдельный POST.
+    function fetchTrafficPlan() {
+        if (trafficPlan.started) { return Promise.resolve(); }
+        trafficPlan.started = true;
+        return request('POST', '/api/v1/placement/plan', { lang: state.lang })
+            .then(function (plan) {
+                state.trafficByModel = indexTraffic(plan);
+                render();
+            })
+            .catch(function () {
+                // Трафик — дополнение к карточке, а не её содержание: без него
+                // показываем группы без чисел, а не ошибку.
+                trafficPlan.started = false;
+            });
+    }
+
+    // documentVisible — видима ли САМА страница монитора как вкладка.
+    //
+    // У monitor.html внутри iframe свой document и свой visibilityState, поэтому
+    // видимость вкладки проверяется здесь, а не в родителе: скрытая вкладка не
+    // должна тянуть план, даже если карточка в кадре.
+    function documentVisible() {
+        var doc = globalThis.document;
+        if (!doc) { return true; }
+        return doc.visibilityState !== 'hidden';
+    }
+
+    // maybeFetchTrafficPlan — единственная точка, где решается «пора».
+    //
+    // Два триггера, оба — «данные понадобились оператору»:
+    //   * карточка логических бэкендов в кадре;
+    //   * страница «Монитор» впервые показана (первый показ раздела, как в
+    //     требовании R687): тогда трафик готов к тому моменту, когда оператор
+    //     доскроллит до карточки, и ожидания «пусто, потом числа» нет.
+    function maybeFetchTrafficPlan() {
+        if (!trafficPlan.intersecting && !trafficPlan.pageVisible) { return false; }
+        if (trafficPlan.started || !documentVisible()) { return false; }
+        fetchTrafficPlan();
+        return true;
+    }
+
+    // observeVisibility — наблюдатель за одним элементом внутри monitor.html.
+    function observeVisibility(Observer, target, key) {
+        var observer = new Observer(function (entries) {
+            for (var i = 0; i < entries.length; i++) {
+                if (entries[i].isIntersecting) { trafficPlan[key] = true; break; }
+                trafficPlan[key] = false;
+            }
+            maybeFetchTrafficPlan();
+        }, { threshold: 0 });
+        observer.observe(target);
+        return observer;
+    }
+
+    // watchVisibility — ленивый триггер загрузки плана (R687).
+    //
+    // ПОЧЕМУ НАБЛЮДЕНИЕ ВНУТРИ monitor.html. Монитор — отдельный документ в
+    // iframe: у него собственный viewport, и «страница «Монитор» открыта» снаружи
+    // не видно. Наблюдатель, поставленный из index.html, не заметил бы ни
+    // свёрнутую панель, ни смену раздела.
+    //
+    // ЧТО ИЗМЕРЕНО (CDP, одноразовый контейнер). Пока родитель держит страницу
+    // «Монитор» в `.page{display:none}`, у корня документа монитора рамка 0×0 и
+    // IntersectionObserver даёт isIntersecting=false; при показе раздела рамка
+    // становится 1122×780 и наблюдатель отдаёт true. Свёрнутая панель
+    // «Placement Policy» (`.panel-body{display:none}`) так же держит карточку вне
+    // кадра. Значит запрос уходит на ПЕРВОМ реальном показе — и обязательно
+    // уходит, иначе ленивость стала бы отсутствием данных.
+    //
+    // Возвращает false, если IntersectionObserver в браузере нет: тогда autoMount
+    // ведёт себя как раньше (один запрос сразу) — данные важнее экономии запроса.
+    function watchVisibility(rootId) {
+        var Observer = globalThis.IntersectionObserver;
+        var doc = globalThis.document;
+        if (typeof Observer !== 'function' || !doc || !doc.getElementById) { return false; }
+        if (trafficPlan.observer) { return true; }
+        var root = doc.getElementById(rootId || MOUNT_ID);
+        if (!root) { return false; }
+        try {
+            trafficPlan.observer = observeVisibility(Observer, root, 'intersecting');
+            if (doc.documentElement) {
+                trafficPlan.rootObserver = observeVisibility(Observer, doc.documentElement, 'pageVisible');
+            }
+        } catch (e) {
+            trafficPlan.observer = null;
+            trafficPlan.rootObserver = null;
+            return false;
+        }
+        if (doc.addEventListener) {
+            doc.addEventListener('visibilitychange', maybeFetchTrafficPlan);
+        }
+        return true;
+    }
+
     function refresh() {
         state.loading = true;
         state.errorKey = '';
@@ -246,30 +372,25 @@
     // Монитор опрашивает `/api/v1/placement` каждые ~2 с и передаёт ответ в
     // renderPlacementPolicy. Делать здесь свой запрос значило бы удваивать трафик
     // на каждом тике ради тех же данных, поэтому карточка рисуется из того же
-    // объекта. Трафик (он есть только в /plan) подтягивается один раз при
-    // монтировании и кэшируется.
+    // объекта. Трафик (он есть только в /plan) подтягивается ОДИН раз — на первом
+    // показе раздела «Монитор» (R687), а не при загрузке страницы.
     function renderFromPlacement(pl) {
         state.groups = (pl && pl.groups) || [];
         state.errorKey = '';
         return render();
     }
 
-    // autoMount — подключение без правок логики монитора: рисуем сразу, а числа
-    // трафика добираем одним запросом (они меняются редко).
+    // autoMount — подключение без правок логики монитора: рисуем сразу, числа
+    // трафика добираем ЛЕНИВО — когда страница «Монитор»/карточка стала видна
+    // (R687).
     function autoMount() {
         if (!globalThis.document || !globalThis.document.getElementById) { return; }
         if (!globalThis.document.getElementById(MOUNT_ID)) { return; }
         state.lang = (globalThis.I18N && globalThis.I18N.getLang) ? globalThis.I18N.getLang() : state.lang;
         render();
-        request('POST', '/api/v1/placement/plan', { lang: state.lang })
-            .then(function (plan) {
-                state.trafficByModel = indexTraffic(plan);
-                render();
-            })
-            .catch(function () {
-                // Трафик — дополнение к карточке, а не её содержание: без него
-                // показываем группы без чисел, а не ошибку.
-            });
+        if (watchVisibility(MOUNT_ID)) { return; }
+        // Браузер без IntersectionObserver: один запрос сразу, как до R687.
+        fetchTrafficPlan();
     }
 
     function reset() {

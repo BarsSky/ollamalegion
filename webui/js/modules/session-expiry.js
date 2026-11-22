@@ -62,6 +62,41 @@
     // публичному /auth/me: сервер отвечает 200 и честно говорит authenticated:false.
     var PROBE_MIN_MS = 3000;
 
+    // === R683 (2026-11-22): ОДИН 401 НЕ ИМЕЕТ ПРАВА ЗАМОРОЗИТЬ ПАНЕЛЬ НАВСЕГДА ===
+    //
+    // ЖИВОЙ ДЕФЕКТ (замер на стенде, образ r682). Правило R679 «первый же 401 —
+    // это истёкшая сессия» не имеет ни подтверждения, ни обратного хода:
+    //   * note('http') переводит панель в гостя по ПЕРВОМУ 401 от ЛЮБОГО адреса;
+    //   * quietNoisyChannels() гасит авто-обновление, WS, SSE, live-tail и монитор;
+    //   * websocket.js отказывается подключаться, пока isExpired() (connect:90,
+    //     attemptReconnect:135), data-refresh.js не опрашивает (shouldPoll), тик
+    //     молчит (app-data.js), markFresh() флаг НЕ снимает;
+    //   * снять «истекла» может только reset(), то есть ТОЛЬКО явный вход
+    //     (auth.js → restoreSession).
+    // Замер (CDP, инъекция РОВНО ОДНОГО 401 в /api/v1/cluster при живой сессии):
+    // через 30 с панель по-прежнему expired=true, ws=false, шапка «Отключено»,
+    // данные заморожены; ПОСЛЕДУЮЩИЙ УСПЕШНЫЙ запрос состояния не меняет. То есть
+    // одиночный 401 (гонка с перезапуском балансера, обрыв прокси, 401 от
+    // служебного адреса) оставляет оператору мёртвую панель до ручного входа или
+    // F5 — ровно «WebUI повис, не прогружая страницу».
+    //
+    // ПРАВИЛО R683. Переход в гостя остаётся мгновенным (R679: один 401 не должен
+    // превращаться в поток ошибок и обязан объясниться один раз), но состояние
+    // ОБЯЗАНО проверяться и сниматься само, если сессия на самом деле жива:
+    // сразу после перехода модуль один раз (с повтором на сетевую ошибку)
+    // спрашивает /auth/me — ТОТ ЖЕ оракул, которым пользуются boot-гейт app.js и
+    // probe() ниже. Ответ «authenticated:true» означает ложную тревогу: панель
+    // возвращается в админский режим на месте (applyMe + resumeAfterAuth), без
+    // перезагрузки и без ввода пароля. Ответ «authenticated:false» оставляет всё
+    // как есть — тогда это настоящая истёкшая сессия.
+    var VERIFY_DELAYS_MS = (function () {
+        var raw = CFG.SESSION_EXPIRY_VERIFY_DELAY_MS;
+        if (raw === undefined || raw === null) { return [1500, 4000]; }
+        var one = Number(raw);
+        if (isFinite(one) && one >= 0) { return [one, one]; }
+        return [1500, 4000];
+    })();
+
     var AUTH_NOISE = /(^|\D)(401|403)(\D|$)|unauthori[sz]ed|not\s+authori[sz]ed|требуется\s+вход|не\s*авториз|login\s+required|sign[-\s]?in\s+required|session\s+(has\s+)?(expired|ended)|сесси[яи]\s+(заверш|истек)/i;
 
     var state = {
@@ -73,9 +108,19 @@
         reports: 0,        // сколько раз всего пришёл сигнал 401
         transitions: 0,    // сколько раз реально переключались в гостя
         probes: 0,
-        lastProbeAt: 0
+        lastProbeAt: 0,
+        // R683: проверка «а сессия правда истекла?» после перехода в гостя.
+        verifyAttempts: 0,
+        lastVerifyOutcome: '',  // 'recovered' | 'dead' | 'unknown'
+        recovered: 0,      // сколько раз ложная тревога была снята
+        lastRecoverAt: 0
     };
     var flushTimer = null;
+    // R683: таймер проверки после перехода в гостя и номер «поколения» — reset()
+    // и смена состояния отменяют уже поставленную проверку.
+    var verifyTimer = null;
+    var verifyGen = 0;
+    var api = null;   // опубликованный объект (см. isCurrentInstance)
 
     function nowMs() {
         return Date.now();
@@ -116,8 +161,149 @@
             reports: state.reports,
             transitions: state.transitions,
             probes: state.probes,
-            quietMs: QUIET_MS
+            quietMs: QUIET_MS,
+            // R683: подтверждение перехода и снятие ложной тревоги.
+            verifyAttempts: state.verifyAttempts,
+            recovered: state.recovered,
+            lastRecoverAt: state.lastRecoverAt
         };
+    }
+
+    /**
+     * isCurrentInstance — этот модуль всё ещё тот, что опубликован в window?
+     *
+     * Нужен таймеру проверки: если страница/тест перезагрузили модуль (новый
+     * window.SessionExpiry), «поколение» старого обязано замолчать, иначе его
+     * отложенная проверка подменит состояние ЧУЖОГО экземпляра.
+     */
+    function isCurrentInstance() {
+        return !!(typeof window !== 'undefined' && api && window.SessionExpiry === api);
+    }
+
+    function cancelVerify() {
+        verifyGen++;
+        if (verifyTimer) {
+            clearTimeout(verifyTimer);
+            verifyTimer = null;
+        }
+    }
+
+    /**
+     * scheduleVerify — R683: проверить переход в гостя и, если он ложный, снять его.
+     *
+     * Ставится РОВНО после перехода (note/probe) и только при живой сессии.
+     * Повтор — на сетевую ошибку (балансер недоступен): молча остаёмся гостем,
+     * как и раньше, но не более VERIFY_DELAYS_MS.length попыток.
+     */
+    function scheduleVerify() {
+        if (!state.expired || demoMode()) { return; }
+        if (verifyTimer || typeof setTimeout !== 'function') { return; }
+        if (state.verifyAttempts >= VERIFY_DELAYS_MS.length) { return; }
+        var gen = ++verifyGen;
+        var delay = VERIFY_DELAYS_MS[Math.min(state.verifyAttempts, VERIFY_DELAYS_MS.length - 1)] || 0;
+        verifyTimer = setTimeout(function () {
+            verifyTimer = null;
+            if (gen !== verifyGen || !state.expired || !isCurrentInstance()) { return; }
+            verifyNow('after-latch').then(function () {
+                // Восстановлено (expired уже снят) — больше ничего не нужно.
+                if (!state.expired) { return; }
+                // Проверить не удалось (сеть/балансер недоступен): молча остаёмся
+                // гостем, как и раньше, но даём ещё одну попытку. Подтверждённую
+                // смерть сессии повторно не спрашиваем.
+                if (state.lastVerifyOutcome === 'unknown' && state.verifyAttempts < VERIFY_DELAYS_MS.length) {
+                    scheduleVerify();
+                }
+            });
+        }, delay);
+        if (verifyTimer && typeof verifyTimer.unref === 'function') { verifyTimer.unref(); }
+    }
+
+    /**
+     * verifyNow — R683: «сессия правда закончилась?» одним запросом к /auth/me.
+     *
+     * Оракул тот же, что у boot-гейта app.js и probe(): публичный /auth/me
+     * отвечает 200 и честно сообщает authenticated. Возвращает Promise<boolean>:
+     * true — подтверждено, что сессия ЖИВА (панель восстановлена), false — либо
+     * подтверждена смерть сессии, либо проверить не удалось. Исход для повторов и
+     * диагностики пишется в state.lastVerifyOutcome ('recovered' | 'dead' | 'unknown').
+     */
+    function verifyNow(reason) {
+        state.verifyAttempts++;
+        state.lastVerifyOutcome = 'unknown';
+        var doFetch = (typeof window.fetch === 'function') ? window.fetch.bind(window) : null;
+        if (!doFetch) { return Promise.resolve(false); }
+        return doFetch('/api/v1/auth/me', {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' }
+        }).then(function (res) {
+            if (!res || typeof res.json !== 'function') { return null; }
+            return res.json();
+        }).then(function (body) {
+            if (!body || typeof body !== 'object') { return false; }
+            // Сессия жива: ложная тревога — снимаем её и возвращаем панель.
+            if (body.authenticated === true || body.tokenAuth === true) {
+                state.lastVerifyOutcome = 'recovered';
+                return recover(body, reason);
+            }
+            // Вход на сервере не настроен — это тоже не «истёкшая сессия».
+            if (body.usersConfigured !== true) {
+                state.lastVerifyOutcome = 'recovered';
+                return recover(body, reason);
+            }
+            // Настоящая истёкшая сессия: оставляем гостя, объяснение уже показано.
+            state.lastVerifyOutcome = 'dead';
+            return false;
+        }).catch(function () {
+            // Балансер недоступен/сеть упала: НЕ выдаём это за живую сессию.
+            state.lastVerifyOutcome = 'unknown';
+            return false;
+        });
+    }
+
+    /**
+     * recover — R683: снять ложную тревогу «сессия завершилась».
+     *
+     * Панель возвращается в админский режим НА МЕСТЕ: Auth.applyMe восстанавливает
+     * state (включая CSRF, потерянный при expireSession) и видимую часть (класс
+     * роли, чип, [data-admin-only]), затем App.resumeAfterAuth поднимает каналы
+     * (WS/SSE/live-tail/опрос/монитор) и перечитывает данные. Перезагрузка не
+     * нужна и не выполняется: это и был дефект — без неё панель оставалась мёртвой.
+     */
+    function recover(body, reason) {
+        if (!state.expired) { return true; }
+        var quietMs = state.at ? (nowMs() - state.at) : 0;
+        cancelVerify();
+        try {
+            if (window.Auth && typeof window.Auth.applyMe === 'function' && body) {
+                window.Auth.applyMe(body);
+            }
+        } catch (e) { /* состояние уже поправлено ниже — не падаем из-за UI */ }
+        reset();
+        state.recovered++;
+        state.lastRecoverAt = nowMs();
+        try {
+            if (window.Auth && typeof window.Auth.hideOverlay === 'function') { window.Auth.hideOverlay(); }
+            if (window.Auth && typeof window.Auth.hideBanner === 'function') { window.Auth.hideBanner(); }
+            if (window.Auth && typeof window.Auth.syncAuthUi === 'function') { window.Auth.syncAuthUi(); }
+        } catch (e) { /* видимая часть — не повод не вернуть каналы */ }
+        try {
+            if (window.App && typeof window.App.resumeAfterAuth === 'function') {
+                window.App.resumeAfterAuth();
+            } else if (window.Auth && typeof window.Auth.restoreSession === 'function') {
+                window.Auth.restoreSession();
+            }
+        } catch (e) {
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn('[session] каналы после ложной тревоги не поднялись:', e && e.message);
+            }
+        }
+        if (typeof console !== 'undefined' && console.info) {
+            console.info('[session] ложная тревога снята (' + String(reason || 'verify') +
+                '): сессия жива, панель возвращена в админский режим за ' + quietMs + ' мс, попыток проверки ' +
+                state.verifyAttempts);
+        }
+        return true;
     }
 
     /**
@@ -242,6 +428,12 @@
             console.info('[session] сессия завершилась (' + state.source + '): панель переведена в режим просмотра, ' +
                 'повторные сообщения об авторизации подавляются ' + Math.round(QUIET_MS / 1000) + ' с');
         }
+        // 4) R683: состояние обязано проверяться. Один 401 — ещё не доказательство,
+        // что сессии нет (гонка с перезапуском балансера, обрыв прокси, 401 от
+        // служебного адреса). Через VERIFY_DELAYS_MS[0] спрашиваем /auth/me: если
+        // сессия жива, recover() вернёт панель на место без F5 и без пароля.
+        state.verifyAttempts = 0;
+        scheduleVerify();
         scheduleFlush();
         return true;
     }
@@ -308,6 +500,10 @@
         state.at = 0;
         state.source = '';
         state.suppressed = 0;
+        // R683: снятое состояние отменяет и уже поставленную проверку — иначе она
+        // вернула бы админский режим повторно уже после чужого (например, явного
+        // входа с другой вкладки) перехода.
+        cancelVerify();
         if (flushTimer) {
             clearTimeout(flushTimer);
             flushTimer = null;
@@ -315,13 +511,16 @@
         return stats();
     }
 
-    window.SessionExpiry = {
+    api = {
         note: note,
         probe: probe,
         shouldSilence: shouldSilence,
         isExpired: isExpired,
         reset: reset,
         stats: stats,
-        quietMs: QUIET_MS
+        quietMs: QUIET_MS,
+        // R683: подтверждение перехода в гостя и снятие ложной тревоги.
+        verifyNow: verifyNow
     };
+    window.SessionExpiry = api;
 })();

@@ -65,6 +65,27 @@
         searchError: '',
         results: [],
         selectedRepo: '',
+        // expandedRepo — репозиторий, у которого файлы РАСКРЫТЫ в его же карточке
+        // результата (R693). Пустая строка = всё свёрнуто.
+        //
+        // ЗАЧЕМ ОТДЕЛЬНОЕ ПОЛЕ, А НЕ selectedRepo. Раньше клик по «Показать файлы»
+        // просто выбирал репозиторий и заполнял ОДНУ общую карточку файлов
+        // (#imHfFilesCard), которая стоит в разметке ПОСЛЕ всего списка найденных
+        // моделей. При 20 результатах это ~2 экрана ниже нажатой кнопки, страница
+        // туда не прокручивалась — оператор видел «клик ничего не делает», хотя
+        // строки уже были отрисованы. Теперь карточка файлов переезжает внутрь
+        // карточки нажатой модели (см. attachFilesCard), а expandedRepo говорит,
+        // в какой именно: раскрыт всегда максимум один репозиторий.
+        expandedRepo: '',
+        // repoCache — repo → {files, selection, probes, plan, familyNotice}:
+        // повторное раскрытие того же репозитория не дёргает воркер заново
+        // (файлы/паспорт/пред-проверки уже приходили), галочки оператора
+        // сохраняются. Хранятся ССЫЛКИ на объекты состояния, поэтому пред-проверка,
+        // доехавшая после сворачивания, тоже попадает в кэш.
+        repoCache: {},
+        // pickSeq — номер попытки раскрытия: ответ /hf/files, пришедший после
+        // клика по ДРУГОЙ карточке, не имеет права перезаписать её состояние.
+        pickSeq: 0,
         files: [],
         filesLoading: false,
         filesError: '',
@@ -436,6 +457,101 @@
             : '<i class="fas fa-circle-info"></i> ' + escapeHtml(text);
     }
 
+    // =====================================================================
+    // Карточка файлов: переезд внутрь раскрытой карточки результата (R693)
+    // =====================================================================
+    //
+    // ЖИВОЙ ДЕФЕКТ (числа замера на стенде r692, образ webui 18084):
+    // «Показать файлы» в списке из 20 моделей отрисовывал 16 строк файлов в
+    // карточку #imHfFilesCard, которая стоит в разметке ПОСЛЕ всего списка:
+    // кнопка нажата на y≈577, карточка файлов появляется на y≈2995 при окне
+    // 768 px, scrollY не меняется. Запрос уходит (GET /hf/files → 200), DOM
+    // меняется, а оператор в своём окне не видит НИЧЕГО — «кнопка не работает».
+    //
+    // ПОЧЕМУ ПЕРЕЕЗД УЗЛА, А НЕ ВТОРОЙ РЕНДЕР. Список файлов — это ещё и рабочий
+    // инструмент сборки bundle (галочки + роль у файла). Две копии одной модели
+    // (в карточке и внизу) означали бы два комплекта одинаковых чекбоксов
+    // data-imh-check и два источника правды. Поэтому узел один: его либо
+    // показывают в слоте раскрытой карточки, либо паркуют на прежнее место в
+    // разметке (и прячут). renderFiles() пишет всё так же в #imHfFilesBody —
+    // точка рендера не меняется, меняется только место, где её видно.
+    var filesCardNode = null;
+    var filesBodyNode = null;
+    // Где карточка жила в разметке: чтобы свернуть — вернуть на место.
+    var filesCardHome = null;
+
+    function filesCard() {
+        if (!filesCardNode) filesCardNode = el('imHfFilesCard');
+        return filesCardNode;
+    }
+
+    function filesBody() {
+        if (!filesBodyNode) filesBodyNode = el('imHfFilesBody');
+        return filesBodyNode;
+    }
+
+    /** Слот раскрытой карточки: [data-imh-files-slot="<repo>"]. */
+    function filesSlot(repo) {
+        if (!repo || typeof document === 'undefined' || !document.querySelector) return null;
+        try {
+            // Имя репозитория попадает в значение атрибута в кавычках: экранируем
+            // только то, что реально ломает CSS-селектор.
+            return document.querySelector('[data-imh-files-slot="' +
+                String(repo).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
+        } catch (e) { return null; }
+    }
+
+    /** attachFilesCard — показать карточку файлов ВНУТРИ карточки результата. */
+    function attachFilesCard(repo) {
+        var card = filesCard();
+        if (!card) return false;
+        // Место в разметке запоминаем до первого переезда (parentNode у карточки
+        // ещё исходный) — по нему парковка вернёт её ровно туда же.
+        if (!filesCardHome && card.parentNode) {
+            filesCardHome = { parent: card.parentNode, before: card.nextSibling || null };
+        }
+        var slot = filesSlot(repo);
+        if (!slot || typeof slot.appendChild !== 'function') {
+            // Разметки раскрытой карточки нет (старый index.html, тест-заглушка):
+            // не выдумываем вторую точку рендера — карточка просто скрыта.
+            card.style.display = 'none';
+            return false;
+        }
+        if (slot.appendChild) slot.appendChild(card);
+        card.style.display = '';
+        return true;
+    }
+
+    /** parkFilesCard — свернуть: карточка возвращается в разметку и скрывается. */
+    function parkFilesCard() {
+        var card = filesCard();
+        if (!card) return;
+        card.style.display = 'none';
+        if (filesCardHome && filesCardHome.parent && typeof filesCardHome.parent.insertBefore === 'function' &&
+            card.parentNode !== filesCardHome.parent) {
+            filesCardHome.parent.insertBefore(card, filesCardHome.before);
+        }
+    }
+
+    /**
+     * revealFilesCard — гарантировать, что раскрытая карточка ВИДНА.
+     *
+     * Панель растёт под кнопкой, поэтому обычно и так в окне. Но если кнопка была
+     * у нижней кромки экрана (обычное дело при 20 результатах), виден был бы один
+     * пиксель панели — и это снова выглядело бы как «ничего не раскрылось».
+     * `block:'nearest'` прокручивает ровно столько, сколько нужно, и никогда не
+     * дёргает страницу, если панель уже видна.
+     */
+    function revealFilesCard() {
+        var card = filesCard();
+        if (!card || typeof card.scrollIntoView !== 'function') return;
+        try {
+            card.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+        } catch (e) {
+            try { card.scrollIntoView(); } catch (e2) { /* старый браузер: не критично */ }
+        }
+    }
+
     function renderSearchResults() {
         var host = el('imHfSearchResults');
         if (!host) return;
@@ -473,7 +589,17 @@
             var updates = m.lastModified || m.lastUpdated || '';
             var when = updates ? String(updates).slice(0, 10) : '-';
             var selected = id === state.selectedRepo;
-            return '<div class="gguf-result-card' + (selected ? ' active' : '') + '" data-imh-repo="' + escapeHtml(id) + '">' +
+            // R693: раскрытая карточка помечена классом, кнопка — состояние
+            // (aria-expanded + другая подпись), а под кнопкой стоит слот, КУДА
+            // переезжает карточка файлов (#imHfFilesCard, см. attachFilesCard).
+            // Слот есть только у раскрытой: список файлов живёт в одном экземпляре,
+            // поэтому «две копии одной модели» невозможны by design.
+            var expanded = !!state.expandedRepo && id === state.expandedRepo;
+            var pickLabel = expanded
+                ? t('imageModels.hf_hide_files', 'Свернуть файлы')
+                : t('imageModels.hf_pick_files', 'Показать файлы');
+            return '<div class="gguf-result-card' + (selected ? ' active' : '') + (expanded ? ' imh-expanded' : '') +
+                    '" data-imh-repo="' + escapeHtml(id) + '">' +
                 '<div class="gguf-result-header">' +
                     '<div class="gguf-result-title"><i class="fas fa-cube"></i> ' + escapeHtml(id) + '</div>' +
                     '<div class="gguf-result-meta">' +
@@ -484,16 +610,25 @@
                     '</div>' +
                 '</div>' +
                 '<div class="gguf-result-actions" style="display:flex;gap:6px;margin-top:8px;">' +
-                    '<button class="btn btn-sm btn-primary" data-imh-pick="' + escapeHtml(id) + '">' +
-                        '<i class="fas fa-list"></i> ' + escapeHtml(t('imageModels.hf_pick_files', 'Показать файлы')) +
+                    '<button class="btn btn-sm ' + (expanded ? 'btn-secondary' : 'btn-primary') + '"' +
+                        ' data-imh-pick="' + escapeHtml(id) + '"' +
+                        ' aria-expanded="' + (expanded ? 'true' : 'false') + '">' +
+                        '<i class="fas ' + (expanded ? 'fa-chevron-up' : 'fa-list') + '"></i> ' + escapeHtml(pickLabel) +
                     '</button>' +
                 '</div>' +
+                (expanded ? '<div class="imh-files-slot" data-imh-files-slot="' + escapeHtml(id) + '"></div>' : '') +
             '</div>';
         }).join('');
         host.innerHTML = '<div class="gguf-results-toolbar" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
             '<span class="gguf-results-count" style="font-size:var(--font-size-xs);color:var(--text-muted);">' +
                 escapeHtml(t('gguf.results_count', 'Found: {n}', { n: list.length })) + '</span>' +
             '</div><div class="gguf-results-list">' + rows + '</div>';
+        // Разметка списка только что пересобрана — карточка файлов, если она была
+        // внутри старой карточки, вместе с ней и уничтожилась из DOM (сам узел
+        // жив: ссылка в filesCard()). Возвращаем её в слот раскрытой модели или
+        // паркуем обратно (свёрнуто).
+        if (state.expandedRepo) attachFilesCard(state.expandedRepo);
+        else parkFilesCard();
     }
 
     // =====================================================================
@@ -649,28 +784,48 @@
     }
 
     function renderFiles() {
-        var card = el('imHfFilesCard');
-        var body = el('imHfFilesBody');
+        var card = filesCard();
+        var body = filesBody();
         if (!card || !body) return;
-        if (!state.selectedRepo) { card.style.display = 'none'; return; }
+        // Свёрнуто (или репозиторий не выбран) — карточка припаркована и скрыта.
+        // Без этого условия пред-проверка, доехавшая после сворачивания, снова
+        // показала бы карточку внизу страницы — ровно тот дефект, что чиним.
+        if (!state.expandedRepo || !state.selectedRepo) { card.style.display = 'none'; return; }
         card.style.display = '';
         var title = el('imHfRepoName');
         if (title) title.textContent = state.selectedRepo;
 
         if (state.filesLoading) {
-            body.innerHTML = '<tr><td colspan="5" class="loading-cell">' +
-                escapeHtml(t('common.loading', 'Loading...')) + '</td></tr>';
+            body.innerHTML = '<div class="gguf-empty-state imh-files-state">' +
+                '<i class="fas fa-spinner fa-spin"></i> ' +
+                escapeHtml(t('common.loading', 'Loading...')) + '</div>';
             return;
         }
         if (state.filesError) {
-            body.innerHTML = '<tr><td colspan="5" class="loading-cell" style="color:var(--danger);">' +
-                escapeHtml(state.filesError) + '</td></tr>';
+            body.innerHTML = '<div class="gguf-empty-state imh-files-state imh-files-error">' +
+                '<i class="fas fa-triangle-exclamation" style="color:var(--danger);"></i>' +
+                '<div style="margin-top:6px;font-weight:500;">' +
+                    escapeHtml(t('imageModels.hf_files_failed', 'Не удалось прочитать файлы репозитория')) +
+                '</div>' +
+                '<div style="margin-top:4px;color:var(--text-muted);font-size:var(--font-size-xs);">' +
+                    escapeHtml(state.filesError) + '</div></div>';
             return;
         }
         var files = Array.isArray(state.files) ? state.files : [];
         if (!files.length) {
-            body.innerHTML = '<tr><td colspan="5" class="loading-cell">' +
-                escapeHtml(t('gguf.no_results', 'Nothing found')) + '</td></tr>';
+            // ПУСТОЕ СОСТОЯНИЕ, А НЕ «ничего не произошло»: у модели реально нет
+            // файлов (например, репозиторий только с карточкой модели), и оператор
+            // должен понимать, что делать дальше, а не жать кнопку повторно.
+            body.innerHTML = '<div class="gguf-empty-state imh-files-state imh-files-empty">' +
+                '<i class="fas fa-folder-open" style="opacity:0.45;"></i>' +
+                '<div style="margin-top:6px;font-weight:500;">' +
+                    escapeHtml(t('imageModels.hf_no_files', 'В этом репозитории нет файлов для скачивания')) +
+                '</div>' +
+                '<div style="margin-top:4px;color:var(--text-muted);font-size:var(--font-size-xs);white-space:normal;">' +
+                    escapeHtml(t('imageModels.hf_no_files_hint',
+                        'Возьмите GGUF-квант этой модели: добавьте к запросу «-GGUF» или откройте репозиторий автора — веса могут лежать в соседнем репозитории.')) +
+                '</div></div>';
+            renderSelectionSummary();
             return;
         }
         // Предупреждение о неполном наборе (DiT-семейства), вердикт репозитория и
@@ -932,6 +1087,14 @@
         if (!requireBackend()) return false;
         var q = String(query === undefined ? (el('imHfQuery') ? el('imHfQuery').value : state.query) : query).trim();
         state.query = q;
+        // Новый поиск = новый список карточек: раскрытая модель из прошлой выдачи
+        // в нём может отсутствовать, поэтому раскрытие сбрасываем, а карточку
+        // файлов паркуем на место (иначе она осталась бы висеть «в воздухе»).
+        if (state.expandedRepo) {
+            rememberRepo(state.expandedRepo);
+            state.expandedRepo = '';
+            parkFilesCard();
+        }
         if (q.length < 2 && q.indexOf('/') === -1) {
             state.results = [];
             state.searchError = '';
@@ -958,9 +1121,103 @@
         return true;
     }
 
+    /** Имя bundle по умолчанию — из имени репозитория (если поле ещё пустое). */
+    function applyBundleName() {
+        var nameInput = el('imgBundleName');
+        if (!nameInput || nameInput.value) return;
+        nameInput.value = String(String(state.selectedRepo || '').split('/').pop() || '').toLowerCase()
+            .replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+    }
+
+    /**
+     * rememberRepo / restoreRepo — кэш одного репозитория.
+     *
+     * ЗАЧЕМ. Раскрытие — это ПЕРЕКЛЮЧАТЕЛЬ (повторный клик сворачивает). Без кэша
+     * «свернул → раскрыл» заново тянуло бы /hf/files, /hf/plan и пред-проверки
+     * (на живом репозитории это 1 + 1 + 3 запроса), а галочки оператора
+     * сбрасывались бы в значения по умолчанию.
+     *
+     * ХРАНИМ ССЫЛКИ, а не копии: пред-проверка, доехавшая уже после сворачивания,
+     * мутирует state.probes — и в кэше оказывается актуальный вердикт.
+     */
+    function rememberRepo(repo) {
+        if (!repo) return;
+        state.repoCache[repo] = {
+            files: Array.isArray(state.files) ? state.files : [],
+            selection: state.selection || {},
+            probes: state.probes || {},
+            plan: state.plan || null,
+            familyNotice: state.familyNotice || ''
+        };
+    }
+
+    function restoreRepo(repo) {
+        var cached = repo ? state.repoCache[repo] : null;
+        if (!cached) return false;
+        state.files = cached.files;
+        // empty → defaultSelection: у репозитория без файлов выбора нет, и это
+        // нормальное состояние (пустое состояние рисует renderFiles).
+        state.selection = cached.selection || {};
+        state.probes = cached.probes || {};
+        state.plan = cached.plan || null;
+        state.familyNotice = cached.familyNotice || '';
+        state.filesLoading = false;
+        state.filesError = '';
+        state.planLoading = false;
+        applyBundleName();
+        return true;
+    }
+
+    /**
+     * collapseRepo — свернуть раскрытую модель.
+     *
+     * Галочки и выбранные роли НЕ выбрасываются: оператор свернул список, чтобы
+     * посмотреть другую модель или дотянуться до кнопки скачивания, а не чтобы
+     * заново отмечать файлы. Состояние живёт в кэше репозитория.
+     */
+    function collapseRepo() {
+        rememberRepo(state.expandedRepo);
+        state.expandedRepo = '';
+        parkFilesCard();
+        renderSearchResults();
+        renderFiles();
+        return true;
+    }
+
+    /**
+     * pickRepo — раскрыть файлы репозитория В ЕГО ЖЕ карточке (R693).
+     *
+     * Поведение переключателя:
+     *   - клик по свёрнутой карточке: раскрыть, при первом обращении — запрос
+     *     /hf/files + /hf/plan + пред-проверка главного файла;
+     *   - повторный клик по той же карточке: свернуть, НИ ОДНОГО запроса;
+     *   - клик по другой карточке: раскрыть её (прежняя сворачивается);
+     *   - повторное раскрытие ранее раскрытой: из кэша, без запросов.
+     */
     async function pickRepo(repo) {
         if (!requireBackend()) return false;
-        state.selectedRepo = String(repo || '');
+        var target = String(repo || '');
+        if (!target) return false;
+        // Повторный клик по раскрытой карточке — свернуть (без сети).
+        if (state.expandedRepo === target) return collapseRepo();
+        // Уходим с предыдущего репозитория — сохраняем его состояние.
+        rememberRepo(state.expandedRepo);
+        state.expandedRepo = target;
+        state.selectedRepo = target;
+        renderSearchResults();
+        // Номер попытки: клики по карточкам теперь переключатели, и оператор может
+        // раскрыть вторую модель, пока грузится первая. Счётчик растёт на КАЖДОМ
+        // переключении (в том числе на попадании в кэш): ответ устаревшей попытки
+        // кладём в кэш под ЕГО репозиторием, а состояние (оно уже описывает
+        // другую модель) не трогаем — иначе файлы одной модели показались бы под
+        // именем другой.
+        var seq = ++state.pickSeq;
+        // Уже приходило — показываем из кэша (ни одного запроса).
+        if (restoreRepo(target)) {
+            renderFiles();
+            revealFilesCard();
+            return true;
+        }
         state.files = [];
         state.filesError = '';
         state.filesLoading = true;
@@ -972,24 +1229,37 @@
         state.plan = null;
         state.planLoading = true;
         state.familyNotice = '';
-        renderSearchResults();
+        // «Загрузка…» появляется сразу в раскрытой карточке — оператор видит
+        // реакцию на клик ещё до ответа воркера (живой поиск HF идёт секунды).
         renderFiles();
+        revealFilesCard();
+        var files = [];
+        var fail = '';
         try {
-            var data = await request(backendUrl('hf/files?modelId=' + encodeURIComponent(state.selectedRepo) +
+            var data = await request(backendUrl('hf/files?modelId=' + encodeURIComponent(target) +
                 '&revision=main'), { timeoutMs: TIMEOUT_SEARCH_MS });
-            state.files = (data && Array.isArray(data.files)) ? data.files : [];
-            // Отметки по умолчанию — по СЕРВЕРНЫМ ролям (suggestedRole).
-            state.selection = defaultSelection(state.files, null);
-            // Имя bundle по умолчанию: имя репозитория (оператор поправит).
-            var nameInput = el('imgBundleName');
-            if (nameInput && !nameInput.value) {
-                nameInput.value = String(state.selectedRepo.split('/').pop() || '').toLowerCase()
-                    .replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
-            }
+            files = (data && Array.isArray(data.files)) ? data.files : [];
         } catch (e) {
-            state.filesError = (e && e.message) || String(e);
+            fail = (e && e.message) || String(e);
         }
+        if (seq !== state.pickSeq) {
+            // Попытка устарела: только кэш, без рендера и без плана/пред-проверок.
+            state.repoCache[target] = {
+                files: files,
+                selection: defaultSelection(files, null),
+                probes: {},
+                plan: null,
+                familyNotice: ''
+            };
+            return true;
+        }
+        state.files = files;
+        // Отметки по умолчанию — по СЕРВЕРНЫМ ролям (suggestedRole).
+        state.selection = defaultSelection(files, null);
+        if (fail) state.filesError = fail;
         state.filesLoading = false;
+        applyBundleName();
+        rememberRepo(target);
         // Паспорт репозитория: комплектность набора + режим движка + шаги. Один
         // запрос к воркеру (он читает заголовок главного файла Range-запросом).
         loadPlan();
@@ -1381,9 +1651,22 @@
 
     function onClick(ev) {
         var target = ev && ev.target;
+        // R693: карточка файлов теперь физически лежит ВНУТРИ карточки результата,
+        // а та кликабельна целиком (data-imh-repo). Без этой проверки клик по
+        // галочке файла или по селекту роли всплывал бы до карточки и СВОРАЧИВАЛ
+        // раскрытую модель прямо под рукой оператора. Действия внутри карточки
+        // («Проверить», отмена загрузки) продолжают работать: пропускаем только
+        // ветку «показать/свернуть файлы».
+        var insideFiles = false;
+        try {
+            insideFiles = !!(target && filesCardNode &&
+                typeof filesCardNode.contains === 'function' && filesCardNode.contains(target));
+        } catch (e) { insideFiles = false; }
         while (target && target.getAttribute) {
-            var repo = target.getAttribute('data-imh-repo') || target.getAttribute('data-imh-pick');
-            if (repo) { pickRepo(repo); return; }
+            if (!insideFiles) {
+                var repo = target.getAttribute('data-imh-repo') || target.getAttribute('data-imh-pick');
+                if (repo) { pickRepo(repo); return; }
+            }
             // Пред-проверка файла (заголовок, без скачивания).
             var probePath = target.getAttribute('data-imh-probe');
             if (probePath) { probeFile(probePath); return; }
@@ -1524,6 +1807,8 @@
         _actions: {
             search: search,
             pickRepo: pickRepo,
+            // R693: свернуть раскрытую модель и вернуть карточку файлов на место.
+            collapseRepo: collapseRepo,
             setSelection: setSelection,
             selectBySuggested: selectBySuggested,
             clearSelection: clearSelection,

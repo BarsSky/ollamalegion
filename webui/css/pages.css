@@ -611,6 +611,44 @@
     gap: var(--space-3);
     flex-wrap: wrap;
 }
+
+/* R693 (2026-11-24): раскрытые файлы модели — ВНУТРИ её карточки результата.
+ *
+ * Карточка #imHfFilesCard переезжает в слот .imh-files-slot (см.
+ * image-models-hf.js: attachFilesCard). Стили .card дали бы «карточку в
+ * карточке» с двойной рамкой и внешним отступом, поэтому внутри слота панель
+ * выглядит как раскрывающийся блок: без своего margin, на фоне секции.
+ * Признак раскрытия — .imh-expanded на карточке результата (акцентная рамка,
+ * как у выбранного бэкенда на других страницах). */
+.gguf-result-card.imh-expanded {
+    border-color: var(--accent);
+}
+.gguf-result-card .imh-files-slot > .card {
+    margin: 10px 0 0;
+    border: 1px solid var(--border, var(--glass-border));
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    box-shadow: none;
+}
+.gguf-result-card .imh-files-slot > .card .card-body {
+    padding-top: 0;
+}
+/* Пустое состояние / «Загрузка…» / ошибка внутри карточки файлов: короткий блок
+ * на всю ширину, а не «одна строчка посреди пустоты». */
+.imh-files-state {
+    padding: 14px 4px;
+    text-align: center;
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+}
+.imh-files-state i {
+    font-size: var(--font-size-lg);
+    margin-right: 6px;
+}
+.imh-files-error {
+    color: var(--danger);
+}
+
 .gguf-file-item,
 .gguf-file-card {
     display: flex;

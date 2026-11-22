@@ -1065,6 +1065,32 @@
 }
 
 /* ===== GGUF Master-Detail Layout ===== */
+/* R689 (2026-11-23): строка состояния авто-обновления над правой панелью.
+   Появляется только пока перерисовка панели отложена защитой формы (оператор
+   печатает): «данные обновлены 3 с назад · перерисовка приостановлена, пока вы
+   вводите · обновлений: 7». Стиль — как у служебных строк страницы (HF Token):
+   тихий фон, мелкий шрифт, приглушённый текст; акцентная полоса слева, чтобы
+   строка читалась как состояние, а не как ошибка. */
+.gguf-auto-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    margin-bottom: 8px;
+    border-radius: var(--radius-md);
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-left: 3px solid var(--accent);
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+}
+.gguf-auto-status[hidden] {
+    display: none;
+}
+.gguf-auto-status i {
+    color: var(--accent);
+}
+
 .gguf-master-layout {
     display: grid;
     grid-template-columns: 320px 1fr;

@@ -58,7 +58,44 @@
 // передают `{auto: true}`, явные действия оператора (таб, кнопка «Обновить»,
 // выбор бэкенда) пересобирают панель всегда, но тоже с переносом значений.
 //
-// Тесты: webui/tests/gguf-form-guard-r688.test.js (RED на коде до R688).
+// ---------------------------------------------------------------------------
+// R689 (2026-11-23): ПАНЕЛЬ ПЕРЕСОБИРАЛАСЬ ДАЖЕ КОГДА ДАННЫЕ НЕ МЕНЯЛИСЬ.
+//
+// ЖИВАЯ ЖАЛОБА (вторая половина той же истории): «Пока не вводится значение,
+// интерфейс продолжает скакать при обновлении, но форму не закрывает. Когда же
+// есть фокус на поле для ввода, то обновления скачками пропадают, и не понятно,
+// обновляется ли статус».
+//
+// ЗАМЕР ДО ПРАВКИ (CDP, образ r688, вкладка «Настройки» бэкенда, 20 с без ввода):
+// 12 подмен DOM правой панели (8 панели + 4 содержимого) при НЕИЗМЕННЫХ данных.
+// Каждая подмена — это и есть «скачок»: innerHTML пересоздаёт те же узлы, на
+// мгновение меняет высоту/раскладку, сбрасывает положение прокрутки и заставляет
+// перерисоваться всё поддерево. При этом блоки формы, которые дорисовываются
+// асинхронно (data-role="cpp-load-defaults"/"cpp-model-catalog"), после подмены
+// остаются заглушкой «Загрузка…», пока оператор не кликнет по табу заново.
+//
+// ПРАВИЛО R689. Пересборка начинается со сравнения: новая разметка против ТОГО,
+// ЧТО МОДУЛЬ ЗАПИСАЛ В ЭТОТ УЗЕЛ ПРОШЛЫЙ РАЗ (WeakMap по узлу). Совпало —
+// DOM не трогаем ВООБЩЕ (ни innerHTML, ни восстановлений: трогать нечего).
+// Не совпало — подмена происходит, но с сохранением scrollTop/scrollLeft (самого
+// узла и всех прокручиваемых предков), раскрытых <details>, введённых значений и
+// позиции каретки.
+//
+// ПОЧЕМУ СРАВНИВАЕМ СО СНИМКОМ, А НЕ С ЖИВЫМ innerHTML. Часть панели дорисовывают
+// ЧУЖИЕ модули (форма параметров загрузки, cpp-load-defaults, cpp-model-catalog,
+// список профилей), причём напрямую в DOM. Живой innerHTML поэтому НИКОГДА не
+// совпадёт со свежим рендером: сравнение с ним всегда давало бы «изменилось» и
+// возвращало бы ровно то поведение, на которое жалуются. Снимок же отвечает на
+// правильный вопрос: «изменились ли ДАННЫЕ, из которых этот узел нарисован».
+//
+// R689 также даёт оператору обратную связь, когда пересборка отложена: модуль
+// зовёт window.GgufRefreshStatus (см. js/modules/gguf-refresh-status.js), и рядом
+// с панелью видно «данные обновлены 3 с назад · перерисовка приостановлена, пока
+// вы вводите». Данные при этом продолжают идти: заслон стоит на DOM, а не на
+// запросах.
+//
+// Тесты: webui/tests/gguf-form-guard-r688.test.js (RED на коде до R688),
+//        webui/tests/gguf-auto-refresh-stability-r689.test.js (RED на коде до R689).
 (function () {
     'use strict';
 
@@ -255,6 +292,179 @@
         return moved;
     }
 
+    // --- R689: снимок разметки, прокрутка, каретка, обратная связь -----------
+
+    /**
+     * lastWritten — что модуль записал в каждый узел в прошлый раз.
+     *
+     * WeakMap по узлу: узел выбросили (сменилась страница/бэкенд) — запись ушла
+     * вместе с ним, памяти не течёт и чужой узел со старым снимком не сравнить.
+     */
+    var lastWritten = (typeof WeakMap === 'function') ? new WeakMap() : null;
+
+    /**
+     * normalizeHtml — сравнимая форма разметки.
+     *
+     * Между тегами отступы не влияют на картинку, поэтому переводы строк и
+     * пробелы вокруг «><» схлопываем: иначе косметическая разница форматирования
+     * считалась бы изменением данных (и давала бы тот самый «скачок» на ровном
+     * месте). Содержимое текстовых узлов не нормализуется — реальные изменения
+     * (цифры, статусы) видны и различаются.
+     */
+    function normalizeHtml(html) {
+        if (html === null || html === undefined) { return ''; }
+        return String(html)
+            .replace(/\r\n?/g, '\n')
+            .replace(/>[\t ]*\n[\t ]*</g, '><')
+            .replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '');
+    }
+
+    /** pushScroll — запомнить положение прокрутки узла (если оно не нулевое). */
+    function pushScroll(out, el) {
+        if (!el) { return; }
+        var top = el.scrollTop;
+        var left = el.scrollLeft;
+        if (typeof top !== 'number') { return; }
+        if (!top && !left) { return; }
+        out.push({ el: el, top: top, left: (typeof left === 'number') ? left : 0 });
+    }
+
+    /**
+     * captureScroll — положение прокрутки узла И его прокручиваемых предков.
+     *
+     * ЗАЧЕМ ПРЕДКИ. Сам .gguf-detail-panel не прокручивается: прокрутка живёт на
+     * контейнере страницы/документе. innerHTML панели на мгновение уменьшает
+     * высоту содержимого (асинхронные блоки формы ещё не дорисованы), браузер
+     * упирает scrollTop в новый предел — и после перерисовки оператор оказывается
+     * в другом месте. Это и есть «прыгает прокрутка» из жалобы, поэтому чиним не
+     * только сам узел, но и путь к нему.
+     */
+    function captureScroll(root) {
+        var out = [];
+        if (!root) { return out; }
+        pushScroll(out, root);
+        var el = root.parentNode;
+        var guard = 0;
+        while (el && guard < 60) {
+            guard++;
+            pushScroll(out, el);
+            el = el.parentNode || null;
+        }
+        if (typeof document !== 'undefined' && document.scrollingElement) {
+            pushScroll(out, document.scrollingElement);
+        }
+        return out;
+    }
+
+    /** restoreScroll — вернуть запомненное положение прокрутки. @returns {number} */
+    function restoreScroll(saved) {
+        var moved = 0;
+        if (!saved || !saved.length) { return 0; }
+        for (var i = 0; i < saved.length; i++) {
+            var rec = saved[i];
+            if (!rec || !rec.el) { continue; }
+            try {
+                if (rec.el.scrollTop !== rec.top) { rec.el.scrollTop = rec.top; moved++; }
+                if (typeof rec.left === 'number' && rec.el.scrollLeft !== rec.left) {
+                    rec.el.scrollLeft = rec.left;
+                }
+            } catch (e) { /* узел отрезан от документа — восстанавливать нечего */ }
+        }
+        return moved;
+    }
+
+    /**
+     * captureCaret — поле с фокусом и позиция каретки.
+     *
+     * Авто-проход не доходит сюда с фокусом в поле (панель защищена), но явная
+     * пересборка может случиться в момент, когда оператор просто смотрит в поле
+     * (например, после «Повторить» на плашке ошибки). Возвращаем фокус тому же
+     * полю по id — идентичность узлов innerHTML всё равно уничтожает.
+     */
+    function captureCaret(root) {
+        if (typeof document === 'undefined' || !document.activeElement) { return null; }
+        var active = document.activeElement;
+        if (!active || active === root) { return null; }
+        if (root && typeof root.contains === 'function' && !root.contains(active)) { return null; }
+        var id = active.id || (typeof active.getAttribute === 'function' ? active.getAttribute('id') : '') || '';
+        if (!id) { return null; }
+        var caret = { id: String(id), start: null, end: null };
+        try {
+            if (typeof active.selectionStart === 'number') {
+                caret.start = active.selectionStart;
+                caret.end = active.selectionEnd;
+            }
+        } catch (e) { /* number/checkbox не поддерживают выделение */ }
+        return caret;
+    }
+
+    /** restoreCaret — вернуть фокус и выделение полю с тем же id. */
+    function restoreCaret(caret) {
+        if (!caret || !caret.id) { return false; }
+        if (typeof document === 'undefined' || typeof document.getElementById !== 'function') { return false; }
+        var el = document.getElementById(caret.id);
+        if (!el || typeof el.focus !== 'function') { return false; }
+        try {
+            el.focus({ preventScroll: true });
+            if (caret.start !== null && typeof el.setSelectionRange === 'function') {
+                el.setSelectionRange(caret.start, caret.end === null ? caret.start : caret.end);
+            }
+            return true;
+        } catch (e) { return false; }
+    }
+
+    /** refreshStatus — модуль видимой обратной связи (может быть не подключён). */
+    function refreshStatus() {
+        var w = win();
+        return (w && w.GgufRefreshStatus) || null;
+    }
+
+    function statusNotify(method, arg) {
+        var S = refreshStatus();
+        if (S && typeof S[method] === 'function') {
+            try { S[method](arg); } catch (e) { /* индикатор не должен ломать рендер */ }
+        }
+    }
+
+    /** forgetSnapshot — заставить следующий проход пересобрать узел (и предков). */
+    function forgetSnapshot(root) {
+        if (!lastWritten || !root) { return 0; }
+        var el = root;
+        var guard = 0;
+        var dropped = 0;
+        while (el && guard < 20) {
+            guard++;
+            if (lastWritten.has(el)) {
+                lastWritten.delete(el);
+                dropped++;
+            }
+            el = el.parentNode || null;
+        }
+        return dropped;
+    }
+
+    /**
+     * rebaseline — объявить снимок узла равным текущему рендеру.
+     *
+     * ЗАЧЕМ. Часть панели дорисовывается НАПРЯМУЮ (форма параметров загрузки,
+     * профили модели, каталог): после этой дорисовки рендер панели впервые
+     * содержит форму вместо заглушки «Загрузка…». Без rebaseline следующий
+     * авто-проход увидел бы «разметка другая», пересобрал панель — и уничтожил
+     * только что приехавшие блоки, вернув их в состояние заглушки (замер: высота
+     * панели 4268 → 1935 px, defaults=false, catalog=false). rebaseline говорит:
+     * «то, что сейчас показывает страница, и есть актуальный вид», поэтому
+     * пересборка не нужна ни на этом проходе, ни на следующих.
+     *
+     * Вызывает тот, кто ЗНАЕТ рендер-функции панели (gguf-detail-settings.js →
+     * rebaselinePanel), а не сам модуль: он не должен зависеть от рендереров.
+     */
+    function rebaseline(root, html) {
+        if (!lastWritten || !root) { return false; }
+        if (html === null || html === undefined) { return false; }
+        lastWritten.set(root, String(html));
+        return true;
+    }
+
     /**
      * rebuild — безопасно заменить содержимое узла.
      *
@@ -270,14 +480,35 @@
     function rebuild(root, render, opts) {
         if (!root) { return false; }
         var auto = !!(opts && opts.auto);
-        if (auto && protectsPanel(root)) { return false; }
+        if (auto && protectsPanel(root)) {
+            // R689(2): пересборка отложена — оператор должен видеть, что данные
+            // всё равно обновляются и почему панель не перерисовывается.
+            statusNotify('noteDeferred');
+            return false;
+        }
+        // С этого места пересборка разрешена: «приостановлено» больше не правда.
+        statusNotify('noteResumed');
+        // Порядок как в R688: снимаем значения ДО рендера — рендер видит
+        // актуальное состояние. Все снятия ниже — только ЧТЕНИЕ DOM.
         var pending = collect(root);
         rememberOpen(root);
+        var scroll = captureScroll(root);
+        var caret = captureCaret(root);
         var html = (typeof render === 'function') ? render() : render;
         if (html === null || html === undefined) { return false; }
-        root.innerHTML = String(html);
+        var next = String(html);
+        // R689(1): данные не изменились — DOM не трогаем ВООБЩЕ. Именно эта
+        // ветка убирает «скачки»: 12 подмен за 20 с при неизменных данных.
+        var prev = lastWritten ? lastWritten.get(root) : undefined;
+        if (prev !== undefined && normalizeHtml(prev) === normalizeHtml(next)) {
+            return false;
+        }
+        root.innerHTML = next;
+        if (lastWritten) { lastWritten.set(root, next); }
         restore(root, pending);
         applyOpen(root);
+        restoreScroll(scroll);
+        restoreCaret(caret);
         return true;
     }
 
@@ -306,7 +537,14 @@
         var FD = formDirty();
         var id = (typeof target === 'string') ? target : (pageIdOf(target) || PAGE_FALLBACK_ID);
         if (FD && typeof FD.noteSave === 'function') { FD.noteSave(id); }
-        if (target && typeof target === 'object') { markBases(target); }
+        if (target && typeof target === 'object') {
+            markBases(target);
+            // R689: сохранение — новый базовый срез. Снимок «что мы писали в DOM»
+            // больше не описывает то, что должно быть на экране (в форме остались
+            // значения оператора, а сервер подтвердил свои), поэтому следующий
+            // проход обязан пересобрать поддерево: снимок забываем.
+            forgetSnapshot(target);
+        }
         return id;
     }
 
@@ -326,7 +564,15 @@
         rebuild: rebuild,
         afterRender: afterRender,
         noteSaved: noteSaved,
-        _openState: function () { return openState; }
+        rebaseline: rebaseline,
+        normalizeHtml: normalizeHtml,
+        captureScroll: captureScroll,
+        restoreScroll: restoreScroll,
+        _openState: function () { return openState; },
+        // Тесты R689: снимок, записанный для узла, и сброс (новый узел — чистый
+        // лист, но в тесте узлы переиспользуются между проверками).
+        _snapshotOf: function (root) { return lastWritten ? lastWritten.get(root) : undefined; },
+        _forget: function (root) { if (lastWritten && root) { lastWritten.delete(root); } }
     };
     if (typeof window !== 'undefined') {
         window.GgufDetailFormState = api;

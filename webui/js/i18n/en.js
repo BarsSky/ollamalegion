@@ -334,6 +334,17 @@ window.I18N_EN = {
   "refresh.failed": "Could not refresh data",
   "refresh.toggle_auto_pause": "Pause auto-refresh",
   "refresh.toggle_auto_resume": "Resume auto-refresh",
+
+  // ==== R689 (2026-11-23): GGUF detail panel feedback ====
+  // While the operator edits the load-parameters form, auto redraw of the GGUF
+  // panel is deferred; the line above the panel (#ggufAutoStatus) says that data
+  // keeps refreshing and why the panel is not repainted yet. Built in
+  // webui/js/modules/gguf-refresh-status.js.
+  "gguf.auto.data_just_now": "data updated just now",
+  "gguf.auto.data_ago": "data updated {age} ago",
+  "gguf.auto.data_waiting": "no update yet",
+  "gguf.auto.redraw_paused": "redraw paused while you type",
+  "gguf.auto.updates_count": "updates: {n}",
   "common.unknown": "Unknown",
   "common.connected": "Connected",
   "common.disconnected": "Disconnected",

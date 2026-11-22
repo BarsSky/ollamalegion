@@ -150,6 +150,16 @@ const GgufRenderer = (window.GgufRenderer = (function () {
             '</div>' +
 
             // Master-detail grid
+            // R689 (2026-11-23): компактная строка обратной связи над правой
+            // панелью. Живёт ВНЕ #ggufDetailPanel: панель пересобирается
+            // авто-обновлением, а эта строка обязана пережить пересборку —
+            // иначе она мигала бы вместе с панелью. Наполняет её
+            // js/modules/gguf-refresh-status.js; пустая и скрытая, пока
+            // перерисовка не отложена защитой формы.
+            '<div class="gguf-auto-status" id="ggufAutoStatus" role="status" aria-live="polite" hidden>' +
+                '<i class="fas fa-hourglass-half" aria-hidden="true"></i>' +
+                '<span id="ggufAutoStatusText"></span>' +
+            '</div>' +
             '<div class="gguf-master-layout">' +
                 // Left: backend list
                 renderBackendsPanel() +

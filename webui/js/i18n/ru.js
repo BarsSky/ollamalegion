@@ -323,6 +323,17 @@ window.I18N_RU = {
   "refresh.failed": "Не удалось обновить данные",
   "refresh.toggle_auto_pause": "Приостановить авто-обновление",
   "refresh.toggle_auto_resume": "Возобновить авто-обновление",
+
+  // ==== R689 (2026-11-23): обратная связь правой панели GGUF ====
+  // Пока оператор правит форму параметров загрузки, авто-перерисовка панели
+  // отложена — строка над панелью (#ggufAutoStatus) объясняет, что данные всё
+  // равно обновляются и почему панель стоит. Собирается в
+  // webui/js/modules/gguf-refresh-status.js.
+  "gguf.auto.data_just_now": "данные обновлены только что",
+  "gguf.auto.data_ago": "данные обновлены {age} назад",
+  "gguf.auto.data_waiting": "данные ещё не обновлялись",
+  "gguf.auto.redraw_paused": "перерисовка приостановлена, пока вы вводите",
+  "gguf.auto.updates_count": "обновлений: {n}",
   "common.unknown": "Неизвестно",
   "common.connected": "Подключено",
   "common.disconnected": "Отключено",

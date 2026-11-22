@@ -2756,6 +2756,10 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <!-- R688 (2026-11-22): до refresh — обе функции пересборки панели
          (refreshDetailPanel/Pane) зовут window.GgufDetailFormState, чтобы не
          стирать незавершённый ввод оператора в форме параметров загрузки. -->
+    <!-- R689 (2026-11-23): строка обратной связи над панелью — «данные
+         обновлены N с назад · перерисовка приостановлена, пока вы вводите».
+         Грузится ДО модуля защиты: тот зовёт её при отложенной пересборке. -->
+    <script defer src="js/modules/gguf-refresh-status.js?v=R689"></script>
     <script defer src="js/modules/gguf-detail-form-state.js?v=R688"></script>
     <script defer src="js/modules/gguf-renderer-refresh.js?v=R425"></script>
     <script defer src="js/modules/gguf-page-provider.js?v=R425"></script>

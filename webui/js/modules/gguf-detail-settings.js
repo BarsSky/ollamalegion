@@ -144,6 +144,33 @@
     }
 
     /**
+     * rebaselinePanel — R689: сообщить слою защиты, что панель уже показывает
+     * актуальный вид после ПРЯМОЙ дорисовки формы.
+     *
+     * ЗАЧЕМ. Форма параметров загрузки рисуется напрямую в
+     * #ggufBackendOptionsContainer (и кэшируется в state._settingsFormHtmlByBackend).
+     * С этого момента рендер панели впервые содержит форму, а не заглушку
+     * «Загрузка…». Без rebaseline следующий авто-проход считает это изменением
+     * данных, пересобирает панель — и уничтожает профили/defaults/catalog,
+     * которые к тому моменту уже приехали (живой замер: высота панели
+     * 4268 → 1935 px, блоки снова «Загрузка…»). После rebaseline пересборки нет:
+     * страница уже показывает ровно то, что нарисовал бы рендер.
+     */
+    function rebaselinePanel() {
+        var G = formState();
+        if (!G || typeof G.rebaseline !== 'function') { return false; }
+        if (typeof M.renderDetailPanel === 'function') {
+            var panel = document.getElementById('ggufDetailPanel');
+            if (panel) G.rebaseline(panel, M.renderDetailPanel());
+        }
+        if (typeof M.renderDetailPane === 'function') {
+            var pane = document.getElementById('ggufDetailContent');
+            if (pane) G.rebaseline(pane, M.renderDetailPane());
+        }
+        return true;
+    }
+
+    /**
      * Загрузить текущие llama.cpp-дефолты выбранного cppworker'а и отрендерить
      * редактируемую форму внутри #ggufBackendOptionsContainer.
      *
@@ -280,6 +307,10 @@
             // оператора» и навсегда блокировали пересборку панели) и возвращаем
             // раскрытые секции, запомненные до спиннера.
             if (G && typeof G.afterRender === 'function') G.afterRender(container);
+            // R689: форма нарисована напрямую — сообщаем об этом слою защиты,
+            // иначе ближайший авто-проход пересоберёт панель и снова превратит
+            // профили/defaults/catalog в «Загрузка…» (см. rebaselinePanel).
+            rebaselinePanel();
             // Round 35c+ (2026-08-13): init gpu_layers live badge (после render, чтобы
             // badge отражал текущее значение gpu, а не дефолт "AUTO" в HTML).
             if (Utils.updateGpuLayersBadge) {

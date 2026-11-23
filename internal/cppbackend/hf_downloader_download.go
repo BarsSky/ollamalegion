@@ -505,6 +505,12 @@ func (d *HuggingFaceDownloader) moveTempToFinal(tmpPath, finalPath string, onPha
 
 	// Copy complete — close dst before removing tmp
 	dstFile.Close()
+	// R710 (2026-11-24): закрываем ИСТОЧНИК до удаления. На Windows удаление
+	// открытого файла запрещено, поэтому прежний порядок (Remove до закрытия
+	// через defer) оставлял в каталоге bundle файл `<файл>.download` с размером,
+	// равным готовому: он попадал в orphan-отчёт как «осиротевший темп»,
+	// занимал место и сбивал с толку оператора. На Linux ошибка была невидима.
+	srcFile.Close()
 
 	if err := os.Remove(tmpPath); err != nil {
 		log.Warnw("failed to remove temp after copy", "tmpPath", tmpPath, "error", err)

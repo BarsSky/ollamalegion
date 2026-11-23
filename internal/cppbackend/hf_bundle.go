@@ -128,6 +128,46 @@ type bundleTask struct {
 // Файлы, уже лежащие на диске с ожидаемым размером (req.SizeBytes), не
 // перекачиваются — повторный pull после сбоя не тянет гигабайты заново.
 func (d *HuggingFaceDownloader) StartBundleDownload(ctx context.Context, files []HFDownloadRequest, bundleID, targetDir string) (*HFBundleProgress, error) {
+	return d.startDownload(ctx, files, bundleID, targetDir, true)
+}
+
+// StartComponentDownload — R710 (2026-11-24): скачать ОТДЕЛЬНЫЕ файлы
+// (VAE/text encoder/CLIP) в каталог УЖЕ существующего bundle.
+//
+// ЧЕМ ОТЛИЧАЕТСЯ ОТ StartBundleDownload — и почему это отдельный вход, а не
+// флаг «на всякий случай»:
+//
+//  1. МАНИФЕСТ НЕ ТРОГАЕТСЯ. Bundle-путь в начале удаляет
+//     .ollamalegion-bundle.json, а в конце пишет его заново по СПИСКУ
+//     СКАЧАННЫХ файлов. Для компонентов это означало бы «bundle зарегистрирован
+//     и состоит из одного VAE»: манифест — это запись «набор скачан целиком», и
+//     перезапись его двумя компонентами соврала бы о составе. Состав набора
+//     живёт в profile.json (его правит sdbackend после успешной загрузки), а
+//     манифест остаётся тем, чем был, — отметкой о завершённой bundle-загрузке.
+//  2. `Registered` в прогрессе отвечает по факту (манифест уже есть у готового
+//     bundle), а не выставляется «истиной» после записи манифеста.
+//
+// Всё остальное — общая механика: Range-resume, пропуск уже лежащих файлов
+// (повторный вызов не качает заново), отмена через CancelBundleDownload,
+// прогресс через GetBundleProgress. Именно поэтому это один внутренний
+// startDownload, а не вторая копия 130 строк (две копии разъехались бы ровно
+// так же, как разъезжались контракты UI и воркера).
+//
+// trackingID — ключ ПРОГРЕССА и отмены (не имя каталога). targetDir задаётся
+// явно каталогом bundle: имя bundle в modelsDir уже занято готовой моделью.
+func (d *HuggingFaceDownloader) StartComponentDownload(ctx context.Context, files []HFDownloadRequest, trackingID, targetDir string) (*HFBundleProgress, error) {
+	if strings.TrimSpace(targetDir) == "" {
+		return nil, fmt.Errorf("targetDir is required for a component download")
+	}
+	return d.startDownload(ctx, files, trackingID, targetDir, false)
+}
+
+// startDownload — общая реализация bundle- и компонентной загрузки.
+//
+// writeManifest=true — поведение StartBundleDownload (атомарная регистрация
+// набора манифестом); false — компоненты: манифест готового bundle сохраняется
+// как есть (см. StartComponentDownload).
+func (d *HuggingFaceDownloader) startDownload(ctx context.Context, files []HFDownloadRequest, bundleID, targetDir string, writeManifest bool) (*HFBundleProgress, error) {
 	if err := validateBundleRequest(files, bundleID); err != nil {
 		return nil, err
 	}
@@ -192,9 +232,14 @@ func (d *HuggingFaceDownloader) StartBundleDownload(ctx context.Context, files [
 
 	// Инвалидируем предыдущую регистрацию ДО начала работы: пока файлы
 	// перезаписываются, каталог не должен выглядеть готовой моделью.
-	if err := os.Remove(filepath.Join(targetDir, BundleManifestName)); err != nil && !os.IsNotExist(err) {
-		log.Warnw("bundle: failed to remove stale manifest",
-			"bundleId", bundleID, "error", err)
+	//
+	// ТОЛЬКО для bundle-загрузки: компонентная загрузка ничего не перезаписывает
+	// (см. StartComponentDownload) и не вправе снимать отметку готового набора.
+	if writeManifest {
+		if err := os.Remove(filepath.Join(targetDir, BundleManifestName)); err != nil && !os.IsNotExist(err) {
+			log.Warnw("bundle: failed to remove stale manifest",
+				"bundleId", bundleID, "error", err)
+		}
 	}
 
 	completedAll := true
@@ -236,15 +281,31 @@ func (d *HuggingFaceDownloader) StartBundleDownload(ctx context.Context, files [
 	}
 
 	// Все файлы на месте → атомарная регистрация через манифест.
-	total, err := writeBundleManifest(targetDir, bundleID, task.progress.Files)
-	if err != nil {
-		d.failBundle(task, fmt.Sprintf("write bundle manifest: %v", err))
-		return d.snapshotBundle(bundleID), fmt.Errorf("write bundle manifest: %w", err)
+	//
+	// Для компонентов манифест НЕ пишется: набор уже зарегистрирован, а запись
+	// манифеста по списку «VAE+TE» стёрла бы состав bundle. TotalBytes при этом
+	// уже посчитан по файлам (recomputeBundleProgress), поэтому объём в прогрессе
+	// тот же, что у bundle-пути.
+	total := int64(0)
+	if writeManifest {
+		var err error
+		total, err = writeBundleManifest(targetDir, bundleID, task.progress.Files)
+		if err != nil {
+			d.failBundle(task, fmt.Sprintf("write bundle manifest: %v", err))
+			return d.snapshotBundle(bundleID), fmt.Errorf("write bundle manifest: %w", err)
+		}
+	} else {
+		for _, f := range task.progress.Files {
+			total += f.SizeBytes
+		}
 	}
 
 	d.mu.Lock()
 	task.progress.Status = "completed"
-	task.progress.Registered = true
+	// Registered — «набор зарегистрирован на диске». У bundle-пути это следствие
+	// только что записанного манифеста; у компонентов — уже существующий
+	// манифест (если его нет, комплектность набора объясняет вердикт compat).
+	task.progress.Registered = writeManifest || IsBundleRegistered(targetDir)
 	task.progress.TotalBytes = total
 	task.progress.Downloaded = total
 	task.progress.ProgressPct = 100.0

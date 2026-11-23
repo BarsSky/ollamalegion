@@ -2173,6 +2173,48 @@ window.I18N_RU = {
   "imageModels.family_autoset": "Семейство профиля переключено на «{family}» по заголовку файла (было «{prev}»): иначе движок получит all-in-one флаг и ответит «get sd version from file failed».",
   "imageModels.dit_missing": "Похоже на семейство {family}: в sd.cpp для него нужны отдельные {missing} — в этом репозитории их нет. Добавьте их файлами из другого репозитория (например, VAE ae.safetensors).",
 
+  // ==== R710 (2026-11-24): добавление недостающих компонентов набора ====
+  // Живой дефект: вердикт говорит «не хватает: VAE, text encoder (LLM)», в
+  // репозитории этих файлов нет, а добавить их из интерфейса было нельзя —
+  // подсказка отправляла искать файл вручную вне страницы. Кнопки появляются
+  // рядом со строкой «не хватает», каталог приходит с сервера.
+  "imageModels.component_add_default": "Добавить {role} (по умолчанию)",
+  "imageModels.component_manual": "Выбрать из другого репозитория…",
+  "imageModels.component_manual_hint": "Указать репозиторий и файл вручную",
+  "imageModels.component_add_all": "Скачать недостающее ({n})",
+  "imageModels.component_no_catalog": "Каталога стандартных компонентов для семейства «{family}» нет: укажите репозиторий и файл вручную.",
+  "imageModels.component_catalog_loading": "Ищу стандартные компоненты для семейства «{family}»…",
+  "imageModels.component_catalog_failed": "Каталог компонентов недоступен: {error}. Укажите репозиторий и файл вручную.",
+  "imageModels.component_confirm_line": "Будет добавлено: {role} {file} ({size}) из {repo}",
+  "imageModels.component_confirm_standard": "Это стандартный для семейства {family} компонент.",
+  "imageModels.component_confirm_license": "Лицензия: {license}",
+  "imageModels.component_confirm_bundle": "Текущие файлы набора не изменятся: файл скачается в каталог модели, роль пропишется в profile.json.",
+  "imageModels.component_confirm_selection": "Файл добавится к набору и скачается вместе с остальными файлами.",
+  "imageModels.component_confirm_total": "Итого будет добавлено компонентов: {n} на {size}.",
+  "imageModels.component_added_default": "Добавлено по умолчанию: {role} из {repo} (лицензия: {license}). Проверьте лицензию перед публикацией результатов.",
+  "imageModels.component_added_default_no_license": "Добавлено по умолчанию: {role} из {repo}. Лицензия в карточке репозитория не указана — проверьте её сами.",
+  "imageModels.component_added_count": "Добавлено компонентов: {n}",
+  "imageModels.component_role_taken": "Роль «{role}» уже занята в наборе",
+  "imageModels.component_remove_hint": "Убрать этот компонент из набора",
+  "imageModels.component_manual_repo": "Репозиторий HF",
+  "imageModels.component_manual_show_files": "Показать файлы",
+  "imageModels.component_manual_add": "Добавить к набору",
+  "imageModels.component_manual_repo_required": "Укажите репозиторий HF (например Comfy-Org/Qwen-Image_ComfyUI)",
+  "imageModels.component_manual_pick": "Выберите файл по номеру:\n{list}",
+  "imageModels.component_nothing_default": "Для этого семейства нет стандартного компонента — укажите репозиторий вручную",
+  "imageModels.component_started": "Скачиваю компонент: {role}",
+  "imageModels.component_done": "Компонент добавлен ({role}). Вердикт пересчитан, состав набора обновлён.",
+  "imageModels.component_failed": "Не удалось добавить компонент: {error}",
+  "imageModels.component_progress": "Скачиваю {role}: {status} {pct}%",
+  "imageModels.component_license_prefix": "лицензия",
+  "imageModels.component_module_missing": "Модуль компонентов не загружен",
+  "imageModels.component_err_role_present": "Роль уже занята файлом «{file}»: сначала выгрузите/удалите его или выберите другую роль.",
+  "imageModels.component_err_file_not_found": "Файла нет в репозитории. Что есть: {available}",
+  "imageModels.component_err_too_large": "Файл слишком большой для компонентной установки — возьмите меньший квант (см. каталог).",
+  "imageModels.component_err_bundle_not_found": "У воркера нет каталога этой модели: сначала скачайте набор, потом добавляйте компоненты.",
+  "imageModels.component_err_invalid_path": "Отказ: путь вне каталога моделей. Добавлять компоненты можно только в каталог самой модели.",
+  "imageModels.component_err_conflict": "Файл «{file}» уже принадлежит другой роли набора — скачивание заменило бы её.",
+
   // ==== R-Image Phase 9: таб «Модели на диске» и «Настройки» ====
   "imageModels.roles_summary": "Состав (роли)",
   "imageModels.roles_unknown": "нет данных",

@@ -345,11 +345,27 @@ func (m *HFManager) StartBundle(name, family string, files []cppbackend.HFDownlo
 // активный bundle на bundleID и вернёт прогресс существующего (hf_bundle.go:141),
 // поэтому перезапись стёрла бы наблюдаемые UI данные.
 func (m *HFManager) beginBundleState(name, family, targetDir string, files []cppbackend.HFDownloadRequest) *hfBundleState {
+	state, _ := m.beginStateIfNew(name, family, targetDir, files)
+	return state
+}
+
+// beginStateIfNew — то же, но сообщает, СОЗДАНО ли состояние этим вызовом.
+//
+// ЗАЧЕМ ФЛАГ (R710). Компонентная установка обязана запускать фоновую загрузку
+// только когда состояние заведено ЕЙ, а не когда она нашла уже идущую: иначе
+// повторный клик запускал бы второй поток на тот же файл, а он бы «залипал» в
+// downloading (второй вызов загрузчика вернул бы уже существующий прогресс и
+// горутина мгновенно завершилась бы, не тронув финальный статус). Угадывать это
+// по status/startedAt нельзя — новое состояние тоже downloading.
+//
+// beginBundleState сохраняет прежнее поведение (возвращает только состояние):
+// bundle-путь сам знает, что делает, и его статус-логика не меняется.
+func (m *HFManager) beginStateIfNew(name, family, targetDir string, files []cppbackend.HFDownloadRequest) (*hfBundleState, bool) {
 	m.statesMu.Lock()
 	defer m.statesMu.Unlock()
 	m.pruneStatesLocked()
 	if existing, ok := m.states[name]; ok && existing.status == "downloading" {
-		return existing
+		return existing, false
 	}
 
 	state := &hfBundleState{
@@ -367,12 +383,18 @@ func (m *HFManager) beginBundleState(name, family, targetDir string, files []cpp
 			repo:     f.ModelID,
 			filename: base,
 			local:    filepath.Join(targetDir, base),
+			// size из запроса (если клиент его знает) — иначе прогресс показывал
+			// бы «0 из 0» до первого Range-ответа. Для bundle-пути
+			// fillExpectedSizes уточнит значение из HF tree; для компонентной
+			// установки (R710) это единственный источник знаменателя: размер
+			// уже проверен списком файлов репозитория ДО старта загрузки.
+			size:     f.SizeBytes,
 			status:   cppbackend.BundleFileStatusPending,
 			tempPath: filepath.Join(targetDir, base+".download"),
 		})
 	}
 	m.states[name] = state
-	return state
+	return state, true
 }
 
 // pruneStatesLocked — держим не больше hfMaxTrackedBundles состояний (старые
@@ -580,15 +602,31 @@ func (m *HFManager) writeProfile(name, family, targetDir string, files []cppback
 	if err != nil {
 		return nil, fmt.Errorf("marshal profile: %w", err)
 	}
-	tmp := filepath.Join(targetDir, ProfileFileName+".tmp")
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return nil, fmt.Errorf("write profile temp: %w", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(targetDir, ProfileFileName)); err != nil {
-		_ = os.Remove(tmp)
-		return nil, fmt.Errorf("rename profile: %w", err)
+	if err := writeProfileFile(targetDir, data); err != nil {
+		return nil, err
 	}
 	return profile, nil
+}
+
+// writeProfileFile — атомарная запись profile.json (tmp + rename).
+//
+// ПОЧЕМУ АТОМАРНО: падение процесса в момент записи оставило бы обрезанный JSON
+// — Registry.loadProfile вернул бы ошибку парсинга, и модель попала бы в реестр
+// в состоянии error вместо того, чтобы просто остаться прежней.
+//
+// Вынесено из writeProfile ради R710: тот же путь записи использует добавление
+// компонента в готовый набор (components_install.go), и две копии «tmp+rename»
+// разъехались бы (например, одна потеряла бы BOM-устойчивость или права).
+func writeProfileFile(dir string, data []byte) error {
+	tmp := filepath.Join(dir, ProfileFileName+".tmp")
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("write profile temp: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, ProfileFileName)); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename profile: %w", err)
+	}
+	return nil
 }
 
 // BuildImageModelProfile — профиль image-модели по составу bundle.

@@ -85,6 +85,21 @@
      */
     var AUTO_ROLES = ['diffusion', 'vae', 'clip_l', 'clip_g'];
 
+    /**
+     * COMPONENT_ROLES — роли, которые можно ДОБАВИТЬ к готовому набору.
+     *
+     * Зеркало серверного списка sdbackend.IsComponentRole (componentKindRoles):
+     * diffusion исключён сознательно — его файл и есть модель, «добавление»
+     * второго означало бы подмену диффузии. Список статический (а не собранный
+     * из IMAGE_ROLES) по той же причине, что и ROLE_LABEL_KEYS: измеритель i18n
+     * и тесты должны видеть каждую роль поимённо.
+     */
+    var COMPONENT_ROLES = ['vae', 'llm', 't5xxl', 'clip_l', 'clip_g', 'clip_vision',
+        'taesd', 'upscaler', 'controlnet', 'ip_adapter'];
+
+    /** Порядок ролей: сначала то, без чего движок не поднимется (как в каталоге). */
+    var COMPONENT_ROLE_RANK = { vae: 0, llm: 1, t5xxl: 2, clip_l: 3, clip_g: 4, clip_vision: 5 };
+
     var mounted = false;
     // R694: подписка на i18n:changed. Храним функцию, а не навешиваем анонимную:
     // unmount() обязан снять РОВНО её, иначе повторный mount() навесит вторую и
@@ -160,6 +175,31 @@
         // должен перезаписать вердикт актуального набора.
         verifySeq: 0,
         verifyTimer: null,
+        // ==== R710 (2026-11-24): недостающие компоненты набора ====
+        //
+        // extraComponents — файлы, добавленные к ТЕКУЩЕМУ ВЫБОРУ из ДРУГОГО
+        // репозитория (VAE/text encoder, которых нет в репозитории модели). На
+        // вкладке HF набор ещё не скачан, поэтому «добавить компонент» здесь =
+        // добавить файл в выбор: он попадёт в один POST /api/hf/bundle и
+        // скачается вместе с остальным. Для уже скачанного bundle (страница
+        // «Модели на диске») работает другой путь — installBundleComponent()
+        // ниже: он пишет файл в каталог модели и роль в profile.json.
+        extraComponents: [],
+        // componentCatalog — ответ GET /api/v1/image/components/catalog (кэш по
+        // family|roles). null = ещё не загружен.
+        componentCatalog: null,
+        componentCatalogKey: '',
+        componentCatalogBusy: false,
+        componentCatalogError: '',
+        // componentManual — открытая форма «Выбрать из другого репозитория…»:
+        // {repo, loading, error, files, selection:{path:role}}. null = закрыта.
+        componentManual: null,
+        // componentNote — предупреждение после добавления («добавлено по
+        // умолчанию — проверьте лицензию»), показывается в карточке вердикта.
+        componentNote: '',
+        // componentBusy — идёт установка в bundle (страница «Модели на диске»):
+        // {model, role, trackingId, status, pct, error}.
+        componentBusy: null,
         // прогресс bundle: снимок HFBundleProgress из /api/hf/progress?bundleId=
         bundle: null,
         poll: null,
@@ -267,6 +307,11 @@
      *   empty          — ни один файл не отмечен;
      *   need_diffusion — нет роли diffusion (без него sd-server не стартует);
      *   dup_role       — роль занята дважды (кроме lora: их может быть много).
+     *
+     * R710: opts.components — файлы, добавленные к набору из ДРУГОГО
+     * репозитория (VAE/text encoder). У них СВОЙ repo, поэтому они не выводятся
+     * из repo модели и добавляются в files как есть. Роль компонента тоже
+     * участвует в проверке дублей: два VAE в одном наборе — это ошибка.
      */
     function buildFileSpecs(repo, selection, opts) {
         opts = opts || {};
@@ -296,6 +341,26 @@
                 filename: path,
                 revision: 'main',
                 sizeBytes: Number((item && item.sizeBytes) || 0)
+            });
+        });
+        (opts.components || []).forEach(function (c) {
+            c = c || {};
+            var role = String(c.role || '');
+            if (!isValidRole(role)) {
+                errors.push({ code: 'bad_role', path: String(c.filename || ''), role: role });
+                return;
+            }
+            if (seen[role] && role !== 'lora') {
+                errors.push({ code: 'dup_role', role: role, path: String(c.filename || '') });
+                return;
+            }
+            seen[role] = true;
+            files.push({
+                role: role,
+                repo: String(c.repo || ''),
+                filename: String(c.filename || ''),
+                revision: String(c.revision || 'main'),
+                sizeBytes: Number(c.sizeBytes || 0)
             });
         });
         if (!files.length) errors.push({ code: 'empty' });
@@ -987,6 +1052,25 @@
                 '<span class="gguf-file-size">' + escapeHtml(formatBytes(fileSize(f))) + '</span>' +
             '</div>';
         }).join('');
+        // R710: добавленные компоненты (из ДРУГИХ репозиториев) — отдельными
+        // строками с указанием репозитория и кнопкой «убрать». Иначе оператор не
+        // видел бы, что именно и откуда будет скачано вместе с набором.
+        header += (state.extraComponents || []).map(function (c) {
+            return '<div class="gguf-file-item imh-extra-component" data-imh-extra="' + escapeHtml(String(c.role || '')) + '">' +
+                '<span class="gguf-file-name" style="display:flex;align-items:center;gap:8px;">' +
+                    '<i class="fas fa-plus-circle" style="color:var(--success, #5cb85c);"></i>' +
+                    '<span style="font-family:monospace;font-size:var(--font-size-xs);word-break:break-all;">' +
+                        escapeHtml(String(c.filename || '')) + '</span>' +
+                '</span>' +
+                '<span style="font-size:var(--font-size-xs);color:var(--text-muted);">' +
+                    escapeHtml(roleLabel(c.role)) + ' · ' + escapeHtml(String(c.repo || '')) +
+                '</span>' +
+                '<span class="gguf-file-size">' + escapeHtml(c.sizeBytes ? formatBytes(c.sizeBytes) : '-') + '</span>' +
+                '<button class="btn btn-secondary btn-sm" data-icom-remove="' + escapeHtml(String(c.role || '')) + '"' +
+                    ' title="' + escapeHtml(t('imageModels.component_remove_hint', 'Убрать этот компонент из набора')) + '">' +
+                    '<i class="fas fa-xmark"></i></button>' +
+            '</div>';
+        }).join('');
         body.innerHTML = header;
         renderSelectionSummary();
         renderVerifyVerdict();
@@ -1042,6 +1126,761 @@
         }
     }
 
+    // =====================================================================
+    // R710 (2026-11-24): недостающие компоненты набора (VAE / text encoder)
+    // =====================================================================
+    //
+    // ЖИВОЙ ДЕФЕКТ (скриншоты пользователя). Вердикт говорит «imageworker НЕ
+    // сможет загрузить — не хватает: VAE, text encoder (LLM)», а в самом
+    // репозитории (`Qwen-Image-Edit-2511`, `Qwen-Image-2.1-Turbo-Uncensored`)
+    // этих файлов нет: там только diffusion. Подсказка советовала «добавьте их
+    // файлами из другого репозитория», но открыть другой репозиторий и добавить
+    // из него ОДИН файл к текущему набору было невозможно.
+    //
+    // ЧТО ЗДЕСЬ. Рядом со строкой «не хватает: …» появляются кнопки:
+    //   «Добавить VAE (по умолчанию)»     — только если в каталоге есть default;
+    //   «Добавить text encoder (…)»       — то же для каждой недостающей роли;
+    //   «Скачать недостающее (N)»         — когда стандартных компонентов ≥ 2;
+    //   «Выбрать из другого репозитория…» — ручной путь (репозиторий + файлы).
+    // Каталог приходит с сервера (GET /api/v1/image/components/catalog):
+    // репозитории, файлы, размеры и лицензии — ДАННЫЕ, а не хардкод в UI.
+    //
+    // ДВА РЕЖИМА (поле mode):
+    //   selection — вкладка HF, набор ещё не скачан: компонент добавляется в
+    //               ВЫБОР (state.extraComponents) и уходит в общий POST
+    //               /api/hf/bundle. Показываем его отдельной строкой, чтобы
+    //               оператор видел, что именно и откуда будет скачано;
+    //   bundle    — страница «Модели на диске», модель уже на диске:
+    //               POST /api/v1/image/models/{name}/components пишет файл в
+    //               каталог модели и роль в profile.json, воркер пересканирует
+    //               реестр, и вердикт пересчитывается.
+
+    /** componentRoleRankVal — порядок кнопок: VAE, затем энкодеры. */
+    function componentRoleRankVal(role) {
+        var r = COMPONENT_ROLE_RANK[String(role)];
+        return (r === undefined) ? 9 : r;
+    }
+
+    /**
+     * missingComponentRoles — роли, которых не хватает и которые МОЖНО добавить.
+     *
+     * Источник — роли вердикта (compat.roles: required && !found), а не строка
+     * missing: в ней лежат ПОДПИСИ («text encoder (LLM)»), а кнопке нужен id
+     * роли, чтобы найти компонент в каталоге.
+     */
+    function missingComponentRoles(compat) {
+        if (!compat || !Array.isArray(compat.roles)) return [];
+        var out = [];
+        compat.roles.forEach(function (r) {
+            if (!r || !r.required || r.found) return;
+            var role = String(r.role || '');
+            if (COMPONENT_ROLES.indexOf(role) === -1) return; // diffusion — не компонент
+            if (out.indexOf(role) === -1) out.push(role);
+        });
+        out.sort(function (a, b) { return componentRoleRankVal(a) - componentRoleRankVal(b); });
+        return out;
+    }
+
+    /** normalizeComponent — единая форма компонента для UI (sizeBytes из sizeMb). */
+    function normalizeComponent(c, family) {
+        c = c || {};
+        var files = Array.isArray(c.files) ? c.files.slice() : [];
+        var sizeMb = Number(c.sizeMb || c.sizeMB || 0);
+        return {
+            family: String(c.family || family || ''),
+            role: String(c.role || ''),
+            label: String(c.label || ''),
+            repo: String(c.repo || ''),
+            files: files,
+            filename: files.length ? String(files[0]) : '',
+            sizeMb: sizeMb,
+            sizeBytes: sizeMb * 1024 * 1024,
+            default: c.default === true,
+            note: String(c.note || ''),
+            license: String(c.license || '')
+        };
+    }
+
+    /** componentSizeText — «335 МБ» из МиБ каталога (0 → пустая строка). */
+    function componentSizeText(sizeMb) {
+        var mb = Number(sizeMb || 0);
+        if (!mb || isNaN(mb)) return '';
+        return formatBytes(mb * 1024 * 1024);
+    }
+
+    /** defaultComponentFor — стандартный компонент роли из каталога (или null). */
+    function defaultComponentFor(catalog, family, role) {
+        var list = (catalog && Array.isArray(catalog.components)) ? catalog.components : [];
+        for (var i = 0; i < list.length; i++) {
+            var c = list[i];
+            if (c && String(c.role) === String(role) && c.default === true) {
+                return normalizeComponent(c, family);
+            }
+        }
+        return null;
+    }
+
+    /** componentTooltip — что именно и откуда (title кнопки). */
+    function componentTooltip(comp) {
+        comp = comp || {};
+        var parts = [String(comp.repo || '')];
+        if (comp.files && comp.files.length) parts.push(comp.files.join(', '));
+        if (comp.sizeMb) parts.push(componentSizeText(comp.sizeMb));
+        if (comp.license) parts.push(t('imageModels.component_license_prefix', 'лицензия') + ': ' + comp.license);
+        return parts.join(' · ');
+    }
+
+    /**
+     * componentButtonsHtml — кнопки «чем починить набор».
+     *
+     * ГЛАВНОЕ ПРАВИЛО: «Добавить X (по умолчанию)» рисуется ТОЛЬКО когда в
+     * каталоге есть default-компонент этой роли. Нет каталога (неизвестное
+     * семейство) — кнопок «по умолчанию» нет вовсе, остаётся ручной путь и
+     * честная строка «каталога для семейства нет».
+     *
+     * Функция ЧИСТАЯ (каталог приходит параметром) — её проверяет тест
+     * «кнопки только при наличии default», без DOM и сети.
+     */
+    function componentButtonsHtml(missing, opts) {
+        opts = opts || {};
+        var roles = Array.isArray(missing) ? missing : [];
+        var catalog = opts.catalog || null;
+        var mode = opts.mode === 'bundle' ? 'bundle' : 'selection';
+        var family = String(opts.family || 'other');
+        if (!roles.length) return '';
+        var defaults = [];
+        roles.forEach(function (role) {
+            var comp = defaultComponentFor(catalog, family, role);
+            if (comp) defaults.push(comp);
+        });
+        var html = '<div class="imh-component-actions" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">';
+        // data-icom-model нужен странице «Модели на диске»: там кнопки рисуются
+        // по строке таблицы, а обработчик клика знает только нажатый элемент.
+        var modelAttr = opts.model ? ' data-icom-model="' + escapeHtml(String(opts.model)) + '"' : '';
+        defaults.forEach(function (comp) {
+            html += '<button class="btn btn-primary btn-sm" data-icom-default="' + escapeHtml(comp.role) + '"' +
+                ' data-icom-mode="' + escapeHtml(mode) + '"' + modelAttr +
+                ' title="' + escapeHtml(componentTooltip(comp)) + '">' +
+                '<i class="fas fa-plus"></i> ' +
+                escapeHtml(t('imageModels.component_add_default', 'Добавить {role} (по умолчанию)',
+                    { role: roleLabel(comp.role) })) +
+                '</button>';
+        });
+        html += '<button class="btn btn-secondary btn-sm" data-icom-manual="1"' +
+            ' data-icom-mode="' + escapeHtml(mode) + '"' + modelAttr +
+            ' title="' + escapeHtml(t('imageModels.component_manual_hint', 'Указать репозиторий и файл вручную')) + '">' +
+            '<i class="fas fa-folder-open"></i> ' +
+            escapeHtml(t('imageModels.component_manual', 'Выбрать из другого репозитория…')) + '</button>';
+        if (defaults.length > 1) {
+            html += '<button class="btn btn-primary btn-sm" data-icom-all="1"' +
+                ' data-icom-mode="' + escapeHtml(mode) + '"' + modelAttr + '>' +
+                '<i class="fas fa-download"></i> ' +
+                escapeHtml(t('imageModels.component_add_all', 'Скачать недостающее ({n})', { n: defaults.length })) +
+                '</button>';
+        }
+        html += '</div>';
+        if (!catalog || catalog.known === false) {
+            html += '<div class="imh-verdict-reason" style="margin-top:4px;">' +
+                escapeHtml(t('imageModels.component_no_catalog',
+                    'Каталога стандартных компонентов для семейства «{family}» нет: укажите репозиторий и файл вручную.',
+                    { family: family })) + '</div>';
+        }
+        return html;
+    }
+
+    /** componentConfirmText — подтверждение с ЧИСЛАМИ (репозиторий, файл, размер). */
+    function componentConfirmText(comp, opts) {
+        opts = opts || {};
+        comp = comp || {};
+        var lines = [];
+        lines.push(t('imageModels.component_confirm_line',
+            'Будет добавлено: {role} {file} ({size}) из {repo}', {
+                role: roleLabel(comp.role),
+                file: comp.filename || (comp.files || []).join(', '),
+                size: componentSizeText(comp.sizeMb) || '?',
+                repo: comp.repo
+            }));
+        lines.push(t('imageModels.component_confirm_standard',
+            'Это стандартный для семейства {family} компонент.', { family: comp.family || opts.family || 'other' }));
+        if (comp.license) {
+            lines.push(t('imageModels.component_confirm_license', 'Лицензия: {license}', { license: comp.license }));
+        }
+        if (comp.note) lines.push(comp.note);
+        lines.push(opts.mode === 'bundle'
+            ? t('imageModels.component_confirm_bundle',
+                'Текущие файлы набора не изменятся: файл скачается в каталог модели, роль пропишется в profile.json.')
+            : t('imageModels.component_confirm_selection',
+                'Файл добавится к набору и скачается вместе с остальными файлами.'));
+        if (opts.more) lines.push(opts.more);
+        return lines.join('\n');
+    }
+
+    /** componentWarningText — предупреждение «добавлено по умолчанию». */
+    function componentWarningText(comp) {
+        comp = comp || {};
+        if (comp.license) {
+            return t('imageModels.component_added_default',
+                'Добавлено по умолчанию: {role} из {repo} (лицензия: {license}). Проверьте лицензию перед публикацией результатов.', {
+                    role: roleLabel(comp.role), repo: comp.repo, license: comp.license
+                });
+        }
+        return t('imageModels.component_added_default_no_license',
+            'Добавлено по умолчанию: {role} из {repo}. Лицензия в карточке репозитория не указана — проверьте её сами.', {
+                role: roleLabel(comp.role), repo: comp.repo
+            });
+    }
+
+    /** componentConfirm — подтверждение в окне браузера (штатный путь WebUI). */
+    function componentConfirm(text) {
+        if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+            return !!window.confirm(text);
+        }
+        if (typeof confirm === 'function') return !!confirm(text);
+        return true; // окружение без confirm (тесты) — не блокируем действие
+    }
+
+    /** familyForComponents — семейство для каталога (вердикт → селект → other). */
+    function familyForComponents(compat) {
+        var fam = String((compat && compat.family) || '');
+        if (fam && fam !== 'other') return fam;
+        var sel = el('imgBundleFamily');
+        var fromSelect = sel ? String(sel.value || '') : '';
+        return fromSelSafe(fromSelect || state.bundleFamily || 'other');
+    }
+
+    /** fromSelSafe — пустое семейство не должно превращаться в '' (каталог по ''). */
+    function fromSelSafe(value) {
+        var v = String(value || '').trim();
+        return v || 'other';
+    }
+
+    /** componentCatalogKeyOf — отпечаток запроса каталога (кэш + защита от цикла). */
+    function componentCatalogKeyOf(family, roles) {
+        return String(family || 'other') + '|' + (roles || []).slice().sort().join(',');
+    }
+
+    /**
+     * loadComponentCatalog — GET /api/v1/image/components/catalog (кэш по family+roles).
+     *
+     * ПОЧЕМУ КЛЮЧ СТАВИТСЯ И ПРИ ОШИБКЕ: иначе каждый рендер вердикта повторял бы
+     * упавший запрос (рендер дергается на каждую галочку), и страница молотила бы
+     * сеть. Ошибка показывается один раз, повтор — только явным действием.
+     */
+    async function loadComponentCatalog(family, roles) {
+        var key = componentCatalogKeyOf(family, roles);
+        if (state.componentCatalogKey === key) return state.componentCatalog;
+        if (state.componentCatalogBusy) return null;
+        state.componentCatalogBusy = true;
+        state.componentCatalogError = '';
+        renderVerifyVerdict();
+        var url = apiBase() + '/api/v1/image/components/catalog?family=' + encodeURIComponent(family);
+        if (roles && roles.length) url += '&roles=' + encodeURIComponent(roles.join(','));
+        try {
+            var data = await request(url, { timeoutMs: TIMEOUT_CONTROL_MS });
+            state.componentCatalog = data || { known: false, components: [] };
+        } catch (e) {
+            state.componentCatalog = null;
+            state.componentCatalogError = (e && e.message) || String(e);
+        }
+        state.componentCatalogKey = key;
+        state.componentCatalogBusy = false;
+        renderVerifyVerdict();
+        return state.componentCatalog;
+    }
+
+    /** componentBlockHtml — блок «чем починить набор» под строкой «не хватает». */
+    function componentBlockHtml(compat) {
+        var roles = missingComponentRoles(compat);
+        var note = state.componentNotes && state.componentNotes[''] ? state.componentNotes[''] : '';
+        if (!roles.length) {
+            // Набор закрыт — но если компоненты уже добавлены к выбору, показать
+            // их всё равно надо: оператор должен видеть, что скачается.
+            return componentExtraSummaryHtml() + warningHtml(note);
+        }
+        var family = familyForComponents(compat);
+        var key = componentCatalogKeyOf(family, roles);
+        if (state.componentCatalogKey !== key && !state.componentCatalogBusy) {
+            // Не блокируем рендер: сначала показываем «загружаю каталог», ответ
+            // придёт и перерисует блок сам.
+            loadComponentCatalog(family, roles);
+        }
+        var html = '';
+        if (state.componentCatalogBusy || state.componentCatalogKey !== key) {
+            html += '<div class="imh-verdict-reason" style="margin-top:8px;"><i class="fas fa-spinner fa-spin"></i> ' +
+                escapeHtml(t('imageModels.component_catalog_loading', 'Ищу стандартные компоненты для семейства «{family}»…',
+                    { family: family })) + '</div>';
+        }
+        if (state.componentCatalogError) {
+            html += '<div class="imh-verdict-reason" style="margin-top:8px;color:var(--warning, #e0a030);">' +
+                escapeHtml(t('imageModels.component_catalog_failed',
+                    'Каталог компонентов недоступен: {error}. Укажите репозиторий и файл вручную.',
+                    { error: state.componentCatalogError })) + '</div>';
+        }
+        html += componentButtonsHtml(roles, {
+            catalog: state.componentCatalog,
+            family: family,
+            mode: 'selection'
+        });
+        html += componentManualHtml();
+        html += componentExtraSummaryHtml();
+        html += warningHtml(note);
+        return html;
+    }
+
+    /** warningHtml — предупреждение «добавлено по умолчанию» (единая разметка). */
+    function warningHtml(note) {
+        if (!note) return '';
+        return '<div class="imh-verdict-reason" style="margin-top:6px;color:var(--warning, #e0a030);">' +
+            '<i class="fas fa-triangle-exclamation"></i> ' + escapeHtml(note) + '</div>';
+    }
+
+    /**
+     * componentExtraSummaryHtml — что уже добавлено к набору и откуда.
+     *
+     * ЗАЧЕМ В ВЕРДИКТЕ, А НЕ ТОЛЬКО В СПИСКЕ ФАЙЛОВ: список файлов виден лишь у
+     * раскрытой карточки модели, а вердикт — всегда. Требование «видеть, что
+     * именно будет добавлено и откуда» не должно зависеть от того, раскрыл ли
+     * оператор карточку.
+     */
+    function componentExtraSummaryHtml() {
+        var comps = state.extraComponents || [];
+        if (!comps.length) return '';
+        var lines = comps.map(function (c) {
+            return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
+                '<i class="fas fa-plus-circle" style="color:var(--success, #5cb85c);"></i>' +
+                '<span>' + escapeHtml(roleLabel(c.role)) + '</span>' +
+                '<span style="font-family:monospace;word-break:break-all;">' + escapeHtml(String(c.filename || '')) + '</span>' +
+                '<span>' + escapeHtml(String(c.repo || '')) + '</span>' +
+                (c.sizeBytes ? '<span style="color:var(--text-muted);">' + escapeHtml(formatBytes(c.sizeBytes)) + '</span>' : '') +
+                '<button class="btn btn-secondary btn-sm" data-icom-remove="' + escapeHtml(String(c.role || '')) + '"' +
+                    ' title="' + escapeHtml(t('imageModels.component_remove_hint', 'Убрать этот компонент из набора')) + '">' +
+                    '<i class="fas fa-xmark"></i></button>' +
+                '</div>';
+        });
+        return '<div class="imh-component-added" style="margin-top:8px;font-size:var(--font-size-xs);">' +
+            lines.join('') + '</div>';
+    }
+
+    /**
+     * componentManualHtml — ручная форма «репозиторий + файлы с ролями».
+     *
+     * Роли в списке — серверные (suggestedRole из GET /hf/files), как и на самой
+     * вкладке HF: эвристика «какой файл есть VAE» живёт в одном месте (воркер),
+     * иначе UI и воркер разъехались бы в определении роли.
+     */
+    function componentManualHtml() {
+        var m = state.componentManual;
+        if (!m) return '';
+        var files = Array.isArray(m.files) ? m.files : [];
+        var html = '<div class="gguf-local-card" style="margin-top:8px;border-left:3px solid var(--info, #4a90d9);">' +
+            '<div class="gguf-local-info"><div class="gguf-local-meta" style="white-space:normal;">';
+        html += '<div style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap;">' +
+            '<label style="display:flex;flex-direction:column;gap:2px;font-size:var(--font-size-xs);">' +
+                escapeHtml(t('imageModels.component_manual_repo', 'Репозиторий HF')) +
+                '<input class="form-control" data-icom-manual-repo="1" value="' + escapeHtml(m.repo || '') + '"' +
+                ' placeholder="Comfy-Org/Qwen-Image_ComfyUI" style="min-width:280px;font-size:var(--font-size-xs);">' +
+            '</label>' +
+            '<button class="btn btn-secondary btn-sm" data-icom-manual-load="1">' +
+                escapeHtml(t('imageModels.component_manual_show_files', 'Показать файлы')) + '</button>' +
+            '</div>';
+        if (m.error) {
+            html += '<div style="color:var(--danger);margin-top:6px;font-size:var(--font-size-xs);">' +
+                escapeHtml(m.error) + '</div>';
+        }
+        if (m.loading) {
+            html += '<div style="margin-top:6px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
+                '<i class="fas fa-spinner fa-spin"></i> ' + escapeHtml(t('common.loading', 'Загрузка…')) + '</div>';
+        }
+        if (files.length) {
+            html += '<div style="margin-top:8px;max-height:220px;overflow:auto;">' + files.map(function (f) {
+                var path = filePath(f);
+                var sel = (m.selection && m.selection[path]) || null;
+                return '<label style="display:flex;align-items:center;gap:8px;font-size:var(--font-size-xs);padding:2px 0;cursor:pointer;">' +
+                    '<input type="checkbox" data-icom-manual-pick="' + escapeHtml(path) + '"' + (sel && sel.checked ? ' checked' : '') + '>' +
+                    '<span style="font-family:monospace;word-break:break-all;">' + escapeHtml(path) + '</span>' +
+                    '<select class="form-control" data-icom-manual-role="' + escapeHtml(path) + '"' +
+                    ' style="max-width:180px;font-size:var(--font-size-xs);">' +
+                        roleOptions(sel && sel.role ? sel.role : (suggestedRole(f) || 'vae')) +
+                    '</select>' +
+                    '<span style="color:var(--text-muted);">' + escapeHtml(formatBytes(fileSize(f))) + '</span>' +
+                    '</label>';
+            }).join('') + '</div>';
+            html += '<div style="margin-top:8px;display:flex;gap:6px;">' +
+                '<button class="btn btn-primary btn-sm" data-icom-manual-add="1">' +
+                    escapeHtml(t('imageModels.component_manual_add', 'Добавить к набору')) + '</button>' +
+                '<button class="btn btn-secondary btn-sm" data-icom-manual-cancel="1">' +
+                    escapeHtml(t('common.cancel', 'Отмена')) + '</button></div>';
+        } else if (!m.loading) {
+            html += '<div style="margin-top:8px;"><button class="btn btn-secondary btn-sm" data-icom-manual-cancel="1">' +
+                escapeHtml(t('common.cancel', 'Отмена')) + '</button></div>';
+        }
+        return html + '</div></div></div>';
+    }
+
+    /** extraComponentRoles — роли, уже добавленные к выбору из других репозиториев. */
+    function extraComponentRoles() {
+        return (state.extraComponents || []).map(function (c) { return String((c && c.role) || ''); });
+    }
+
+    /** roleIsTakenInSelection — роль уже занята в выборе (галочкой или компонентом). */
+    function roleIsTakenInSelection(role) {
+        if (extraComponentRoles().indexOf(String(role)) !== -1) return true;
+        var files = Array.isArray(state.files) ? state.files : [];
+        for (var i = 0; i < files.length; i++) {
+            var p = filePath(files[i]);
+            var sel = state.selection[p];
+            if (sel && sel.checked && String(sel.role) === String(role)) return true;
+        }
+        return false;
+    }
+
+    /** pushExtraComponent — добавить компонент в выбор (без сети). */
+    function pushExtraComponent(comp) {
+        comp = normalizeComponent(comp, comp && comp.family);
+        if (!comp.role || !comp.repo || !comp.filename) return false;
+        if (roleIsTakenInSelection(comp.role)) {
+            toast(t('imageModels.component_role_taken', 'Роль «{role}» уже занята в наборе', { role: roleLabel(comp.role) }), 'warn');
+            return false;
+        }
+        state.extraComponents.push({
+            role: comp.role,
+            repo: comp.repo,
+            filename: comp.filename,
+            revision: 'main',
+            sizeBytes: comp.sizeBytes,
+            sizeMb: comp.sizeMb,
+            license: comp.license,
+            note: comp.note,
+            default: comp.default === true
+        });
+        setComponentNote('', comp.default === true ? componentWarningText(comp) : '');
+        return true;
+    }
+
+    /** setComponentNote — предупреждение в карточке (ключ '' = выбор на HF-табе). */
+    function setComponentNote(model, text) {
+        state.componentNotes = state.componentNotes || {};
+        if (text) state.componentNotes[String(model || '')] = String(text);
+        else delete state.componentNotes[String(model || '')];
+    }
+
+    /** noteForModel — предупреждение по ключу ('' = выбор). */
+    function noteForModel(model) {
+        state.componentNotes = state.componentNotes || {};
+        return state.componentNotes[String(model || '')] || '';
+    }
+
+    /** removeExtraComponent — убрать добавленный компонент из выбора. */
+    function removeExtraComponent(role) {
+        var before = (state.extraComponents || []).length;
+        state.extraComponents = (state.extraComponents || []).filter(function (c) {
+            return String((c && c.role) || '') !== String(role);
+        });
+        if (state.extraComponents.length === before) return false;
+        setComponentNote('', '');
+        renderFiles();
+        renderVerifyVerdict();
+        scheduleVerify();
+        return true;
+    }
+
+    /**
+     * addDefaultComponents — добавить стандартные компоненты к ВЫБОРУ (вкладка HF).
+     *
+     * Подтверждение ОДНО на все выбранные компоненты: оператор нажал «Скачать
+     * недостающее», и видеть надо весь список с размерами и суммарным объёмом, а
+     * не три окна подряд.
+     */
+    function addDefaultComponents(roles) {
+        var missing = Array.isArray(roles) ? roles : [];
+        var family = familyForComponents(state.verify);
+        var comps = [];
+        missing.forEach(function (role) {
+            var comp = defaultComponentFor(state.componentCatalog, family, role);
+            if (comp) comps.push(comp);
+        });
+        if (!comps.length) {
+            toast(t('imageModels.component_nothing_default',
+                'Для этого семейства нет стандартных компонентов — укажите репозиторий вручную'), 'warn');
+            return false;
+        }
+        var texts = comps.map(function (c) { return componentConfirmText(c, { mode: 'selection' }); });
+        var totalMb = comps.reduce(function (acc, c) { return acc + Number(c.sizeMb || 0); }, 0);
+        var extra = t('imageModels.component_confirm_total',
+            'Итого будет добавлено компонентов: {n} на {size}.', { n: comps.length, size: componentSizeText(totalMb) });
+        if (!componentConfirm(texts.join('\n\n') + '\n\n' + extra)) return false;
+        var added = 0;
+        comps.forEach(function (c) { if (pushExtraComponent(c)) added++; });
+        renderFiles();
+        // Отдельный рендер вердикта: список файлов виден только у раскрытой
+        // карточки, а сводка «что добавлено и откуда» должна появиться сразу.
+        renderVerifyVerdict();
+        scheduleVerify();
+        if (added) {
+            toast(t('imageModels.component_added_count', 'Добавлено компонентов: {n}', { n: added }), 'success');
+        }
+        return added > 0;
+    }
+
+    /** openComponentManual — открыть ручную форму (репозиторий + файлы). */
+    function openComponentManual() {
+        state.componentManual = { repo: '', loading: false, error: '', files: [], selection: {} };
+        renderVerifyVerdict();
+        return true;
+    }
+
+    /** closeComponentManual — закрыть ручную форму. */
+    function closeComponentManual() {
+        state.componentManual = null;
+        renderVerifyVerdict();
+        return true;
+    }
+
+    /** fetchRepoFiles — список файлов репозитория (для ручной формы). */
+    async function fetchRepoFiles(repo) {
+        var url = backendUrl('hf/files?modelId=' + encodeURIComponent(repo));
+        var data = await request(url, { timeoutMs: TIMEOUT_SEARCH_MS });
+        return (data && Array.isArray(data.files)) ? data.files : [];
+    }
+
+    /**
+     * listRepoFiles — файлы ПРОИЗВОЛЬНОГО репозитория для страницы «Модели на диске».
+     *
+     * ЗАЧЕМ ЗДЕСЬ, А НЕ В image-page.js: обработка /api/hf/* целиком принадлежит
+     * этому модулю (X-HF-Token, таймауты поиска, форма ответа с suggestedRole).
+     * В image-page.js путь /api/hf/ запрещён тестом — именно чтобы не появилась
+     * ВТОРАЯ копия HF-логики. backendId передаётся явно: у страницы моделей свой
+     * селект бэкенда, и он не обязан совпадать с ctx таба HF.
+     */
+    async function listRepoFiles(backendIdArg, repo) {
+        var id = String(backendIdArg || backendId() || '');
+        var repoStr = String(repo || '').trim();
+        if (!id || !repoStr) return [];
+        var url = apiBase() + '/api/v1/image/backends/' + encodeURIComponent(id) +
+            '/hf/files?modelId=' + encodeURIComponent(repoStr);
+        var data = await request(url, { timeoutMs: TIMEOUT_SEARCH_MS });
+        return (data && Array.isArray(data.files)) ? data.files : [];
+    }
+
+    /** loadComponentManualFiles — «Показать файлы» в ручной форме. */
+    async function loadComponentManualFiles() {
+        var m = state.componentManual;
+        if (!m) return false;
+        var repo = String(m.repo || '').trim();
+        if (!repo) {
+            m.error = t('imageModels.component_manual_repo_required', 'Укажите репозиторий HF (например Comfy-Org/Qwen-Image_ComfyUI)');
+            renderVerifyVerdict();
+            return false;
+        }
+        m.loading = true;
+        m.error = '';
+        m.files = [];
+        m.selection = {};
+        renderVerifyVerdict();
+        try {
+            m.files = await fetchRepoFiles(repo);
+            if (!m.files.length) {
+                m.error = t('imageModels.hf_no_files', 'В этом репозитории нет файлов для скачивания');
+            }
+        } catch (e) {
+            m.error = (e && e.message) || String(e);
+        }
+        m.loading = false;
+        renderVerifyVerdict();
+        return true;
+    }
+
+    /** addManualComponents — добавить отмеченные файлы ручной формы к выбору. */
+    function addManualComponents() {
+        var m = state.componentManual;
+        if (!m) return false;
+        var repo = String(m.repo || '').trim();
+        var picked = Object.keys(m.selection || {}).filter(function (p) {
+            return m.selection[p] && m.selection[p].checked;
+        });
+        if (!picked.length) {
+            toast(t('imageModels.hf_none_selected', 'Отметьте хотя бы один файл модели'), 'warn');
+            return false;
+        }
+        var sizes = {};
+        (m.files || []).forEach(function (f) { sizes[filePath(f)] = fileSize(f); });
+        var lines = picked.map(function (p) {
+            return t('imageModels.component_confirm_line',
+                'Будет добавлено: {role} {file} ({size}) из {repo}', {
+                    role: roleLabel(m.selection[p].role),
+                    file: p,
+                    size: formatBytes(sizes[p] || 0),
+                    repo: repo
+                });
+        });
+        lines.push(t('imageModels.component_confirm_selection',
+            'Файл добавится к набору и скачается вместе с остальными файлами.'));
+        if (!componentConfirm(lines.join('\n'))) return false;
+        var added = 0;
+        picked.forEach(function (p) {
+            if (pushExtraComponent({
+                role: m.selection[p].role,
+                repo: repo,
+                files: [p],
+                sizeMb: Math.ceil(Number(sizes[p] || 0) / (1024 * 1024))
+            })) added++;
+        });
+        state.componentManual = null;
+        renderFiles();
+        renderVerifyVerdict();
+        scheduleVerify();
+        if (added) toast(t('imageModels.component_added_count', 'Добавлено компонентов: {n}', { n: added }), 'success');
+        return added > 0;
+    }
+
+    // ---------- Режим «bundle»: установка в уже скачанный набор -----------
+
+    /** sleep — пауза между опросами прогресса. */
+    function sleep(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
+
+    /** componentErrorText — понятный текст отказа POST components. */
+    function componentErrorText(e) {
+        var body = (e && e.body) || {};
+        var code = String(body.code || '');
+        if (code === 'role_already_present') {
+            return t('imageModels.component_err_role_present',
+                'Роль уже занята файлом «{file}»: сначала выгрузите/удалите его или выберите другую роль.',
+                { file: String(body.currentFile || '') });
+        }
+        if (code === 'component_file_not_found') {
+            var avail = Array.isArray(body.available) ? body.available.slice(0, 5).join(', ') : '';
+            return t('imageModels.component_err_file_not_found',
+                'Файла нет в репозитории. Что есть: {available}', { available: avail }) ;
+        }
+        if (code === 'component_too_large') {
+            return t('imageModels.component_err_too_large',
+                'Файл слишком большой для компонентной установки — возьмите меньший квант (см. каталог).');
+        }
+        if (code === 'bundle_not_found') {
+            return t('imageModels.component_err_bundle_not_found',
+                'У воркера нет каталога этой модели: сначала скачайте набор, потом добавляйте компоненты.');
+        }
+        if (code === 'invalid_path') {
+            return t('imageModels.component_err_invalid_path',
+                'Отказ: путь вне каталога моделей. Добавлять компоненты можно только в каталог самой модели.');
+        }
+        if (code === 'component_file_conflict') {
+            return t('imageModels.component_err_conflict',
+                'Файл «{file}» уже принадлежит другой роли набора — скачивание заменило бы её.',
+                { file: String(body.currentFile || '') });
+        }
+        return (e && e.message) || String(e);
+    }
+
+    /**
+     * installBundleComponent — добавить компонент к УЖЕ скачанному набору.
+     *
+     * opts: {backendId, model, family, comp, onProgress, onDone}.
+     * Поток: подтверждение → POST /api/v1/image/models/{name}/components?backendId=
+     * → опрос прогресса существующей ручкой /api/hf/progress (через прокси
+     * бэкенда) → onDone() (перечитать список моделей: вердикт уже пересчитан
+     * воркером, потому что «completed» ставится ПОСЛЕ записи profile.json).
+     */
+    async function installBundleComponent(opts) {
+        opts = opts || {};
+        var comp = normalizeComponent(opts.comp, opts.family);
+        var model = String(opts.model || '');
+        var backend = String(opts.backendId || '');
+        if (!comp.role || !comp.repo || !comp.filename) {
+            toast(t('imageModels.component_nothing_default', 'Компонент не выбран'), 'error');
+            return false;
+        }
+        if (!model || !backend) {
+            toast(t('image.no_backend_selected', 'Сначала выберите image-бэкенд'), 'error');
+            return false;
+        }
+        if (!componentConfirm(componentConfirmText(comp, { mode: 'bundle' }))) return false;
+        var url = apiBase() + '/api/v1/image/models/' + encodeURIComponent(model) +
+            '/components?backendId=' + encodeURIComponent(backend);
+        var body = JSON.stringify({
+            role: comp.role,
+            repo: comp.repo,
+            files: comp.files,
+            revision: 'main',
+            default: comp.default === true
+        });
+        var res;
+        try {
+            res = await request(url, { method: 'POST', body: body, timeoutMs: TIMEOUT_CONTROL_MS });
+        } catch (e) {
+            toast(componentErrorText(e), 'error');
+            return false;
+        }
+        state.componentBusy = {
+            model: model, role: comp.role, status: 'started', pct: 0, error: '',
+            trackingId: (res && res.trackingId) || ''
+        };
+        setComponentNote(model, '');
+        toast(t('imageModels.component_started', 'Скачиваю компонент: {role}', { role: roleLabel(comp.role) }), 'info');
+        if (typeof opts.onProgress === 'function') { try { opts.onProgress(); } catch (e1) { /* рендер не критичен */ } }
+        pollBundleComponent(model, backend, state.componentBusy.trackingId, comp, opts);
+        return true;
+    }
+
+    /** pollBundleComponent — опрос прогресса компонентной установки до терминала. */
+    async function pollBundleComponent(model, backend, trackingId, comp, opts) {
+        opts = opts || {};
+        if (!trackingId) {
+            state.componentBusy = null;
+            return;
+        }
+        var url = apiBase() + '/api/v1/image/backends/' + encodeURIComponent(backend) +
+            '/proxy/api/hf/progress?bundleId=' + encodeURIComponent(trackingId);
+        // Компонент — это сотни мегабайт..гигабайты: 4 часа с большим запасом.
+        var deadline = Date.now() + 4 * 60 * 60 * 1000;
+        while (Date.now() < deadline) {
+            await sleep(DEFAULT_POLL_MS);
+            var p = null;
+            try {
+                p = await request(url, { timeoutMs: TIMEOUT_CONTROL_MS });
+            } catch (e) {
+                continue; // 404 = записи ещё нет; сеть моргнула — не повод сдаваться
+            }
+            if (!p) continue;
+            state.componentBusy = {
+                model: model, role: comp.role, trackingId: trackingId,
+                status: String(p.status || ''), pct: progressPercent(p), error: String(p.errorMessage || '')
+            };
+            if (typeof opts.onProgress === 'function') { try { opts.onProgress(); } catch (e2) { /* рендер */ } }
+            var status = String(p.status || '');
+            if (status && status !== 'downloading') {
+                state.componentBusy = null;
+                if (status === 'completed') {
+                    setComponentNote(model, comp.default === true ? componentWarningText(comp) : '');
+                    toast(t('imageModels.component_done',
+                        'Компонент добавлен ({role}). Вердикт пересчитан, состав набора обновлён.',
+                        { role: roleLabel(comp.role) }), 'success');
+                } else {
+                    setComponentNote(model, '');
+                    toast(t('imageModels.component_failed', 'Не удалось добавить компонент: {error}',
+                        { error: p.errorMessage || status }), 'error');
+                }
+                if (typeof opts.onDone === 'function') { try { opts.onDone(); } catch (e3) { /* рендер списка */ } }
+                return;
+            }
+        }
+        state.componentBusy = null;
+        toast(t('imageModels.component_failed', 'Не удалось добавить компонент: {error}',
+            { error: 'timeout' }), 'error');
+    }
+
+    /** busyHtml — строка прогресса установки компонента для карточки модели. */
+    function componentBusyHtml(model) {
+        var b = state.componentBusy;
+        if (!b || String(b.model || '') !== String(model || '')) return '';
+        var line = t('imageModels.component_progress', 'Скачиваю {role}: {status} {pct}%', {
+            role: roleLabel(b.role), status: b.status || '', pct: Number(b.pct || 0)
+        });
+        return '<div class="imh-verdict-reason" style="margin-top:4px;">' +
+            '<i class="fas fa-spinner fa-spin"></i> ' + escapeHtml(line) + '</div>';
+    }
     /**
      * renderVerifyVerdict — вердикт «сможет ли imageworker загрузить набор» по
      * выбранным файлам (R696), ДО скачивания.
@@ -1084,6 +1923,9 @@
             ? t('imageModels.compat_verdict_missing', 'не хватает: {roles}', { roles: compat.missing.join(', ') })
             : '';
         if (missing) html += '<div class="imh-verdict-missing">' + escapeHtml(missing) + '</div>';
+        // R710: чем починить набор — кнопки «Добавить X (по умолчанию)»,
+        // «Выбрать из другого репозитория…» и «Скачать недостающее».
+        html += componentBlockHtml(compat);
         if (compat.engineMode && compat.engineMode !== 'unknown') {
             html += '<div class="imh-verdict-reason">' +
                 escapeHtml(t('imageModels.plan_mode', 'Режим запуска')) + ': <code>' +
@@ -1109,8 +1951,14 @@
         var paths = Object.keys(state.selection || {}).filter(function (p) {
             return state.selection[p] && state.selection[p].checked;
         }).sort();
+        // R710: добавленные компоненты — часть набора: без них вердикт после
+        // «Добавить VAE» не пересчитался бы (отпечаток не изменился бы).
+        var comps = (state.extraComponents || []).map(function (c) {
+            return String((c && c.role) || '') + '=' + String((c && c.repo) || '') + '/' + String((c && c.filename) || '');
+        }).sort();
         return [state.selectedRepo || '', state.bundleFamily || '',
-            paths.map(function (p) { return p + ':' + ((state.selection[p] && state.selection[p].role) || ''); }).join(',')
+            paths.map(function (p) { return p + ':' + ((state.selection[p] && state.selection[p].role) || ''); }).join(','),
+            comps.join(',')
         ].join('|');
     }
 
@@ -1126,6 +1974,18 @@
                 repo: state.selectedRepo,
                 filename: p,
                 revision: String(f.revision || 'main')
+            });
+        });
+        // R710: компоненты из других репозиториев проверяются тем же вердиктом, что
+        // и файлы самой модели — иначе после «Добавить VAE» оператор увидел бы
+        // прежнее «не хватает VAE» (вердикт считается по набору, а набор вырос).
+        (state.extraComponents || []).forEach(function (c) {
+            if (!c || !c.role || !c.repo || !c.filename) return;
+            out.push({
+                role: String(c.role),
+                repo: String(c.repo),
+                filename: String(c.filename),
+                revision: String(c.revision || 'main')
             });
         });
         return out;
@@ -1800,7 +2660,11 @@
         var tokenInput = el('imgHfToken');
         if (tokenInput && tokenInput.value) saveHfToken(tokenInput.value);
         var built = buildFileSpecs(state.selectedRepo, state.selection, {
-            name: nameInput ? nameInput.value : ''
+            name: nameInput ? nameInput.value : '',
+            // R710: компоненты, добавленные к набору из других репозиториев
+            // (VAE/text encoder), скачиваются в том же bundle — иначе после
+            // загрузки вердикт снова сказал бы «не хватает VAE».
+            components: state.extraComponents || []
         });
         if (built.errors.length) {
             built.errors.forEach(function (err) {
@@ -1963,6 +2827,25 @@
             if (act === 'download') { startBundle(); return; }
             // R696: вердикт по выбранному набору до скачивания.
             if (act === 'verify') { verifySelection(true); return; }
+            // R710: недостающие компоненты набора.
+            var compDefault = target.getAttribute('data-icom-default');
+            if (compDefault) {
+                // В режиме selection (вкладка HF) «по умолчанию» добавляет файл в
+                // выбор; режим bundle рисует страница «Модели на диске» и ведёт
+                // его сама через window.ImageComponents.installBundle.
+                addDefaultComponents([compDefault]);
+                return;
+            }
+            if (target.getAttribute('data-icom-all')) {
+                addDefaultComponents(missingComponentRoles(state.verify));
+                return;
+            }
+            if (target.getAttribute('data-icom-manual')) { openComponentManual(); return; }
+            if (target.getAttribute('data-icom-manual-load')) { loadComponentManualFiles(); return; }
+            if (target.getAttribute('data-icom-manual-add')) { addManualComponents(); return; }
+            if (target.getAttribute('data-icom-manual-cancel')) { closeComponentManual(); return; }
+            var compRemove = target.getAttribute('data-icom-remove');
+            if (compRemove) { removeExtraComponent(compRemove); return; }
             // R493 (2026-11-17): ветки 'refresh-downloads' больше нет — кнопка в
             // разметке удалена (одна кнопка обновления в шапке). Действие
             // зарегистрировано провайдером страницы image ниже в этом файле.
@@ -1973,6 +2856,26 @@
     function onChange(ev) {
         var target = ev && ev.target;
         if (!target || !target.getAttribute) return;
+        // R710: ручная форма компонента — репозиторий и отметки файлов.
+        if (target.getAttribute('data-icom-manual-repo') !== null && state.componentManual) {
+            state.componentManual.repo = String(target.value || '');
+            return;
+        }
+        var manualPick = target.getAttribute('data-icom-manual-pick');
+        if (manualPick !== null && manualPick !== undefined && manualPick !== '' && state.componentManual) {
+            var prev = (state.componentManual.selection || {})[manualPick] || {};
+            state.componentManual.selection[manualPick] = {
+                checked: !!target.checked,
+                role: prev.role || 'vae'
+            };
+            return;
+        }
+        var manualRole = target.getAttribute('data-icom-manual-role');
+        if (manualRole && state.componentManual) {
+            var cur = (state.componentManual.selection || {})[manualRole] || { checked: false };
+            state.componentManual.selection[manualRole] = { checked: !!cur.checked, role: String(target.value || 'vae') };
+            return;
+        }
         var check = target.getAttribute('data-imh-check');
         if (check !== null && check !== undefined && check !== '') {
             // ЗАПРЕТ ВЫБОРА НЕПОДДЕРЖИВАЕМОГО ФАЙЛА (живой случай 2026-10-06):
@@ -2184,7 +3087,14 @@
             scheduleVerify: scheduleVerify,
             selectedBytes: selectedBytes,
             renderSelectionSummary: renderSelectionSummary,
-            renderVerifyVerdict: renderVerifyVerdict
+            renderVerifyVerdict: renderVerifyVerdict,
+            // R710: компоненты набора (для тестов и для страницы «Модели на диске»).
+            loadComponentCatalog: loadComponentCatalog,
+            addDefaultComponents: addDefaultComponents,
+            openComponentManual: openComponentManual,
+            loadComponentManualFiles: loadComponentManualFiles,
+            addManualComponents: addManualComponents,
+            removeExtraComponent: removeExtraComponent
         },
         _state: state,
         pure: {
@@ -2219,7 +3129,53 @@
             planHtml: planHtml,
             // R696: отпечаток выбора — по нему кэшируется вердикт набора.
             selectionKey: selectionKey,
-            selectedFileSpecs: selectedFileSpecs
+            selectedFileSpecs: selectedFileSpecs,
+            // R710: компоненты набора — чистые помощники под тестом
+            // (webui/tests/image-components-r710.test.js).
+            COMPONENT_ROLES: COMPONENT_ROLES,
+            missingComponentRoles: missingComponentRoles,
+            normalizeComponent: normalizeComponent,
+            defaultComponentFor: defaultComponentFor,
+            componentButtonsHtml: componentButtonsHtml,
+            componentConfirmText: componentConfirmText,
+            componentWarningText: componentWarningText,
+            componentSizeText: componentSizeText,
+            componentRoleRankVal: componentRoleRankVal,
+            componentErrorText: componentErrorText
         }
     };
+
+    /**
+     * window.ImageComponents — публичный контракт компонентов для страницы
+     * «Модели на диске» (webui/js/modules/image-page.js).
+     *
+     * ЗАЧЕМ ОТДЕЛЬНОЕ ИМЯ, А НЕ ImageModelsHf: у страницы моделей своя логика
+     * выбора бэкенда и своя таблица; ей нужны ровно три вещи — «какие кнопки
+     * рисовать», «что спросить у оператора» и «как поставить загрузку». Держать
+     * их в ImageModelsHf значило бы заставить чужую страницу знать про HF-табы.
+     *
+     * ПОЧЕМУ ЭКСПОРТ ЖИВЁТ ЗДЕСЬ, А НЕ В НОВОМ ФАЙЛЕ: модуль уже загружен на
+     * странице «Image-модели» (там оба таба), и второй <script> в index.html
+     * ради 5 функций — лишняя точка рассинхронизации сборки.
+     */
+    if (typeof window !== 'undefined') {
+        window.ImageComponents = {
+            roles: COMPONENT_ROLES,
+            missingRoles: missingComponentRoles,
+            buttonsHtml: componentButtonsHtml,
+            confirmText: componentConfirmText,
+            warningText: componentWarningText,
+            sizeText: componentSizeText,
+            errorText: componentErrorText,
+            normalize: normalizeComponent,
+            defaultFor: defaultComponentFor,
+            busyHtml: componentBusyHtml,
+            noteFor: noteForModel,
+            loadCatalog: function (family, roles) {
+                return loadComponentCatalog(fromSelSafe(family), roles || []);
+            },
+            listRepoFiles: listRepoFiles,
+            installBundle: installBundleComponent
+        };
+    }
 })();

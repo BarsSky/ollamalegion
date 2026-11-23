@@ -470,6 +470,25 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/image/models/catalog", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelsCatalog), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/image/models", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelsAggregate), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/image/model-catalog", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelCatalog), s.rateLimiter), s.authenticator))
+	// R710 (2026-11-24): «в вердикте не хватает VAE/text encoder» → посмотреть
+	// каталог компонентов семейства и добавить недостающее на воркер.
+	//
+	//   GET  /api/v1/image/components/catalog?family=&roles=  — статические данные
+	//        (sdbackend/components.go), отвечаются локально: каталог нужен и в
+	//        кластере без image-бэкендов;
+	//   POST /api/v1/image/models/{name}/components            — прокси на воркер,
+	//        который держит каталог модели (?backendId= либо поиск по бэкендам).
+	//
+	// Под AuthMiddleware + RateLimitMiddleware: POST скачивает гигабайты в каталог
+	// модели на воркере, а GET отдаёт не публичные метаданные, а management-данные
+	// (по той же политике, что /api/v1/image/models/catalog).
+	s.mux.Handle("/api/v1/image/components/catalog", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageComponentsCatalog), s.rateLimiter), s.authenticator))
+	// Префиксный маршрут: имя модели в пути. ServeMux выбирает самый длинный
+	// совпавший шаблон, поэтому точные "/api/v1/image/models" и
+	// "/api/v1/image/models/catalog" выше продолжают работать как раньше, а
+	// всё остальное под префиксом обрабатывает handleImageModelComponents
+	// (неизвестные подпути он честно отдаёт 404, см. его начало).
+	s.mux.Handle("/api/v1/image/models/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelComponents), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/image/model-profiles", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelProfiles), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/image/model-profiles/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelProfile), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/image/backends/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageBackendRoutes), s.rateLimiter), s.authenticator))

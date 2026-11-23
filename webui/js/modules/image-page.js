@@ -316,7 +316,15 @@
         selectedBackendId: '',
         models: [],
         loadPoll: null,         // { timer, name }
-        notifiedApiMissing: false
+        notifiedApiMissing: false,
+        // R710: каталог компонентов по семейству (family → ответ API) и флаги
+        // «идёт загрузка каталога». Кэш на страницу: каталог — статические
+        // данные, повторно его не тянем (он нужен на каждый рендер таблицы).
+        componentCatalogs: {},
+        componentCatalogsBusy: {},
+        // componentNotes — предупреждения «добавлено по умолчанию, проверьте
+        // лицензию» по имени модели (показываются в карточке после установки).
+        componentNotes: {}
     };
 
     // =====================================================================
@@ -614,6 +622,178 @@
     }
 
     // =====================================================================
+    // R710 (2026-11-24): недостающие компоненты набора в таблице моделей
+    // =====================================================================
+    //
+    // ЗАЧЕМ. Вердикт в этой таблице давно говорит «не хватает: VAE, text
+    // encoder (LLM)», но исправить это со страницы было нечем: единственным
+    // путём было вернуться на вкладку HF и искать файл вручную. Теперь рядом с
+    // вердиктом стоят кнопки «Добавить VAE (по умолчанию)» и «Выбрать из
+    // другого репозитория…» (см. window.ImageComponents в image-models-hf.js —
+    // каталог, подтверждение и установка живут там, здесь только отрисовка).
+    //
+    // ВАЖНО ПРО НЕАКТИВНЫЕ СОСТОЯНИЯ: у загруженной модели кнопок нет — движок
+    // держит веса открытыми, и добавлять файлы в каталог работающей модели
+    // бессмысленно (SDL-сервер прочитает состав только при следующей загрузке).
+
+    /** missingComponentRolesOf — роли, которых не хватает (через общий модуль). */
+    function missingComponentRolesOf(model) {
+        var api = window.ImageComponents;
+        if (!api || typeof api.missingRoles !== 'function') return [];
+        return api.missingRoles(model && model.compat) || [];
+    }
+
+    /** familyOfModel — семейство для каталога (профиль → вердикт → other). */
+    function familyOfModel(model) {
+        var fam = String((model && model.family) || (model && model.compat && model.compat.family) || '');
+        return fam || 'other';
+    }
+
+    /**
+     * componentButtonsFor — HTML кнопок добавления компонентов для строки модели.
+     *
+     * Каталог тянется ЛЕНИВО и один раз на семейство: пока его нет, рисуем
+     * «ищу стандартные компоненты», а не пустое место (иначе кнопка «Добавить
+     * VAE (по умолчанию)» появлялась бы с задержкой без объяснения).
+     */
+    function componentButtonsFor(model) {
+        var api = window.ImageComponents;
+        if (!api || !model || !model.compat) return '';
+        var missing = missingComponentRolesOf(model);
+        if (!missing.length) return '';
+        var family = familyOfModel(model);
+        var catalog = state.componentCatalogs[family];
+        if (!catalog && !state.componentCatalogsBusy[family]) {
+            state.componentCatalogsBusy[family] = true;
+            Promise.resolve(api.loadCatalog(family, missing)).then(function (data) {
+                state.componentCatalogs[family] = data || { known: false, components: [] };
+                state.componentCatalogsBusy[family] = false;
+                renderModelsTable();
+            }).catch(function () {
+                state.componentCatalogsBusy[family] = false;
+                renderModelsTable();
+            });
+        }
+        var html = '';
+        if (!catalog) {
+            if (state.componentCatalogsBusy[family]) {
+                html += '<div class="imh-verdict-reason" style="margin-top:6px;">' +
+                    '<i class="fas fa-spinner fa-spin"></i> ' +
+                    escapeHtml(t('imageModels.component_catalog_loading',
+                        'Ищу стандартные компоненты для семейства «{family}»…', { family: family })) + '</div>';
+            }
+            return html;
+        }
+        html += api.buttonsHtml(missing, {
+            catalog: catalog, family: family, mode: 'bundle', model: model.name
+        });
+        var note = state.componentNotes[model.name] || api.noteFor(model.name) || '';
+        if (note) {
+            html += '<div class="imh-verdict-reason" style="margin-top:6px;color:var(--warning, #e0a030);">' +
+                '<i class="fas fa-triangle-exclamation"></i> ' + escapeHtml(note) + '</div>';
+        }
+        html += api.busyHtml(model.name) || '';
+        return html;
+    }
+
+    /**
+     * onAddDefaultComponent — кнопка «Добавить VAE (по умолчанию)».
+     *
+     * Подтверждение с числами и установка — в ImageComponents.installBundle:
+     * здесь только контекст (какой бэкенд выбран и какая модель в строке).
+     */
+    function onAddDefaultComponent(modelName, role) {
+        var api = window.ImageComponents;
+        if (!api || typeof api.installBundle !== 'function') {
+            toast(t('imageModels.component_module_missing', 'Модуль компонентов не загружен'), 'error');
+            return false;
+        }
+        var model = (state.models || []).filter(function (m) { return m && m.name === modelName; })[0];
+        if (!model) return false;
+        var family = familyOfModel(model);
+        var comp = api.defaultFor(state.componentCatalogs[family] || null, family, role);
+        if (!comp) {
+            toast(t('imageModels.component_nothing_default',
+                'Для этого семейства нет стандартного компонента — укажите репозиторий вручную'), 'warn');
+            return false;
+        }
+        return api.installBundle({
+            backendId: state.selectedBackendId,
+            model: modelName,
+            family: family,
+            comp: comp,
+            onProgress: function () { renderModelsTable(); },
+            onDone: function () {
+                state.componentNotes[modelName] = api.noteFor(modelName) || '';
+                loadModels();
+            }
+        });
+    }
+
+    /**
+     * onManualComponent — «Выбрать из другого репозитория…» на странице моделей.
+     *
+     * Полная форма (репозиторий + список файлов с ролями) живёт на вкладке HF;
+     * здесь — компактный путь через prompt(): так ручной способ работает и там,
+     * где каталог семейства неизвестен, без второй копии разметки.
+     */
+    async function onManualComponent(modelName) {
+        var api = window.ImageComponents;
+        if (!api || typeof api.installBundle !== 'function' || typeof window.prompt !== 'function') {
+            toast(t('imageModels.component_module_missing', 'Модуль компонентов не загружен'), 'error');
+            return false;
+        }
+        var model = (state.models || []).filter(function (m) { return m && m.name === modelName; })[0];
+        if (!model) return false;
+        var family = familyOfModel(model);
+        var repo = window.prompt(t('imageModels.component_manual_repo',
+            'Репозиторий HF'), '');
+        repo = String(repo || '').trim();
+        if (!repo) return false;
+        var files = [];
+        try {
+            // Файлы чужого репозитория просим у модуля компонентов: обработка
+            // HF-путей живёт в image-models-hf.js, здесь её быть не должно
+            // (тест image-page-dom прямо запрещает '/api/hf/' в этом файле).
+            files = await api.listRepoFiles(state.selectedBackendId, repo);
+        } catch (e) {
+            toast(t('imageModels.hf_files_failed', 'Не удалось прочитать файлы репозитория') + ': ' +
+                ((e && e.message) || String(e)), 'error');
+            return false;
+        }
+        if (!files.length) {
+            toast(t('imageModels.hf_no_files', 'В этом репозитории нет файлов для скачивания'), 'warn');
+            return false;
+        }
+        var list = files.map(function (f, i) {
+            var path = String(f.path || f.rfilename || f.filename || '');
+            return (i + 1) + ') ' + path + ' [' + String(f.suggestedRole || '') + ']';
+        }).join('\n');
+        var answer = window.prompt(t('imageModels.component_manual_pick',
+            'Выберите файл по номеру:\n{list}', { list: list }), '1');
+        var idx = parseInt(String(answer || ''), 10) - 1;
+        if (!(idx >= 0 && idx < files.length)) return false;
+        var picked = files[idx];
+        var path = String(picked.path || picked.rfilename || picked.filename || '');
+        var role = String(picked.suggestedRole || 'vae');
+        var comp = api.normalize({
+            role: role, repo: repo, files: [path],
+            sizeMb: Math.ceil(Number(picked.sizeBytes || picked.size || 0) / (1024 * 1024))
+        }, family);
+        return api.installBundle({
+            backendId: state.selectedBackendId,
+            model: modelName,
+            family: family,
+            comp: comp,
+            onProgress: function () { renderModelsTable(); },
+            onDone: function () {
+                state.componentNotes[modelName] = '';
+                loadModels();
+            }
+        });
+    }
+
+    // =====================================================================
     // Рендер: таблица моделей
     // =====================================================================
 
@@ -658,6 +838,8 @@
                     ' title="' + escapeHtml(compatTip) + '">' +
                     '<i class="fas ' + icon + '"></i> ' + escapeHtml(label) +
                     (reason ? ' — ' + escapeHtml(reason) : '') + escapeHtml(missing) + '</div>';
+                // R710: кнопки «чем починить набор» — только у НЕзагруженной модели.
+                if (missing) compatHtml += componentButtonsFor(m);
             }
             var actions = '';
             if (isBusy) {
@@ -956,6 +1138,19 @@
 
     function onClick(e) {
         var target = e.target;
+        // R710: кнопки добавления недостающих компонентов (свои data-атрибуты,
+        // потому что их рисует общий модуль компонентов, а не эта страница).
+        var compEl = target && target.closest ? target.closest('[data-icom-default],[data-icom-manual]') : null;
+        if (compEl) {
+            var compModel = compEl.getAttribute('data-icom-model') || '';
+            var compRole = compEl.getAttribute('data-icom-default');
+            if (compRole) {
+                onAddDefaultComponent(compModel, compRole);
+            } else {
+                onManualComponent(compModel);
+            }
+            return;
+        }
         var actionEl = target && target.closest ? target.closest('[data-img-action]') : null;
         if (!actionEl) return;
         var action = actionEl.getAttribute('data-img-action');

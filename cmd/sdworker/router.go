@@ -69,6 +69,15 @@ func (a *App) setupRouter() http.Handler {
 	mux.HandleFunc("/api/image/models/export", a.handleExportBundle)
 	mux.HandleFunc("/api/image/models/import", a.handleImportBundle)
 	mux.HandleFunc("/api/image/models/reload", a.handleReloadModel)
+	// R710 (2026-11-24): «в наборе не хватает VAE/text encoder» → добавить
+	// недостающее из интерфейса. Каталог — данные (семейство → репозитории и
+	// файлы), установка — загрузка в каталог СУЩЕСТВУЮЩЕГО bundle + правка
+	// profile.json + пересканирование (вердикт пересчитывается).
+	//
+	// Путь установки — с именем модели: префиксный машрут, потому что имя
+	// приходит из URL (/api/image/models/{name}/components), а не из тела.
+	mux.HandleFunc("/api/image/components/catalog", a.handleComponentCatalog)
+	mux.HandleFunc("/api/image/models/", a.handleModelComponents)
 	mux.HandleFunc("/api/image/models/load/progress", a.handleLoadProgress)
 	mux.HandleFunc("/api/image/models/load/progress/stream", a.handleLoadProgressStream)
 	mux.HandleFunc("/api/image/generate", a.handleGenerate)

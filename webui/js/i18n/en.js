@@ -2139,6 +2139,48 @@ window.I18N_EN = {
   "imageModels.family_autoset": "Bundle family switched to \"{family}\" based on the file header (was \"{prev}\"): otherwise the engine gets the all-in-one flag and answers \"get sd version from file failed\".",
   "imageModels.dit_missing": "This looks like the {family} family: sd.cpp needs separate {missing} for it, and this repository has none. Add them as files from another repository (for example the VAE ae.safetensors).",
 
+  // ==== R710 (2026-11-24): adding the missing components of a bundle ====
+  // Live defect: the verdict says "missing: VAE, text encoder (LLM)", the
+  // repository has none of those files, and there was no way to add them from the
+  // UI — the hint told the operator to find the file by hand outside the page.
+  // The buttons appear next to the "missing" line; the catalog comes from server.
+  "imageModels.component_add_default": "Add {role} (default)",
+  "imageModels.component_manual": "Pick from another repository…",
+  "imageModels.component_manual_hint": "Specify the repository and the file manually",
+  "imageModels.component_add_all": "Download what is missing ({n})",
+  "imageModels.component_no_catalog": "There is no catalog of standard components for the {family} family: specify the repository and the file manually.",
+  "imageModels.component_catalog_loading": "Looking up standard components for the {family} family…",
+  "imageModels.component_catalog_failed": "Component catalog is unavailable: {error}. Specify the repository and the file manually.",
+  "imageModels.component_confirm_line": "Will be added: {role} {file} ({size}) from {repo}",
+  "imageModels.component_confirm_standard": "This is the standard component for the {family} family.",
+  "imageModels.component_confirm_license": "License: {license}",
+  "imageModels.component_confirm_bundle": "Existing files will not change: the file is downloaded into the model directory and its role is written to profile.json.",
+  "imageModels.component_confirm_selection": "The file is added to the bundle and downloaded along with the other files.",
+  "imageModels.component_confirm_total": "Components to add: {n}, {size} in total.",
+  "imageModels.component_added_default": "Added by default: {role} from {repo} (license: {license}). Verify the license before publishing results.",
+  "imageModels.component_added_default_no_license": "Added by default: {role} from {repo}. The repository card declares no license — verify it yourself.",
+  "imageModels.component_added_count": "Components added: {n}",
+  "imageModels.component_role_taken": "Role \"{role}\" is already taken in this bundle",
+  "imageModels.component_remove_hint": "Remove this component from the bundle",
+  "imageModels.component_manual_repo": "HF repository",
+  "imageModels.component_manual_show_files": "Show files",
+  "imageModels.component_manual_add": "Add to the bundle",
+  "imageModels.component_manual_repo_required": "Specify an HF repository (for example Comfy-Org/Qwen-Image_ComfyUI)",
+  "imageModels.component_manual_pick": "Pick a file by number:\n{list}",
+  "imageModels.component_nothing_default": "This family has no standard component — specify the repository manually",
+  "imageModels.component_started": "Downloading the component: {role}",
+  "imageModels.component_done": "Component added ({role}). The verdict was recalculated and the bundle composition updated.",
+  "imageModels.component_failed": "Failed to add the component: {error}",
+  "imageModels.component_progress": "Downloading {role}: {status} {pct}%",
+  "imageModels.component_license_prefix": "license",
+  "imageModels.component_module_missing": "The components module is not loaded",
+  "imageModels.component_err_role_present": "The role is already taken by \"{file}\": unload/delete it first or pick another role.",
+  "imageModels.component_err_file_not_found": "The file is not in the repository. Available: {available}",
+  "imageModels.component_err_too_large": "The file is too large for a component install — pick a smaller quant (see the catalog).",
+  "imageModels.component_err_bundle_not_found": "This worker has no directory for the model: download the bundle first, then add components.",
+  "imageModels.component_err_invalid_path": "Refused: the path is outside the models directory. Components may only be added inside the model's own directory.",
+  "imageModels.component_err_conflict": "The file \"{file}\" already belongs to another role of the bundle — downloading it would replace that role.",
+
   // ==== R-Image Phase 9: "Models on disk" and "Settings" tabs ====
   "imageModels.roles_summary": "Contents (roles)",
   "imageModels.roles_unknown": "no data",

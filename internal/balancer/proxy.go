@@ -99,8 +99,11 @@ type Proxy struct {
 	saveTimer              *time.Timer     // Таймер для debounced autosave
 	saveMu                 sync.Mutex      // Мьютекс для защиты saveTimer
 	totalRequests          int64           // Atomic: всего запросов через прокси
-	ollamaRouter           *OllamaRouter   // Маршрутизатор Ollama API endpoint'ов
-	llamaCppRouter         *LlamaCppRouter // Маршрутизатор llama.cpp API endpoint'ов
+	// D4.2 (2026-11-25): попытки инференс-запросов, включая отказы. Растут в
+	// ServeHTTP до диспетчеризации; totalRequests (успехи) остаётся как было.
+	totalAttempts  int64           // Atomic: попытки запросов (успех + отказ)
+	ollamaRouter   *OllamaRouter   // Маршрутизатор Ollama API endpoint'ов
+	llamaCppRouter *LlamaCppRouter // Маршрутизатор llama.cpp API endpoint'ов
 	// R-Image (2026-09-27): маршрутизатор image-бэкендов (тип image_cpp):
 	// /v1/images/*, /sdapi/v1/*, /api/image/*.
 	imageRouter *ImageRouter
@@ -531,6 +534,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isClientCancelPath(r.URL.Path) {
 		p.handleClientCancel(w, r)
 		return
+	}
+
+	// D4.2 (2026-11-25): СЧИТАЕМ ПОПЫТКИ, А НЕ ТОЛЬКО УСПЕХИ.
+	//
+	// Живой замер: `cluster.totalRequests=0` при `recentClients.requestCount=6`
+	// — запросы были (и получали 503), но totalRequests инкрементится только
+	// после успешного ответа апстрима. Панель читала 0 как «запросов не было».
+	// Теперь попытка считается ДО диспетчеризации, для инференс-путей (чтение и
+	// админ-ручки не считаем — иначе число перестанет означать нагрузку).
+	if !isReadOnlyOrMgmtEndpoint(r.URL.Path) {
+		atomic.AddInt64(&p.totalAttempts, 1)
 	}
 
 	// Phase 8 (2026-07-10): P.1 — rpc_coordinator production mode scaffold.

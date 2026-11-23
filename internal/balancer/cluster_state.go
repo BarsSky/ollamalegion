@@ -50,6 +50,9 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 	}
 
 	state.TotalRequests = atomic.LoadInt64(&p.totalRequests)
+	// D4.2: попытки (успех + отказ) — иначе при отказах панель показывала 0,
+	// хотя клиенты уже получали 503 и ждали в очереди.
+	state.TotalAttempts = atomic.LoadInt64(&p.totalAttempts)
 
 	for id, backendState := range backendsCopy {
 

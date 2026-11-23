@@ -4,10 +4,17 @@ import "time"
 
 // ClusterState - состояние кластера
 type ClusterState struct {
-	Timestamp            time.Time           `json:"timestamp"`
-	TotalBackends        int                 `json:"totalBackends"`
-	HealthyBackends      int                 `json:"healthyBackends"`
-	TotalRequests        int64               `json:"totalRequests"`
+	Timestamp       time.Time `json:"timestamp"`
+	TotalBackends   int       `json:"totalBackends"`
+	HealthyBackends int       `json:"healthyBackends"`
+	TotalRequests   int64     `json:"totalRequests"`
+	// D4.2 (2026-11-25): totalRequests считает ТОЛЬКО успешно проксированные
+	// запросы (инкремент стоит после ответа апстрима). При отказах панель
+	// показывала 0 там, где клиенты уже получали 503: живой замер на стенде —
+	// `totalRequests=0` при `recentClients.requestCount=6`. TotalAttempts —
+	// все попытки инференс-запросов, включая отказы, чтобы число сходилось с
+	// recentClients и «активных запросов» в панели.
+	TotalAttempts        int64               `json:"totalAttempts"`
 	ActiveRequests       int                 `json:"activeRequests"`
 	QueuedRequests       int                 `json:"queuedRequests"`
 	RPS                  float64             `json:"rps"`

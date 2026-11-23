@@ -351,7 +351,21 @@ curl -s -H "X-API-Token: $LB_TOKEN" http://localhost:18081/api/v1/image/capabili
 curl -s -X POST http://localhost:18079/v1/images/generations \
   -H 'Content-Type: application/json' \
   -d '{"model":"dall-e-2","prompt":"a cat","size":"512x512","n":1}' | head -c 200
+
+# диагностический архив image-воркера (R715): логи, модели и их состояние,
+# версия/identity, конфиг, состояние HF-загрузок. Есть и короткий алиас
+# /api/debug/bundle.
+curl -s http://<воркер>:18093/api/v1/sdworker/debug/bundle -o imageworker-diag.zip
 ```
+
+**Архив стенда для image-бэкенда (R715).** `GET /api/v1/diag/bundle` на балансере
+теперь забирает архив и у image-воркера (`/api/v1/sdworker/debug/bundle`) и кладёт
+его в `backends/<id>.bundle.zip`; `/api/info` заменён на `/api/image/info` для типа
+`image_cpp`. Если воркер недоступен, в `backends/<id>.error.txt` пишется ПРИЧИНА:
+`reason=timeout` (не ответил за 5 с), `reason=http_status` с кодом (404 = образ
+воркера старше R715) или `reason=connection` — с подсказкой. Для типов без архива
+по контракту (например `ollama`) остаётся `backends/<id>.note.txt` с названным
+контрактом. Версии всех сервисов (включая webui) — в `summary.json` → `services`.
 
 Если `/v1/images/generations` отвечает `503 image_backend_unavailable` — не зарегистрирован ни один здоровый бэкенд типа `image_cpp`. Ответ `503 insufficient_vram` означает, что модель не влезает в текущую свободную VRAM — смотри поле `hint` в теле ответа.
 

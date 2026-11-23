@@ -12,6 +12,13 @@
 // ПОЧЕМУ ЭТО НЕ /ws/logs. WebSocket — live-tail, у него нет ни истории до
 // подключения, ни фильтров на сервере, ни способа отдать файл. Экспорт —
 // отдельная ручка, чтобы «пришлите логи» решалось одной кнопкой.
+//
+// R715 (D3): СХЛОПНУТЫЕ ПОВТОРЫ. Буфер балансера агрегирующий, поэтому запись
+// с Repeated>1 означает N одинаковых событий. В JSON счётчик приходит полями
+// repeated/first_time/last_time (массив и прежние ключи сохранены — формат не
+// сломан), в тексте — теми же парами key=value в конце строки. Отдельного
+// переключателя нет: «сырых» повторов в буфере уже не существует, а отдавать
+// их из экспорта значило бы врать о том, что лежит в архиве.
 package api
 
 import (
@@ -126,6 +133,14 @@ func (s *Server) handleLogsExport(w http.ResponseWriter, r *http.Request) {
 				for _, k := range keys {
 					fmt.Fprintf(w, " %s=%v", k, e.Fields[k])
 				}
+			}
+			// R715: схлопнутый повтор — счётчик и границы времени в конце строки
+			// (новые пары, прежние поля не тронуты).
+			if e.Repeated > 1 {
+				fmt.Fprintf(w, " repeated=%d first=%s last=%s",
+					e.Repeated,
+					e.FirstOccurrence().UTC().Format(time.RFC3339Nano),
+					e.LastOccurrence().UTC().Format(time.RFC3339Nano))
 			}
 			fmt.Fprintln(w)
 		}

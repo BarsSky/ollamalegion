@@ -24,6 +24,18 @@ type LogEntry struct {
 	// отдаются отдельно: UI рисует раскрываемый блок «поля (N)», поиск и
 	// экспорт работают с ними как с данными.
 	Fields map[string]interface{} `json:"fields,omitempty"`
+
+	// R715 (D3 плана 2026-11-24): схлопывание повторов.
+	//
+	// Repeated — сколько раз событие повторилось (1 = обычная запись).
+	// FirstTime/LastTime — первое и последнее появление. Поля ДОБАВЛЕНЫ, а не
+	// заменяют прежние: time/level/message/source/fields остаются на месте и с
+	// прежним смыслом (time = Time, у схлопнутой записи — время ПЕРВОГО
+	// появления), поэтому старые потребители JSON (логи WS, экспорт, WebUI)
+	// читают записи как раньше, а новые видят счётчик.
+	Repeated  int        `json:"repeated,omitempty"`
+	FirstTime *time.Time `json:"first_time,omitempty"`
+	LastTime  *time.Time `json:"last_time,omitempty"`
 }
 
 // LogSubscriber — одна подписка (один WebSocket-клиент).
@@ -62,6 +74,28 @@ type LogBroker struct {
 	nextID      uint64
 	stopCh      chan struct{}
 	stopped     bool
+
+	// R715 (D3): режим схлопывания повторов. См. aggregate.go — зачем.
+	//
+	// aggregate=false — историческое поведение (каждый Publish занимает запись);
+	// aggregate=true  — повтор с тем же AggregateKeyR715 увеличивает Repeated у
+	// уже лежащей записи. Буфер при этом хранит РАЗНЫЕ события, поэтому окно
+	// логов растёт без роста памяти.
+	aggregate bool
+	// aggIndex — ключ повтора → позиция в buffer. aggKeys — ключ КАЖДОЙ
+	// позиции (нужен, чтобы перестроить aggIndex после обрезки хвоста буфера).
+	aggIndex map[string]int
+	aggKeys  []string
+	// trimChunk — сколько записей срезать за раз при переполнении. Без этого
+	// каждая публикация после заполнения требовала бы перестроения aggIndex
+	// (O(размера буфера)), то есть на типовой нагрузке 2000+ операций на
+	// строку лога.
+	trimChunk int
+	// publishedTotal / collapsedTotal — счётчики ДО схлопывания: по ним видно,
+	// сколько строк реально пришло и сколько из них были повторами (окно логов
+	// в метаданных архива считается по ним, а не по остатку в буфере).
+	publishedTotal uint64
+	collapsedTotal uint64
 }
 
 // NewLogBroker создаёт брокер с ring buffer указанного размера (default 100 при <=0).
@@ -77,6 +111,27 @@ func NewLogBroker(bufferSize int) *LogBroker {
 	}
 }
 
+// NewAggregatingLogBroker — R715 (D3): тот же кольцевой буфер, но одинаковые
+// события схлопываются (см. aggregate.go).
+//
+// Отдельный конструктор, а не флаг у NewLogBroker: схлопывание меняет смысл
+// Snapshot (длина среза = число РАЗНЫХ событий, а не число строк), и включать
+// его молча для всех потребителей было бы скрытой сменой контракта. Балансер и
+// image-воркер включают его явно; тестовые брокеры остаются историческими.
+func NewAggregatingLogBroker(bufferSize int) *LogBroker {
+	b := NewLogBroker(bufferSize)
+	b.aggregate = true
+	b.aggIndex = make(map[string]int, bufferSize)
+	b.trimChunk = bufferSize / 10
+	if b.trimChunk < 1 {
+		b.trimChunk = 1
+	}
+	return b
+}
+
+// Aggregates сообщает, включено ли схлопывание повторов.
+func (b *LogBroker) Aggregates() bool { return b.aggregate }
+
 // Publish добавляет запись в ring buffer и рассылает всем подписчикам.
 //
 // Неблокирующая: если канал подписчика заполнен — запись для него отбрасывается
@@ -90,12 +145,21 @@ func (b *LogBroker) Publish(entry LogEntry) {
 	}
 
 	b.mu.Lock()
-	// Ring buffer: append + truncate если превышен размер.
-	b.buffer = append(b.buffer, entry)
-	if len(b.buffer) > b.bufferSize {
-		// Удаляем самые старые, оставляем последние bufferSize записей.
-		excess := len(b.buffer) - b.bufferSize
-		b.buffer = b.buffer[excess:]
+	b.publishedTotal++
+	if b.aggregate {
+		if b.publishAggregatedLocked(entry) {
+			// Запись стала повтором: строка в буфере не появилась, но лив-тейл
+			// обязан её показать — подписчик ждёт каждое событие.
+			b.collapsedTotal++
+		}
+	} else {
+		// Ring buffer: append + truncate если превышен размер.
+		b.buffer = append(b.buffer, entry)
+		if len(b.buffer) > b.bufferSize {
+			// Удаляем самые старые, оставляем последние bufferSize записей.
+			excess := len(b.buffer) - b.bufferSize
+			b.buffer = b.buffer[excess:]
+		}
 	}
 	// Snapshot подписчиков под RLock — чтобы не удерживать write lock при send.
 	subs := make([]*LogSubscriber, 0, len(b.subscribers))
@@ -126,6 +190,112 @@ func (b *LogBroker) Snapshot() []LogEntry {
 	out := make([]LogEntry, len(b.buffer))
 	copy(out, b.buffer)
 	return out
+}
+
+// publishAggregatedLocked — R715: положить запись в буфер со схлопыванием.
+//
+// Возвращает true, если запись оказалась ПОВТОРОМ уже лежащего события (тогда
+// новая строка в буфере не появилась, а у существующей вырос Repeated и
+// сдвинулся LastTime). Вызывается под b.mu.
+func (b *LogBroker) publishAggregatedLocked(entry LogEntry) bool {
+	key := AggregateKeyR715(entry)
+	if key != "" {
+		if pos, ok := b.aggIndex[key]; ok && pos >= 0 && pos < len(b.buffer) &&
+			b.aggKeys[pos] == key {
+			slot := &b.buffer[pos]
+			if slot.Repeated == 0 {
+				// Первый повтор: фиксируем границы события. Время первого
+				// появления — это Time самой записи (её никто не переписывает).
+				first := slot.Time
+				slot.FirstTime = &first
+				slot.Repeated = 1
+			}
+			slot.Repeated++
+			last := entry.Time
+			slot.LastTime = &last
+			// Текст и поля остаются от ПЕРВОГО появления: это представитель
+			// события, а меняющиеся числа (disk_free_mb и т.п.) в ключ не входят
+			// — заменять их на последние значило бы показать не то, что случилось
+			// первым. Последнее время есть отдельным полем.
+			return true
+		}
+	}
+	b.buffer = append(b.buffer, entry)
+	b.aggKeys = append(b.aggKeys, key)
+	if len(b.buffer) > b.bufferSize {
+		// trimLocked ПЕРЕСТРОИТ индекс целиком: позиции сместились.
+		b.trimLocked()
+	} else if key != "" {
+		b.aggIndex[key] = len(b.buffer) - 1
+	}
+	return false
+}
+
+// trimLocked — срезать голову буфера и перестроить индекс ключей.
+//
+// Срезается не ровно 1 запись, а trimChunk (10% ёмкости): перестроение индекса
+// стоит O(числа записей), и делать его на КАЖДУЮ строку лога — это те самые
+// «2000 операций на строку», которых не должно быть. Размер буфера при этом
+// никогда не превышает bufferSize.
+func (b *LogBroker) trimLocked() {
+	excess := len(b.buffer) - b.bufferSize + b.trimChunk
+	if excess > len(b.buffer) {
+		excess = len(b.buffer)
+	}
+	if excess <= 0 {
+		return
+	}
+	b.buffer = append(b.buffer[:0:0], b.buffer[excess:]...)
+	b.aggKeys = append(b.aggKeys[:0:0], b.aggKeys[excess:]...)
+	for k := range b.aggIndex {
+		delete(b.aggIndex, k)
+	}
+	for pos, k := range b.aggKeys {
+		if k != "" {
+			b.aggIndex[k] = pos
+		}
+	}
+}
+
+// LogBufferStats — снимок состояния буфера для диагностики (R715).
+//
+// PublishedTotal — сколько строк реально пришло (до схлопывания);
+// CollapsedTotal — сколько из них стали повторами; Entries — сколько РАЗНЫХ
+// событий лежит в буфере. Первое/последнее время — границы ОКНА, которое архив
+// реально покрывает (то самое «13 минут», из-за которых заведён D3).
+type LogBufferStats struct {
+	Aggregating    bool      `json:"aggregating"`
+	Capacity       int       `json:"capacity"`
+	Entries        int       `json:"entries"`
+	PublishedTotal uint64    `json:"published_total"`
+	CollapsedTotal uint64    `json:"collapsed_total"`
+	FirstTime      time.Time `json:"first_time"`
+	LastTime       time.Time `json:"last_time"`
+	ApproxBytes    int       `json:"approx_bytes"`
+}
+
+// Stats — снимок состояния буфера (см. LogBufferStats).
+func (b *LogBroker) Stats() LogBufferStats {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	st := LogBufferStats{
+		Aggregating:    b.aggregate,
+		Capacity:       b.bufferSize,
+		Entries:        len(b.buffer),
+		PublishedTotal: b.publishedTotal,
+		CollapsedTotal: b.collapsedTotal,
+		ApproxBytes:    LogEntriesApproxBytesR715(b.buffer),
+	}
+	for _, e := range b.buffer {
+		first, last := e.FirstOccurrence(), e.LastOccurrence()
+		if !first.IsZero() && (st.FirstTime.IsZero() || first.Before(st.FirstTime)) {
+			st.FirstTime = first
+		}
+		if last.After(st.LastTime) {
+			st.LastTime = last
+		}
+	}
+	return st
 }
 
 // Subscribe регистрирует нового подписчика и возвращает его handle.

@@ -9,6 +9,11 @@
 решения дублируются сейчас, и какой минимальный `requestPlanR493` их сводит —
 с порядком миграции и рисками. Отдельный раздел — этап 5 (транспорт).
 
+**Историческая записка (R493).** Номера строк ниже — по состоянию на R493
+(2026-11-16); имена файлов приведены к актуальным путям (переименования
+R599–R648), чтобы ссылки открывались в сегодняшнем дереве, а номера строк
+относятся к тому срезу, по которому документ писался.
+
 ---
 
 ## 1. Что уже сведено (фундамент есть, его надо расширять, а не строить заново)
@@ -16,11 +21,11 @@
 | Механизм | Где | Что даёт |
 |---|---|---|
 | `requestSurface` (`surfaceLegacy`=18080, `surfaceOpenAI`=18079) | `request_surface.go:23-30` | один `*Proxy` обслуживает два порта с разной семантикой; поверхность едет в контексте (`withRequestSurface`, `:46`) |
-| `streamFlagFromBodyR484` — один разбор поля `stream` | `stream_flag_r484.go:32` | разбор ровно один; при отсутствии поля — дефолт поверхности (`streamDefaultForSurfaceR484`, `stream_flag_r484.go:47`: legacy → `true`, OpenAI → `false`) |
+| `streamFlagFromBodyR484` — один разбор поля `stream` | `internal/balancer/stream_flag.go:32` | разбор ровно один; при отсутствии поля — дефолт поверхности (`streamDefaultForSurfaceR484`, `internal/balancer/stream_flag.go:47`: legacy → `true`, OpenAI → `false`) |
 | `parsedRequest` — уже разобранное тело в контексте | `proxy.go:2157-2172`, `withParsedRequest` (`request_surface.go:67`), `parsedRequestOf` (`:75`) | поля `Model`, `Stream`, `RawBody`, `TooLarge`, `NumCtx`; «одно чтение тела» закреплено `body_single_read_r493_test.go` |
 | `requestModelHint` | `request_surface.go:90` | модель из уже разобранного тела, без повторного парсинга |
 | Разбор `num_ctx` из тела | `num_ctx_resolver.go:50` `ExtractNumCtxFromBody` | понимает `options.num_ctx` (Ollama) и верхнеуровневый `num_ctx` (OpenAI/прочее) |
-| Один сток кадра + одно решение по строке SSE | `stream_line_plan_r493.go`, `stream_openai_sink_r493.go` | этап 6 (не этап 1) |
+| Один сток кадра + одно решение по строке SSE | `internal/balancer/stream_line_plan.go`, `internal/balancer/stream_openai_sink.go` | этап 6 (не этап 1) |
 
 **Вывод.** Форма «решение в контексте» уже существует (`parsedRequest`), но в ней
 только 2 из 4 решений этапа 1: **стрим** и **окно** лежат там, а **лимиты вывода**
@@ -39,11 +44,11 @@
 |---|---|---|---|---|---|
 | `/api/chat` → llama_cpp-роутер → `handleChat` (`llamacpp_router.go:128` → `llamacpp_handlers_inference.go:842`) | `isStreamingFromBody` (`:1042`), дефолт `true` на legacy | типизированное `req.Model` в теле запроса | `options.num_predict` **не читается** для решения, уходит как есть | `ResolveNumCtx` (`:961`) + `ApplyCppCtxHeader` (`:996`) | handler-путь: 3-tier профиль/backend поверх тела; на generic-пути `/api/chat` часть решений другая (см. строку ниже) |
 | `/api/chat` → generic-путь (`proxy.go` ServeHTTP → `proxyRequest*`) | `parsedRequest.Stream` (`parsed.Stream`, 2 чтения) | `parsed.Model` (`proxy.go:1101`) | pass-through | `parsed.NumCtx` (`proxy.go:1301,1302,1306,1358,1414,1437`) + `decideWindowR493` | здесь решения приходят из `parsedRequest`; на handler-пути — из typed-структуры. Один и тот же путь `/api/chat` имеет ДВА набора решений в зависимости от типа бэкенда |
-| `/v1/chat/completions` → `handleOpenAIChatCompletions` (`llamacpp_handlers_inference.go:23`) | **не по телу**: транспорт выбирает сток по типу ответа upstream (`stream_openai_sink_r493.go:240-244`: SSE/NDJSON → стрим, иначе `writeNonSSEStreamResponseR493`). Клиентское поле читается только для **авто-стрима R258** (`:326-327`) | typed `req.Model` | `req.MaxTokens` / `options.num_predict` — pass-through | `ResolveNumCtx` (`:185`), затем `ApplyCppCtxHeader` (`:262`) | единственная поверхность с авто-стримом; на 18079 дефолт стрима `false`, на 18080 — `true` |
+| `/v1/chat/completions` → `handleOpenAIChatCompletions` (`llamacpp_handlers_inference.go:23`) | **не по телу**: транспорт выбирает сток по типу ответа upstream (`internal/balancer/stream_openai_sink.go:240-244`: SSE/NDJSON → стрим, иначе `writeNonSSEStreamResponseR493`). Клиентское поле читается только для **авто-стрима R258** (`:326-327`) | typed `req.Model` | `req.MaxTokens` / `options.num_predict` — pass-through | `ResolveNumCtx` (`:185`), затем `ApplyCppCtxHeader` (`:262`) | единственная поверхность с авто-стримом; на 18079 дефолт стрима `false`, на 18080 — `true` |
 | `/api/generate` → `handleGenerate` (`llamacpp_router.go:131` → `:1066`) | `isStreamingFromBody` (`:1216`) | typed `req.Model` | `options.num_predict` pass-through | `ResolveNumCtx` (`:1157`) + `ApplyCppCtxHeader` (`:1188`) | нет tools-ветки, нет `think`/reasoning-полей; формат ответа NDJSON |
 | `/v1/completions` → `handleOpenAICompletion` (`:451`) | **не по телу**: тот же сток по типу ответа upstream (`proxyRequestOpenAIStreaming`, `:693`); `isStreamingFromBody` в этом обработчике НЕ вызывается вовсе | typed `req.Model` | `max_tokens` pass-through | `ResolveNumCtx` (`:547`), `ApplyCppCtxHeader` (`:602`) | копия пайплайна chat-обработчика (см. §3); авто-стрима нет |
-| Anthropic `/v1/messages` → `handleAnthropicMessages` (`anthropic_r247.go:771`) | `req.Stream` (`:75`) | `model` из Anthropic-тела | `req.MaxTokens` (`:71`) → `max_tokens` (`:226`) | **нет своего решения**: тело переводится в OpenAI и уходит self-proxy в `/v1/chat/completions` (`:795`) | адаптер: решения об окне принимает уже chat-поверхность; стрим переводится в OpenAI-SSE и обратно (`anthropicStreamForwarder`, `:481`) |
-| Responses `/v1/responses` → адаптер (`responses_r247.go`) | `req.Stream` (`:62`) | `model` | `req.MaxOutputTokens` (`:59`) → `max_tokens` (`:211-212`) | **нет своего решения** (self-proxy в chat) | второе имя лимита (`max_output_tokens`), которое переводится в `max_tokens` |
+| Anthropic `/v1/messages` → `handleAnthropicMessages` (`internal/balancer/anthropic_api.go:771`) | `req.Stream` (`:75`) | `model` из Anthropic-тела | `req.MaxTokens` (`:71`) → `max_tokens` (`:226`) | **нет своего решения**: тело переводится в OpenAI и уходит self-proxy в `/v1/chat/completions` (`:795`) | адаптер: решения об окне принимает уже chat-поверхность; стрим переводится в OpenAI-SSE и обратно (`anthropicStreamForwarder`, `:481`) |
+| Responses `/v1/responses` → адаптер (`internal/balancer/responses_api.go`) | `req.Stream` (`:62`) | `model` | `req.MaxOutputTokens` (`:59`) → `max_tokens` (`:211-212`) | **нет своего решения** (self-proxy в chat) | второе имя лимита (`max_output_tokens`), которое переводится в `max_tokens` |
 | Авто-стрим R258 (`llamacpp_handlers_inference.go:326`) | решение НЕ клиента, а сервера: превратить `stream:false` в upstream-стрим | — | — | — | единственное серверное решение о стриме; включается env `LB_OPENAI_AUTO_STREAM` (по умолчанию off) |
 
 ### По колонкам: где именно «одно решение» уже есть, а где нет
@@ -64,9 +69,9 @@
   клиентское значение как есть. Решение живёт в двух других местах:
   (1) балансер читает лимиты только чтобы посчитать **окно**
   (`preflight_nctx.go:197,205,219,223`; `agentOutputBudget`,
-  `preflight_agent_window_r253.go:85`; резервы `:38`), и (2) **воркер**
-  окончательно урезает `n_predict` по свободному окну (`n_predict_budget_r463.go`,
-  а с R493 — и `reasoningBudget`, `tools_stream_reasoning_r404.go`).
+  `internal/balancer/preflight_agent_window.go:85`; резервы `:38`), и (2) **воркер**
+  окончательно урезает `n_predict` по свободному окну (`cmd/cppworker/n_predict_budget.go`,
+  а с R493 — и `reasoningBudget`, `cmd/cppworker/tools_stream_reasoning.go`).
   Отдельный случай — авто-продолжение: у него свой лимит
   (`auto_continue.go:963,967,1234-1246`).
 - **(г) окно.** Две реализации одного и того же чтения: `parsedRequest.NumCtx`
@@ -83,10 +88,10 @@
 | «это стрим?» | `streamFlagFromBodyR484` (+ обёртка `isStreamingFromBody`) зовётся напрямую: `admission_queue.go:751`, `image_tool_loop.go:61`, `image_tool_loop_ollama.go:78`, `llamacpp_handlers_inference.go:326,1042,1216`, `llamacpp_transport.go:100` и др. | **14 вызовов**, при этом `parsedRequest.Stream` читают 2 | дефолт поверхности можно обойти, вызвав обёртку без поверхности; при новом пути легко забыть про авто-стрим |
 | «какое окно просил клиент» | `ExtractNumCtxFromBody` — `parsedRequest` уже содержит результат | **17 вызовов** + 10 в тестах | повторный `json.Unmarshal` на каждом решении; источник правды разъезжается, если формат тела изменится в одном месте |
 | пайплайн «выбрать слот → дождаться → окно → авто-загрузка → Cpp-Ctx» | `llamacpp_handlers_inference.go`: `117/140/185/204-206/262` (chat), `482/502/547/566-568/602` (completions), `736/756` (embeddings — только выбор+ожидание), `912/921/961/963/996` (Ollama chat), `1157/1188` (Ollama generate) | **5 копий** (4 инференсных + embeddings-путь) | правка в одной копии не доезжает до остальных (уже случалось: R127/окно автозагрузки правили в одном месте) |
-| «какой лимит вывода у клиента» | `preflight_nctx.go:197-223` (окно), `auto_continue.go:1234-1246` (продолжение), воркер `n_predict_budget_r463.go` (финальный кламп) | **3 места** с разной семантикой | лимит читается тремя разными структурами; поле `max_output_tokens` (Responses) переводится в `max_tokens` только в адаптере |
+| «какой лимит вывода у клиента» | `preflight_nctx.go:197-223` (окно), `auto_continue.go:1234-1246` (продолжение), воркер `cmd/cppworker/n_predict_budget.go` (финальный кламп) | **3 места** с разной семантикой | лимит читается тремя разными структурами; поле `max_output_tokens` (Responses) переводится в `max_tokens` только в адаптере |
 | «это image-запрос» | `countImagePartsInBody` (`llamacpp_handlers_inference.go:327`), префиксы модели (`request_surface.go:100`), пути (`:116`) | 3 признака | авто-стрим выключается отдельной проверкой, а не общим планом |
 
-| «идём ли в стрим по ответу upstream» | `stream_openai_sink_r493.go:215` (hijack-заголовки) и `:240-244` (решение SSE vs не-SSE) | 2 проверки одного и того же типа ответа | расхождение даст SSE-заголовки на JSON-ответе (клиент ждёт `data:`, получает `{`) |
+| «идём ли в стрим по ответу upstream» | `internal/balancer/stream_openai_sink.go:215` (hijack-заголовки) и `:240-244` (решение SSE vs не-SSE) | 2 проверки одного и того же типа ответа | расхождение даст SSE-заголовки на JSON-ответе (клиент ждёт `data:`, получает `{`) |
 
 **Метрика для ориентира:** в `internal/balancer` (без тестов) **187** вызовов
 `json.Unmarshal` — то есть «своё чтение тела» это не исключение, а норма. План
@@ -201,8 +206,8 @@ func buildRequestPlanR493(r *http.Request, surface requestSurface, body []byte,
 
 `TestR493_RequestDecisionsOnlyInPlan`:
 1. в файлах-обработчиках (`llamacpp_handlers_inference.go`, `proxy*.go`,
-   `llamacpp_transport.go`, `image_tool_loop*.go`, `anthropic_r247.go`,
-   `responses_r247.go`, `admission_queue.go`) **нет** прямых вызовов
+   `llamacpp_transport.go`, `image_tool_loop*.go`, `internal/balancer/anthropic_api.go`,
+   `internal/balancer/responses_api.go`, `admission_queue.go`) **нет** прямых вызовов
    `ExtractNumCtxFromBody(` и `json.Unmarshal(` для чтения `"stream"`/`"num_ctx"`/
    `"max_tokens"` — только `requestPlanOf(r)`;
 2. `isStreamingFromBody(` разрешён только там, где план недоступен (например,
@@ -225,11 +230,11 @@ func buildRequestPlanR493(r *http.Request, surface requestSurface, body []byte,
 
 | Что | Где | Дублирование |
 |---|---|---|
-| SSE → NDJSON (Ollama-форма) | `llamacpp_transport.go` (основной), `stream_openai_sse_r493.go` (цикл v1), `auto_stream` (`proxy_request_openai_auto_stream_r258.go`), адаптеры (`anthropic_r247.go:481+`, `responses_r247.go:448`) | 4 цикла чтения SSE; каждый по-своему склеивает строки и решает про терминатор |
+| SSE → NDJSON (Ollama-форма) | `llamacpp_transport.go` (основной), `internal/balancer/stream_openai_sse.go` (цикл v1), `auto_stream` (`internal/balancer/proxy_request_openai_auto_stream_limits.go`), адаптеры (`internal/balancer/anthropic_api.go:481+`, `internal/balancer/responses_api.go:448`) | 4 цикла чтения SSE; каждый по-своему склеивает строки и решает про терминатор |
 | non-stream | `llamacpp_transport_nonstream.go`, `proxy_request.go` (ветка non-2xx/буферизованная), handler-путь `writeBufferedChatResponse` (`image_tool_loop.go:392`) | 3 реализации «прочитать ответ целиком и отдать в формате поверхности» |
 | `stats_windows` (сводка окон в `done`-кадре) | воркер считает (`stats_windows` в NDJSON), балансер прокидывает; на handler-пути — тот же воркер | одна реализация (воркер), но **два места**, где её форма меняется: NDJSON и OpenAI-адаптеры (`translate*`) |
-| таймауты стрима | `getEffectiveStreamTimeoutSec` (`llamacpp_transport.go:2641`), отключение на hijack-пути (`stream_openai_sink_r493.go`) | 2 набора правил: один по `isStreaming`, второй по «hijacked или нет» |
-| запись клиенту | `stream_line_plan_r493.go` (решение по строке), сток (`stream_openai_sink_r493.go`), `safeStreamWriter` в воркере | сведено в этапе 6 (по стокам), но **сводки** и **время жизни** остались у путей |
+| таймауты стрима | `getEffectiveStreamTimeoutSec` (`llamacpp_transport.go:2641`), отключение на hijack-пути (`internal/balancer/stream_openai_sink.go`) | 2 набора правил: один по `isStreaming`, второй по «hijacked или нет» |
+| запись клиенту | `internal/balancer/stream_line_plan.go` (решение по строке), сток (`internal/balancer/stream_openai_sink.go`), `safeStreamWriter` в воркере | сведено в этапе 6 (по стокам), но **сводки** и **время жизни** остались у путей |
 
 ### 6.2 Что реально протокол, а что история
 
@@ -237,7 +242,7 @@ func buildRequestPlanR493(r *http.Request, surface requestSurface, body []byte,
 |---|---|---|
 | Формат кадра (SSE против NDJSON) | **протокол** | клиенту обещан разный формат; это остаётся адаптером |
 | Имена полей (`max_tokens`/`max_output_tokens`/`options.num_predict`, `num_ctx` против `options.num_ctx`) | **протокол** | перевод имени — работа адаптера, а не общего кода |
-| Коды ошибок и конверт (`error.message` против строки) | **протокол** | `body_limit_r479.go` уже разводит по поверхности |
+| Коды ошибок и конверт (`error.message` против строки) | **протокол** | `internal/balancer/body_limit.go` уже разводит по поверхности |
 | Наличие tools/reasoning в протоколе | **протокол** | Anthropic/Responses не имеют `options.num_predict` и `think` |
 | Дефолт стрима (legacy `true` vs OpenAI `false`) | **история** | R484 зафиксировал как совместимость; в плане это поле `Surface`, а не два кода |
 | Авто-стрим R258 (серверный обход для старых клиентов) | **история** | временный обход; должен быть полем плана и выключателем, а не отдельной веткой в обработчике |
@@ -257,8 +262,8 @@ func buildRequestPlanR493(r *http.Request, surface requestSurface, body []byte,
 
 ### 6.4 Что остаётся адаптером (не входит и не должно)
 
-- Разбор/рендер своего протокола: Anthropic (`anthropic_r247.go`), Responses
-  (`responses_r247.go`), Ollama-переводы (`llamacpp_translate_req.go`).
+- Разбор/рендер своего протокола: Anthropic (`internal/balancer/anthropic_api.go`), Responses
+  (`internal/balancer/responses_api.go`), Ollama-переводы (`llamacpp_translate_req.go`).
 - Формат кадра и терминатора (**этап 6** уже дал одно решение по строке; здесь
   остаются только обёртки вокруг него).
 - Image-tool-loop (`image_tool_loop*.go`) — свой цикл с инструментами картинок;
@@ -285,8 +290,8 @@ func buildRequestPlanR493(r *http.Request, surface requestSurface, body []byte,
    17 прямых вызовов `ExtractNumCtxFromBody` (плюс 10 в тестах).
 4. **Лимиты не решает ни одна поверхность:** они читаются в 3 местах с разной
    семантикой (`preflight_nctx.go:197-223`, `auto_continue.go:1234-1246`,
-   воркер `n_predict_budget_r463.go`); поле `max_output_tokens` переводится в
-   `max_tokens` только в адаптере Responses (`responses_r247.go:211`).
+   воркер `cmd/cppworker/n_predict_budget.go`); поле `max_output_tokens` переводится в
+   `max_tokens` только в адаптере Responses (`internal/balancer/responses_api.go:211`).
 5. **Пайплайн «слот→окно→загрузка→Cpp-Ctx» продублирован 5 раз** —
    `llamacpp_handlers_inference.go`: 117/140/185/204/262 (chat),
    482/502/547/566/602 (completions), 736/756 (embeddings: только выбор+ожидание),
@@ -301,6 +306,6 @@ func buildRequestPlanR493(r *http.Request, surface requestSurface, body []byte,
 8. **На `/v1/*` клиентское `stream` не решает транспорт:** и chat, и completions
    безусловно зовут `proxyRequestOpenAIStreaming` (`:440` и `:693`), а стрим
    определяется типом ответа upstream внутри стока
-   (`stream_openai_sink_r493.go:240-244`). Значит в плане поле `StreamUp`
+   (`internal/balancer/stream_openai_sink.go:240-244`). Значит в плане поле `StreamUp`
    означает «клиент ждёт стрим», а фактический транспорт — свойство ответа;
    смешивать их в одном булеве нельзя.

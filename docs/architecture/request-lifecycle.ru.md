@@ -207,8 +207,8 @@ flowchart TB
 | Что хотите понять | Строка в логе балансера | Файл |
 |---|---|---|
 | почему отказали в окне | `requested_window_above_physical_ceiling` / `auto_reload_ceiling_reason` | `preflight_nctx.go` |
-| почему не выросло | `growth_blockers`, `active_streams`, `reload_pending` | `growth_guard_r299.go` |
-| какое окно уйдёт в загрузку | `declared n_ctx window resolved`, `context_per_seq` | `nctx_declared_r255.go` |
+| почему не выросло | `growth_blockers`, `active_streams`, `reload_pending` | `internal/balancer/growth_guard.go` |
+| какое окно уйдёт в загрузку | `declared n_ctx window resolved`, `context_per_seq` | `internal/balancer/nctx_declared.go` |
 | почему завершилось | `done_reason`, `finish_reason`, `budget_exhausted`, `generated_tokens` | `handlers_*.go` |
 | что видит клиент про окно | `context_size`, `context_size_total`, `parallel` | `handlers_model.go` |
 | ждёт ли запрос слот воркера | `inference: all slots busy, request will wait` → `inference: slot acquired after waiting` | `internal/cppbackend/backend.go` |
@@ -589,7 +589,7 @@ flowchart TB
 
     Теперь `templateToolCaps.FunctionTagCalls` (по тексту шаблона: `<function=` и
     `<parameter=`) заставляет текстовую историю отдавать вызов в форме шаблона
-    (`tool_history_callformat_r475.go`): параметры — в порядке, присланном
+    (`cmd/cppworker/tool_history_callformat.go`): параметры — в порядке, присланном
     клиентом, строки — без JSON-кавычек, объекты/массивы — компактным JSON.
     Для шаблонов без такой формы поведение прежнее (дамп `[[…]]`), битые
     аргументы тоже падают в дамп. Канал результата инструмента и структурный

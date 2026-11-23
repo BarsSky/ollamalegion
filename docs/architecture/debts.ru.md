@@ -41,10 +41,10 @@
    `router.go:210-211` → `llamacpp_backend_helpers.go:62` фильтровал пул по типу,
    Ollama-нода недостижима на OpenAI-поверхности. Теперь при пустом выборе
    cppworker-бэкенда запрос уходит в Ollama нативно
-   (`openai_native_passthrough_r479.go`, тест `TestR479_OpenAIChatGoesToOllama`).
+   (`internal/balancer/openai_native_passthrough.go`, тест `TestR479_OpenAIChatGoesToOllama`).
 2. ~~**Префикс `/ollama/*` нормализует только `LlamaCppRouter`**~~ **ЗАКРЫТО в
    R479.** Алиасы `/ollama/api/*`, `/ollama/v1/*`, `/openai/v1/*` снимаются в
-   начале `ServeHTTP` (`surface_alias_r479.go`, тест
+   начале `ServeHTTP` (`internal/balancer/surface_alias.go`, тест
    `TestR479_SurfaceAliasNormalized`), ответ несёт `X-LB-Surface-Alias: 1`.
 3. ~~**`/v1/models` не содержит Ollama-моделей**~~ **ЗАКРЫТО в R479.**
    `addOllamaModelIDsR479` добавляет running models из метрик и `/api/tags`
@@ -57,7 +57,7 @@
    `need = max(потребность запроса + резерв, окно АКТИВНОЙ сессии в пределах
    TTL)`. Промпт считается калиброванной оценкой (`promptTokensForMoveR480`),
    ручки `LB_R459_REQUEST_NEED` (on/off), `LB_R459_NEED_RESERVE` (4096),
-   `LB_R459_SESSION_TTL_SEC` (900). Файл `session_move_need_r480.go`, разбор
+   `LB_R459_SESSION_TTL_SEC` (900). Файл `internal/balancer/session_move_need.go`, разбор
    цены вариантов — `r459-window-policy-options.ru.md`. Тесты
    `TestR480_ActiveSessionPinsWideWindow`, `TestR480_IdleSessionUsesRequestNeed`,
    `TestR480_TTLDisabledKeepsOldBehaviour`, `TestR480_RequestNeedCanBeSwitchedOff`.
@@ -68,7 +68,7 @@
    срок годности (`LB_R459_COLD_TTL_SEC`, 90 с = 3× интервал поллера).
    Различаются три состояния: окно известно; «точно нет модели» (свежая метрика,
    переезд отклоняется); «неизвестно» (поллер не отрабатывал / метрика устарела —
-   кандидат допускается с WARN-строкой). `cold_candidate_ttl_r480.go`,
+   кандидат допускается с WARN-строкой). `internal/balancer/cold_candidate_ttl.go`,
    `MetricsManager.MarkLlamaCppPolled/LlamaCppPollAge`. Тесты
    `TestR480_FreshColdCandidateRejected`, `TestR480_StaleColdCandidateAllowed`,
    `TestR480_NeverPolledCandidateAllowed`, `TestR480_ColdTTLZeroMeansStrict`.
@@ -88,7 +88,7 @@
    её. Тест `TestR480_RejectionsIncludeWindowTooSmall`. Порог загрузки
    (`over_load_threshold`, R479) остаётся как был.
 9. ~~**Стадийная трассировка.**~~ **ЗАКРЫТО в R480:** unified-очередь ставит
-   `admission` (`unified_queue_r73.go` и очередь с гейтом), generic-путь
+   `admission` (`internal/balancer/unified_queue.go` и очередь с гейтом), generic-путь
    (`/api/chat` и прочие Ollama-эндпоинты) ставит `upstream` перед `client.Do`,
    поток — `stream`, ошибка записи клиенту — `client_write` (`streaming.go`).
    Тест `TestWaitForInferenceBackend_SetsAdmissionStage_R477`.
@@ -101,7 +101,7 @@
     лимит `LB_MAX_REQUEST_BODY_MB` в `parseRequestBody` (413 без отправки
     бэкенду), вспомогательные чтения — `peekBodyR479` (начало тела, остаток
     возвращается в поток). Осталось: единый буфер тела (этап 2 плана) — сейчас
-    тело всё ещё читается больше одного раза. R493 (`availability_first_r493.go`)
+    тело всё ещё читается больше одного раза. R493 (`internal/balancer/availability_first.go`)
     этого не касался: этап 3b только выбирает бэкенд, тело не перечитывает.
 
 11-star. **Тесты-предохранители из плана «два мозга» (T1–T5).** **ЧАСТИЧНО,
@@ -292,7 +292,7 @@
     только на первом чанке CONTENT, поэтому время размышлений уходило в «время
     промпта», а их токены — в `eval_count`. Зафиксированные числа: prompt t/s 40
     вместо ~200; completion t/s 104 вместо 8 (13×).
-    Стало (`stats_windows_r493.go`): четыре момента времени, у каждого отрезка
+    Стало (`internal/balancer/stats_time_window.go`): четыре момента времени, у каждого отрезка
     свой источник — `load_duration` = очередь+загрузка+preflight,
     `prompt_eval_duration` = только префилл, `eval_duration` = генерация ВКЛЮЧАЯ
     размышления, `total_duration` = всё время запроса; сумма отрезков равна total.
@@ -470,7 +470,7 @@
 12f. **Разные окна у копий одной модели: узел простаивает, а заявка ждёт.**
     **ЗАКРЫТО 2026-11-12 (R494, решение оператора «выравнивание»).**
     Балансер считает предложение выровнять окна копий:
-    `GET /api/v1/window/align` (`window_align_r494.go`) отдаёт цель
+    `GET /api/v1/window/align` (`internal/balancer/window_align.go`) отдаёт цель
     (окно самой широкой копии, не выше потолка) и СПИСОК свободных узких копий;
     занятые узкие копии попадают только в `busyBackends` и не предлагаются —
     их перезагрузка оборвала бы чужую сессию. Потолок — горячая настройка
@@ -648,7 +648,7 @@
     замка.** **ЗАКРЫТО 2026-11-13 (поймал CI, `-race`).**
     Живой факт: на коммите с golden-контрактом (11c) self-hosted Windows упал с
     `DATA RACE`: `SaveState` (`internal/balancer/state.go`) и
-    `compositionNodeR95` (`composition_r95.go`) читали поля `types.Backend` без
+    `compositionNodeR95` (`internal/balancer/composition.go`) читали поля `types.Backend` без
     `state.mu`, а поллер 12i в это время обновлял идентичность воркера под замком.
     Гонка существовала и до 12i — её давал любой путь обновления статуса, но
     постоянный фоновый писатель сделал окно регулярным (и `-race` его поймал).
@@ -686,7 +686,7 @@
     пересборки узла `/api/v1/backends` показывал `261110-1925` / `9d42a329` при
     образе `gpu-r261112-2146` / `32153c14`. Теперь поллер балансера раз в
     `workerIdentityTTLR493` (2 мин) спрашивает `/api/info` у самого воркера и
-    обновляет запись (`worker_identity_refresh_r493.go`), ставя
+    обновляет запись (`internal/balancer/worker_identity_refresh.go`), ставя
     `workerIdentitySource=worker-http`. Тесты:
     `internal/balancer/worker_identity_refresh_r493_test.go` (обновление старой
     записи, TTL — второго запроса нет, ошибка узла не стирает известное).
@@ -899,7 +899,7 @@
     **ОТКРЫТО 2026-11-16, найдено при разборе архива второго стенда.**
     Поле объявлено в конфиге воркера (`internal/cppbackend/config.go:176,189-192`,
     умолчание 0 = «без лимита»), читается из env (`CPPWORKER_REASONING_BUDGET`),
-    меняется через API (`handlers_config.go:570`, `update_config_keys_r374.go`),
+    меняется через API (`handlers_config.go:570`, `cmd/cppworker/update_config_keys.go`),
     копируется в настройках кластера (`internal/api/handlers_cluster.go:867-868`) и
     подписано как «max tokens for thinking». **Но в промпт-пути его никто не
     читает**: все обращения к `ReasoningBudget` — это конфиг, API и копирование.
@@ -947,10 +947,10 @@
     ли окно запрос**~~ **ЗАКРЫТО 2026-11-17 (R447, вторая половина правила):**
     четыре места решали «отказать/ждать» по `needed > loaded` (или просто по
     «нужен рост»), где `needed = оценка промпта + бюджет вывода (4096)` —
-    `growthDeferR299` (`growth_guard_r299.go:88`), `contextGrowthBlocker`
-    (`context_growth_r288.go:114`), не-стриминговая ветка
-    `growthVerdictR301` (`growth_stream_guard_r301.go:330`) и ветка занятости
-    единого решения `decideWindowR493` (`window_decision_r493.go:174`); номера
+    `growthDeferR299` (`internal/balancer/growth_guard.go:88`), `contextGrowthBlocker`
+    (`internal/balancer/context_growth.go:114`), не-стриминговая ветка
+    `growthVerdictR301` (`internal/balancer/growth_stream_guard.go:330`) и ветка занятости
+    единого решения `decideWindowR493` (`internal/balancer/window_decision.go:174`); номера
     строк здесь — ДО правки. Живой факт второго стенда (архив
     `2026-11-16T14:53:34Z`): окно **180224**, оценка **180200**, needed
     **184296**, чужой стрим → 503 «needs 184296 tokens of context, the loaded
@@ -1264,11 +1264,11 @@
     стрим-пайплайн (6); планирование окна загрузки (`DecidePreflight`) осталось за
     preflight-движком — это осознанная граница этапа, см. `refactoring-plan.ru.md`.
 13. **Дублирование решений**: ~~три предиката «это стрим?»~~ **ЗАКРЫТО в R484:**
-    один разбор `streamFlagFromBodyR484` (`stream_flag_r484.go`), различия в
+    один разбор `streamFlagFromBodyR484` (`internal/balancer/stream_flag.go`), различия в
     дефолте передаются явно (`streamDefaultForSurfaceR484`) и покрыты тестом; три
     прежних предиката делегируют ему. **R487:** отмена перестала быть «широкой по
     модели» на обоих путях — появился индекс «заявка → где она»
-    (`request_index_r487.go`) и резолв области (`cancel_client_r229.go`,
+    (`internal/balancer/request_index.go`) и резолв области (`internal/balancer/cancel_client.go`,
     `cancelIdentityR487`), поэтому generic-путь и handler-путь отменяют заявку
     одинаково точно, а не каждый по-своему.
 
@@ -1301,7 +1301,7 @@
     литералы только из списка `X-Queue-*`.
     Стало: 503 очереди бэкенда и её успешное ожидание ставят канонические
     `X-Queue-*` общими сеттерами, прежние имена оставлены АЛИАСАМИ (объявлены в
-    `queue_headers_r493.go`, не литералами — страж расширен на них). Тесты:
+    `internal/balancer/queue_headers.go`, не литералами — страж расширен на них). Тесты:
     `internal/balancer/queue_headers_legacy_r493_test.go` (алиасы несут те же
     числа, 503 говорит на общем языке и не ломает прежнее тело, подключение на
     успешном ожидании), расширенный `TestT4_BothPathsCallSharedSetters`.
@@ -1312,7 +1312,7 @@
     плана (`refactoring-plan.ru.md`), и делать его надо вместе с общим `Admitter`,
     а не по частям.
     **Этап 4 сделан 2026-11-13 (R493-12p):** единственный вход в очередь —
-    интерфейс `Admitter` (`admission_admitter_r493.go`) с двумя реализациями
+    интерфейс `Admitter` (`internal/balancer/admission_admitter.go`) с двумя реализациями
     (`unified-admission` — эталон, единая очередь; `probe-wait` — историческая
     очередь появления бэкенда, R403) и одним набором полей исхода
     (`BackendID`/`Lease`/`Waited`/`Position`/`Budget`/`Queued`/`Err`). Путь

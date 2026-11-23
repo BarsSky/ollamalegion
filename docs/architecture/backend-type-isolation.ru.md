@@ -41,13 +41,13 @@
 | `POST /api/embed`, `/api/embeddings` | 18080 | generic-поток (без сессий) | `llama_cpp` и `ollama` | `proxy_request.go` |
 | `GET /api/tags`, `/api/ps`, `/api/version` | 18080 | `LlamaCppRouter`/`OllamaRouter` (read-only) + агрегат | оба; модели обоих пулов | `llamacpp_handlers_readonly.go`, `ollama_router_tags.go` |
 | `/api/show`, `/api/copy`, `/api/delete`, `/api/pull`, `/api/push`, `/api/create` | 18080 | read-only/mgmt: прямой проксинг без inference-транспорта | оба; модель ищется в метриках и `llamaMetrics` | `proxyReadOnlyRequest`, `ollama_router_admin*.go` |
-| `-paths` `POST /v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `GET /v1/models` | 18079 (OpenAI) и 18080 | диспетчер: cppworker — при наличии; иначе **нативный passthrough в Ollama** (R479) | `llama_cpp`, иначе `ollama` | `llamacpp_handlers_inference.go`, `openai_native_passthrough_r479.go` |
+| `-paths` `POST /v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `GET /v1/models` | 18079 (OpenAI) и 18080 | диспетчер: cppworker — при наличии; иначе **нативный passthrough в Ollama** (R479) | `llama_cpp`, иначе `ollama` | `llamacpp_handlers_inference.go`, `internal/balancer/openai_native_passthrough.go` |
 | `/v1/messages`, `/v1/responses` | 18079 | прежний handler-путь (passthrough в Ollama запрещён: другой формат) | только `llama_cpp` | `llamacpp_handlers_inference.go` |
 | `/v1/images/*`, `/sdapi/v1/*` | 18079 | image-бэкенды (`image_cpp`) | `image_cpp` | `image_router_r_image.go` |
-| `/ollama/api/*`, `/ollama/v1/*`, `/openai/v1/*` | 18080 | алиасы поверхностей: снимаются в начале `ServeHTTP` (R479), ответ несёт `X-LB-Surface-Alias: 1` | как у целевой поверхности | `surface_alias_r479.go` |
+| `/ollama/api/*`, `/ollama/v1/*`, `/openai/v1/*` | 18080 | алиасы поверхностей: снимаются в начале `ServeHTTP` (R479), ответ несёт `X-LB-Surface-Alias: 1` | как у целевой поверхности | `internal/balancer/surface_alias.go` |
 | `/api/v1/*` (admin) | 18081 | admin API балансера (`apiReverseProxy`), не бэкенды | — | `router.go:serveAPIv1Request` |
 | `/health`, `/metrics` | 18080 | сам балансер | — | `proxy.go` |
-| `/api/cancel` | 18080 | служебная отмена генерации (не inference) | оба | `cancel_client_r229.go` |
+| `/api/cancel` | 18080 | служебная отмена генерации (не inference) | оба | `internal/balancer/cancel_client.go` |
 
 Правило, которое стоит держать в голове: **поверхность решает, кто отвечает за
 формат ответа**, а тип бэкенда решает только транспорт до воркера. Клиентские
@@ -236,8 +236,8 @@ func isBackendTypeAllowed(bt types.BackendType, allowedTypes []types.BackendType
 | Правило | Где реализовано | Почему |
 |---|---|---|
 | Воркер исключается из ЛЮБОГО выбора цели запроса | `isGroupWorkerR92` в `expandCandidates`, `backend_selector.go`, `slot_manager.go` | Прямой запрос на воркер сломается: у него нет полной модели |
-| Модель группы маршрутизируется на **мастера** | `shardedMasterForRequestR92` (`sharded_master_r92.go`) | Мастер открывает RPC-канал к воркерам; клиент видит один `X-Backend-ID` |
-| Воркер не считается местом, куда модель «влезает целиком» | `placementFitForModel` (`placement_fit_r75.go`) | Иначе `auto` выбрала бы `single`/`replicated` там, где нужна раскладка |
+| Модель группы маршрутизируется на **мастера** | `shardedMasterForRequestR92` (`internal/balancer/sharded_master.go`) | Мастер открывает RPC-канал к воркерам; клиент видит один `X-Backend-ID` |
+| Воркер не считается местом, куда модель «влезает целиком» | `placementFitForModel` (`internal/balancer/placement_fit.go`) | Иначе `auto` выбрала бы `single`/`replicated` там, где нужна раскладка |
 | Слоты считаются по **мастеру**, а не по сумме узлов | `backendgroup.GroupState.Slots` | Сложив слоты узлов, очередь решит, что вместимость удвоилась (грабли R70/R71) |
 
 Маршрутизация через группу включается **политикой**, а не «режимом»: группа —

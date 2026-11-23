@@ -214,7 +214,7 @@ tokens_per_second    = 49.14     ← 60 токенов / 1.22 с
 
 - `startsWithReasoningMarker(buf)` (`handlers_chat.go:2152`) — держит, если вывод
   НАЧИНАЕТСЯ с открывающего маркера;
-- `reasoningStartHoldR471` (`reasoning_start_hold_r471.go:35`) — держит начало,
+- `reasoningStartHoldR471` (`cmd/cppworker/reasoning_start_hold.go:35`) — держит начало,
   если канал размышлений открыт **шаблоном** (маркера в тексте нет), а клиент
   размышления не просил.
 

@@ -209,8 +209,8 @@ therefore:
 | Rule | Where implemented | Why |
 |---|---|---|
 | The worker is excluded from ANY request target selection | `isGroupWorkerR92` in `expandCandidates`, `backend_selector.go`, `slot_manager.go` | A direct request to a worker will break: it does not have the full model |
-| The group's model is routed to the **master** | `shardedMasterForRequestR92` (`sharded_master_r92.go`) | The master opens an RPC channel to the workers; the client sees a single `X-Backend-ID` |
-| The worker is not counted as a place where the model "fits entirely" | `placementFitForModel` (`placement_fit_r75.go`) | Otherwise `auto` would choose `single`/`replicated` where a layout is needed |
+| The group's model is routed to the **master** | `shardedMasterForRequestR92` (`internal/balancer/sharded_master.go`) | The master opens an RPC channel to the workers; the client sees a single `X-Backend-ID` |
+| The worker is not counted as a place where the model "fits entirely" | `placementFitForModel` (`internal/balancer/placement_fit.go`) | Otherwise `auto` would choose `single`/`replicated` where a layout is needed |
 | Slots are counted by the **master**, not by the sum of the nodes | `backendgroup.GroupState.Slots` | Having summed the node slots, the queue would decide that capacity has doubled (the R70/R71 rakes) |
 
 Routing through a group is enabled by a **policy**, not by a "mode": the group is the

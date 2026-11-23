@@ -349,17 +349,17 @@ exact_tokens=93891`. Это строка повтора того же хода (
 Дополнение к §5.5. Дефект 4 разобран был как «решение посчитано по завышенной
 оценке», но у него была вторая половина: **отказывал не тот механизм, который
 должен был**. Правило R447 («окна мало» ≠ «окно надо растить») жило только в
-двух местах — вердикте стриминга (`growth_stream_guard_r301.go:317`) и
+двух местах — вердикте стриминга (`internal/balancer/growth_stream_guard.go:317`) и
 preflight-гейте агентского окна (`preflight_nctx.go:770`). А решение
 «отказать/ждать» в четырёх остальных считалось сравнением `needed > loaded` (или
 просто по «нужен рост»), где `needed = оценка + 4096`:
 
 | место (до правки) | условие | что делало |
 |---|---|---|
-| `growth_guard_r299.go:88` | `needed <= loaded` → не вмешиваемся; иначе при стриме/перезагрузке → отказ | 503 «cannot grow right now» до preflight |
-| `context_growth_r288.go:114` | `needed > loaded` + занятость | 503 вместо постановки в admission-очередь |
-| `growth_stream_guard_r301.go:330` | «нужен рост» (R447) + занятость, не-стриминг | 503 «… cannot grow right now (active streams=1 …)» — ровно текст из архива (`proxy.go:1577`, `nctx_reload_handlers.go:798`) |
-| `window_decision_r493.go:174` | рост нужен + `Active>0`/`ReloadPending` | вид `defer` (503 на не-стриминговом пути) |
+| `internal/balancer/growth_guard.go:88` | `needed <= loaded` → не вмешиваемся; иначе при стриме/перезагрузке → отказ | 503 «cannot grow right now» до preflight |
+| `internal/balancer/context_growth.go:114` | `needed > loaded` + занятость | 503 вместо постановки в admission-очередь |
+| `internal/balancer/growth_stream_guard.go:330` | «нужен рост» (R447) + занятость, не-стриминг | 503 «… cannot grow right now (active streams=1 …)» — ровно текст из архива (`proxy.go:1577`, `nctx_reload_handlers.go:798`) |
+| `internal/balancer/window_decision.go:174` | рост нужен + `Active>0`/`ReloadPending` | вид `defer` (503 на не-стриминговом пути) |
 
 Числа живого случая (этот же архив): окно **180224**, оценка промпта **180200**,
 needed **184296** = 180200 + 4096, чужой стрим, клиент окно не просил (в

@@ -26,10 +26,10 @@
 | I1 | **Ровно один терминатор** на ответ: native `done:true`-чанк, OpenAI `choices[0].finish_reason` + `[DONE]`, не-stream — финальный JSON. Дублирование терминатора запрещено. | `cmd/cppworker/handlers_chat.go` (`writeChatStreamResponse`), `handlers_openai.go` (`writeOpenAIChatStream`), `internal/balancer/llamacpp_transport.go` (`stripNativeDoneContent`) |
 | I2 | **Окно клиента — на последовательность (слот).** Суммарное окно модели = окно слота × число слотов (`parallel`). Клиентский `num_ctx` сравнивается с окном слота. | `internal/balancer/preflight_nctx.go` (`perClientToTotal`), `internal/cppbackend` (`resolveNParallel`, `ContextPerSlot`) |
 | I3 | **Потолок клиента** = `min(GGUF_max, max(contextLengthMax, contextLength), env_потолок)`. Если `contextLengthMax` не задан (0) — профиль не ограничивает (R68); заявленное окно не режется устаревшим максимумом (R400). | `internal/balancer/preflight_helper.go` (`resolvePhysicalMaxContext`, `profileCapCtx`), `nctx_reload_handlers.go` (`resolveModelMaxContext`) |
-| I4 | **Политика окна:** холодный запрос грузит модель под окно запроса; простаивающая копия растёт до окна запроса, если физика позволяет; занятая копия — не растёт (клиент получает 503 с числами); **вниз окно никогда не растёт** ради меньшего запроса. | `internal/balancer/preflight_nctx.go` (ветки (3)–(5)), `nctx_reload.go` (`RunPreflight`), `stream_growth_r385.go` |
+| I4 | **Политика окна:** холодный запрос грузит модель под окно запроса; простаивающая копия растёт до окна запроса, если физика позволяет; занятая копия — не растёт (клиент получает 503 с числами); **вниз окно никогда не растёт** ради меньшего запроса. | `internal/balancer/preflight_nctx.go` (ветки (3)–(5)), `nctx_reload.go` (`RunPreflight`), `internal/balancer/stream_growth.go` |
 | I5 | **usage честный:** `eval_count`/`completion_tokens` включают все сгенерированные токены, включая размышления; `prompt_eval_count`/`prompt_tokens` — весь промпт запроса. | `cmd/cppworker/handlers_chat.go`, `handlers_openai.go` (`buildUsage`, `emitOpenAIUsageChunkSafe`) — исправлено в R402 |
 | I6 | **Причина завершения честная:** упор в бюджет вывода или незакрытый блок размышлений даёт `length`/`finish_reason=length`, а не `stop`. Считается токенизатором по сырому выводу, **не** числом callback'ов. | `handlers_chat.go` (`toolsBudgetExhaustedR394`), `handlers_openai.go` (R402), `handlers_generate.go` (R402) |
-| I7 | **Отказ всегда с числами и кодом:** `requested/loaded/ceiling/limited_by` + машиночитаемый `error`. Без «попробуйте позже» без причины. | `nctx_reload.go` (`makeRejectPlan`), `preflight_nctx.go` (`makeWindowTooBigReject`), `nctx_ceiling_r267.go` |
+| I7 | **Отказ всегда с числами и кодом:** `requested/loaded/ceiling/limited_by` + машиночитаемый `error`. Без «попробуйте позже» без причины. | `nctx_reload.go` (`makeRejectPlan`), `preflight_nctx.go` (`makeWindowTooBigReject`), `internal/balancer/nctx_ceiling_source.go` |
 | I8 | **Флаг `primary` не действует** (R401): ни рост, ни подмена `num_ctx`, ни AutoTune по нему не решаются. | `internal/balancer/primary_model_policy.go` (`isPrimaryModel` → false) |
 
 ---
@@ -70,7 +70,7 @@
 
 Балансер проксирует маршрут по пути; native-пути сохраняют формат клиента
 (`internal/api/api_v1_forward*.go`, `internal/balancer/llamacpp_transport.go`).
-Анthropic-маршрут переводится в OpenAI внутри (`anthropic_r247.go`) и обратно.
+Анthropic-маршрут переводится в OpenAI внутри (`internal/balancer/anthropic_api.go`) и обратно.
 
 ---
 
@@ -79,7 +79,7 @@
 1. **Разбор запроса** `extractRequestMeta` (`internal/balancer/preflight_helper.go`):
    модель, `num_ctx`/`contextPerSeq`, `num_predict`/`max_tokens`, tools, картинки,
    оценка промпта. Результат — `RequestMeta`.
-2. **Выбор бэкенда** (`internal/balancer/admission_queue.go`, `unified_queue_r73.go`,
+2. **Выбор бэкенда** (`internal/balancer/admission_queue.go`, `internal/balancer/unified_queue.go`,
    `a`-селекторы): модель/тип/метки/роль донора, свободные слоты, очередь допуска.
 3. **Занятость**: если слотов нет — запрос ждёт в **очереди допуска**
    (`LB_ADMISSION_WAIT_SEC`, default 300 c; FIFO по сессиям), либо получает 503
@@ -93,7 +93,7 @@
    (R403.1/R403.2): выключенный узел не выбирается ни обработчиками роутера, ни
    выбором «копии под окно», ни live-пробой R303, и запрос встаёт в эту очередь.
    В смешанном режиме (`mode=standard`) тот же смысл выполняет единая
-   admission-очередь (`unified_queue_r73.go`): она ждёт «любой бэкенд + слот» с
+   admission-очередь (`internal/balancer/unified_queue.go`): она ждёт «любой бэкенд + слот» с
    бюджетом `max(LB_ADMISSION_WAIT_SEC, LB_AUTO_LOAD_WAIT_SEC)`; отдельная
    очередь R403 применяется на llama.cpp-router пути (engine-locked) и в его
    обработчиках.
@@ -182,7 +182,7 @@ client_cap        = min( physical_ceiling, effective_ceiling )
   `X-API-Token` не ставился, воркер отвечал `401 invalid or missing API token`, и
   `kv_cache q4_0 → f16` не применялся, повторяясь на каждом запросе. «Занято» (409)
   и «сломано» (401) различаются: первое откладывается с backoff
-  (`autotune_defer_r283.go`), второе — ошибка конфигурации.
+  (`internal/balancer/autotune_defer.go`), второе — ошибка конфигурации.
 - **AutoTune не перезагружает модель без причины (R416/R416b/R416c/R416d).**
   Анализ строит «оптимальный» KV-cache по свободной VRAM, поэтому после каждой
   перезагрузки получалось обратное состояние: `q8_0 → q4_0 → q8_0 …`, unload+load
@@ -192,14 +192,14 @@ client_cap        = min( physical_ceiling, effective_ceiling )
   рекомендация по окну не строится при неизвестном фактическом `n_ctx` (0 в
   метриках); (R416d) план, в котором после гардов остался только «сохранённый»
   `ContextSize` (== текущему окну), не применяется. Код:
-  `autotune_kv_guard_r416.go`.
+  `internal/balancer/autotune_kv_guard.go`.
 - **KV-cache автоматически не меняется (R419).** По умолчанию
   `LB_AUTOTUNE_KV_MODE=recommend`: AutoTune только рекомендует тип KV (панель,
   `POST /api/v1/admin/autotune/{id}/apply` — вручную), а автоматический reload
   ради KV не выполняется. `auto` возвращает прежнее поведение (с профилем и
   гистерезисом R416). Причина: смена KV — выбор качества, а «свободная VRAM»
   меняется после каждой перезагрузки и делает рекомендацию самопротиворечивой.
-  Код: `autotune_kv_mode_r419.go`.
+  Код: `internal/balancer/autotune_kv_mode.go`.
 
 ---
 
@@ -306,7 +306,7 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 
 - OpenAI→Ollama: `translateUsageChunkToOllama`, `stripNativeDoneContent`
   (`internal/balancer/llamacpp_transport.go`): один терминатор, usage из OpenAI-чанка.
-- Ollama→OpenAI: `llamacpp_translate_resp.go`; Anthropic — `anthropic_r247.go`.
+- Ollama→OpenAI: `llamacpp_translate_resp.go`; Anthropic — `internal/balancer/anthropic_api.go`.
 - Egress-фильтр `filterAssistantEgressForClient` режет служебные токены, не теряя текст.
 
 ---
@@ -321,7 +321,7 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | 413 `auto_reload_ceiling_reason` | окно выше `effective_ceiling` | `auto_reload_max_n_ctx`, `limited_by` | `preflight_nctx.go` |
 | 503 `reload_pending` | идёт рост окна | `estimated_prompt_tokens`, `loaded_window_tokens`, `required_tokens`, Retry-After | `nctx_reload_handlers.go` |
 | 503 `no_free_slots` / очередь | нет слотов | `X-Queue-Wait-Ms`, Retry-After | `admission_queue.go` |
-| 503 `no_backend` | нет ни одного подходящего бэкенда (offline/disabled/донор), ожидание истекло | `waited_ms`, `position`, `X-Backend-Queue-*`, Retry-After | `backend_wait_queue_r403.go` |
+| 503 `no_backend` | нет ни одного подходящего бэкенда (offline/disabled/донор), ожидание истекло | `waited_ms`, `position`, `X-Backend-Queue-*`, Retry-After | `internal/balancer/backend_wait_queue.go` |
 | 400/413 `params_mismatch` | клиент просит параметры, несовместимые с загруженной копией (tools/reasoning/vision) | `differences` | `makeParamMismatchReject` |
 
 **Правило R402:** сообщение об отказе роста обязано объяснять **единицы**: окно на
@@ -335,20 +335,20 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | Симптом клиента | Что смотреть в логе балансера | Файлы |
 |---|---|---|
 | «ответ обрезан, но завершён» | `finish_reason`, `done_reason`, `budget_exhausted`, `generated_tokens`, `tokens_sent` | `handlers_openai.go`, `handlers_chat.go`, `handlers_generate.go` |
-| «клиент не получает маркеров Think, потом обрыв» | `tools_reasoning_split` → появились ли `message.thinking`-дельты; `retry skipped — stream already started (R404)`; `thinking_len` в summary | `handlers_chat.go` (`writeChatStreamResponseWithTools`), `tools_stream_reasoning_r404.go` |
+| «клиент не получает маркеров Think, потом обрыв» | `tools_reasoning_split` → появились ли `message.thinking`-дельты; `retry skipped — stream already started (R404)`; `thinking_len` в summary | `handlers_chat.go` (`writeChatStreamResponseWithTools`), `cmd/cppworker/tools_stream_reasoning.go` |
 | «не тот объём контекста» | `prompt_eval_count`/`eval_count`, `/api/show.context_size`, `parallel` | `handlers_chat.go`, `handlers_model.go` |
 | «не даёт поднять окно» | `physical_ceiling`, `limited_by`, `auto_reload_max_n_ctx`, `context_per_seq`, `slots` | `preflight_nctx.go`, `nctx_reload.go` |
-| «окно не растёт» | `growth_blockers`, `active_streams`, `reload_pending`, `WindowFeasibility` | `growth_guard_r299.go`, `growth_stream_guard_r301.go` |
+| «окно не растёт» | `growth_blockers`, `active_streams`, `reload_pending`, `WindowFeasibility` | `internal/balancer/growth_guard.go`, `internal/balancer/growth_stream_guard.go` |
 | «модель не загрузилась» | `memfit` verdict, `feasible`, `stage`, `reason` | `internal/memfit`, `memfit_gate.go` |
 | «primary мешает» | `primary is deprecated and ignored (R401)` | `primary_model_policy.go` |
 | «воркер завис: active_queries=1, GPU простаивает» | `inference: all slots busy, request will wait` (R413) → есть ли `inference: slot acquired after waiting`; отсутствие `stream response summary` при завершённых HTTP-запросах | `internal/cppbackend/slot_manager.go` (`Acquire`, `releaseInternal`), `backend.go` (`GenerateStreamWithAbort`) |
-| «AutoTune reload: 401 invalid or missing API token» | `autotune reload failed … unload failed: cppworker error (HTTP 401)`; в `unload` нет `X-API-Token` | `internal/balancer/autotune.go` (`executeLlamaCppUnload`), `worker_admin_token_r307.go` |
+| «AutoTune reload: 401 invalid or missing API token» | `autotune reload failed … unload failed: cppworker error (HTTP 401)`; в `unload` нет `X-API-Token` | `internal/balancer/autotune.go` (`executeLlamaCppUnload`), `internal/balancer/worker_admin_token.go` |
 | «в ответе виден `<channel\|>` / `</think>`» | `streamed_content_bytes`, сырой хвост дельты; на tools-пути искать `toolsStreamMarkerScanR414` | `cmd/cppworker/tools_stream_markers.go`, `handlers_chat.go` |
 | «Cline компактит при малом usage» / «ответ обрезан на 4096» | `budget_exhausted`, `n_predict` в summary; сравнить с `max_output_tokens` запроса | `handlers_generate.go` (`buildGenerationParams`), `reasoning_content.go` (`ResolveNPredict`) |
-| «модель перезагружается после каждого ответа» | `autotune: triggering async reload … kv_cache q8_0 → q4_0` (и обратно); `loaded_at` меняется | `autotune_kv_guard_r416.go`, `autotune.go` (`triggerAutoTuneReload`, план-билдер) |
-| «content = пояснение, но tool_calls валидны» | `terminalContentR417`/`nonStreamContentR417`; content-пояснение рядом с вызовом | `tools_terminal_reason_r394.go`, `handlers_chat.go` |
-| «инструмент не вызван, а в ответе — его тело / сырой JSON» | `tool_calls=0` при `raw_len` ≫ `streamed_content_bytes`; `flushed held tail before done` + `call_start`; `markup_unparsed` / `markup_stripped` (R427/R430) | `visible_tail_r429.go`, `escaped_call_markup_r430.go`, `declared_tool_filter_r428.go`, `handlers_chat.go` |
-| «какой именно сырой вывод не распознан» | `GET /api/v1/cppworker/debug/unparsed` (R427): `reason`, `raw_len`, `raw_file`; файл `$CPPWORKER_UNPARSED_CAPTURE_FILE` | `unparsed_capture_r427.go` |
+| «модель перезагружается после каждого ответа» | `autotune: triggering async reload … kv_cache q8_0 → q4_0` (и обратно); `loaded_at` меняется | `internal/balancer/autotune_kv_guard.go`, `autotune.go` (`triggerAutoTuneReload`, план-билдер) |
+| «content = пояснение, но tool_calls валидны» | `terminalContentR417`/`nonStreamContentR417`; content-пояснение рядом с вызовом | `cmd/cppworker/tools_terminal_reason.go`, `handlers_chat.go` |
+| «инструмент не вызван, а в ответе — его тело / сырой JSON» | `tool_calls=0` при `raw_len` ≫ `streamed_content_bytes`; `flushed held tail before done` + `call_start`; `markup_unparsed` / `markup_stripped` (R427/R430) | `cmd/cppworker/visible_tail.go`, `cmd/cppworker/escaped_call_markup.go`, `cmd/cppworker/declared_tool_filter.go`, `handlers_chat.go` |
+| «какой именно сырой вывод не распознан» | `GET /api/v1/cppworker/debug/unparsed` (R427): `reason`, `raw_len`, `raw_file`; файл `$CPPWORKER_UNPARSED_CAPTURE_FILE` | `cmd/cppworker/unparsed_capture.go` |
 | «`streamed_content_bytes` не сходится с тем, что получил клиент» | R429: поле = реально отданные дельтами байты; рядом `emitted_len` — позиция разбора в буфере (по ней видно, где остановлены дельты) | `handlers_chat.go` (сводка `/api/chat stream response summary`) |
 
 ---
@@ -360,8 +360,8 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | Разбор запроса | `internal/balancer/preflight_helper.go` | `extractRequestMeta`, `collectPreflightState`, `profileCapCtx`, `resolvePhysicalMaxContext` |
 | Решение об окне | `internal/balancer/preflight_nctx.go` | `RunPreflight`, `perClientToTotal`, `makeWindowTooBigReject` |
 | Перезагрузка окна | `internal/balancer/nctx_reload.go`, `nctx_reload_handlers.go`, `nctx_reload_adaptive.go` | `RunPreflight`, `preflightNCtxReloadIfNeeded`, `makeRejectPlan` |
-| Потолки | `nctx_ceiling_r267.go`, `nctx_ceiling_r319.go`, `nctx_declared_r255.go` | `effectiveAutoReloadCeiling`, `ReloadCeiling` |
-| Рост на стриме | `stream_growth_r385.go`, `growth_stream_guard_r301.go` | `streamGrowthCheckR385`, `growthVerdictR301` |
+| Потолки | `internal/balancer/nctx_ceiling_source.go`, `internal/balancer/nctx_ceiling_cluster.go`, `internal/balancer/nctx_declared.go` | `effectiveAutoReloadCeiling`, `ReloadCeiling` |
+| Рост на стриме | `internal/balancer/stream_growth.go`, `internal/balancer/growth_stream_guard.go` | `streamGrowthCheckR385`, `growthVerdictR301` |
 | Загрузка/профиль | `model_management.go` | `applyProfileLoadParams`, `resolveDeclaredWindow` |
 | Память | `internal/memfit/*`, `internal/cppbackend/memfit_adapter.go`, `memfit_gate.go` | `Evaluate`, `Ceilings`, `Policy` |
 | Генерация (native) | `cmd/cppworker/handlers_chat.go` | `handleChat`, `writeChatStreamResponse*` |
@@ -376,8 +376,8 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | AutoTune: гарды KV/слоёв/окна | `internal/balancer/autotune_kv_guard.go`, `autotune.go` | `guardAutoTuneKVPlanR416`, `autoTunePlanHasRealChangeR416d`, `PlanApplyAutoTuneWithMinContext` |
 | Терминальный content с tool_calls | `cmd/cppworker/tools_terminal_reason.go` | `terminalContentR417`, `nonStreamContentR417` |
 | Метаданные модели | `cmd/cppworker/handlers_model.go` | `handleOllamaShow`, `writeOllamaShowLoadedResponse` |
-| Транспорт/трансляции | `internal/balancer/llamacpp_transport.go`, `llamacpp_translate_resp.go`, `anthropic_r247.go` | `stripNativeDoneContent`, `translateUsageChunkToOllama` |
-| Очередь/допуск | `internal/balancer/admission_queue.go`, `unified_queue_r73.go` | admission, `X-Queue-*` |
+| Транспорт/трансляции | `internal/balancer/llamacpp_transport.go`, `llamacpp_translate_resp.go`, `internal/balancer/anthropic_api.go` | `stripNativeDoneContent`, `translateUsageChunkToOllama` |
+| Очередь/допуск | `internal/balancer/admission_queue.go`, `internal/balancer/unified_queue.go` | admission, `X-Queue-*` |
 | Ожидание бэкенда | `internal/balancer/backend_wait_queue.go` | `waitBackendR403`, `waitForLlamaCppBackendR403` |
 | Статистика токенов | `internal/balancer/stats*.go`, `llamacpp_transport.go` | `recordTokenUsage` |
 
@@ -402,7 +402,7 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 4. **Авто-снижение `parallel`** под запрос одного клиента (если других сессий нет) —
    не реализовано; обсуждается.
 5. **Очередь «нет свободного бэкенда»** — реализована в R403
-   (`backend_wait_queue_r403.go`, `LB_BACKEND_WAIT_SEC`).
+   (`internal/balancer/backend_wait_queue.go`, `LB_BACKEND_WAIT_SEC`).
 6. **Потолок `n_predict` для reasoning-моделей.** R411 даёт 8192
    (`CPPWORKER_DEFAULT_N_PREDICT_REASONING`). На слабой карте 8192 токена — это
    десятки минут на один ход; альтернатива — 4096 и регулярные обрывы

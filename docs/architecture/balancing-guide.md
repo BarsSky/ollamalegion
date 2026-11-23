@@ -87,7 +87,7 @@ The `selectBackend()` method in `internal/balancer/backend_selector.go` implemen
 удаления: настройка принималась и не переключала выбор, а WebUI предлагал пять
 вариантов, три из которых сервер отвергал с 400. История — `debts.ru.md` 12n.
 
-Порядок обхода кандидатов вынесен в шов `selection_order_r493.go` и
+Порядок обхода кандидатов вынесен в шов `internal/balancer/selection_order.go` и
 управляется `LB_SELECTION_ORDER`: `unified` (по умолчанию — прежний fit по
 VRAM) или `leastconn` (сначала узел с меньшим числом активных запросов, при
 равенстве — порядок fit). Порядок применяется ТОЛЬКО к уже допущенным

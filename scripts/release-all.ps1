@@ -223,7 +223,15 @@ $spec = @{
     # (`latest-cuda`), потому что CUDA/Vulkan-сборки делят один репозиторий —
     # тот же принцип, что у cppworker (`latest-gpu-<arch>`).
     imageworker = @{ Var = "IMAGE_WORKER_TAG";  Repo = "ollama-legion/imageworker"; ImageTag = $Tag;               Alias = "latest-cuda" }
-}
+    # R709 (2026-11-23): gguf-reexport — опциональный модуль (compose-профиль
+    # `reexport`). Тег у него СВОЙ, а не «как у балancer»: модуль не входит в
+    # обычный выпуск стенда, его версия едет отдельно и записывается отдельной
+    # строкой в .env/манифест.
+    #
+    # Optional=true означает: в СПИСОК ПО УМОЛЧАНИЮ он не входит и переменную
+    # GGUF_REEXPORT_TAG не требуют ни проверка ниже, ни стенд. Выпускается явно:
+    #   pwsh -File scripts/release-all.ps1 -Tag <тег> -Services gguf-reexport
+    'gguf-reexport' = @{ Var = "GGUF_REEXPORT_TAG"; Repo = "ollama-legion/gguf-reexport"; ImageTag = $Tag;       Alias = "latest"; Optional = $true }}
 
 foreach ($svc in $Services) {
     if (-not $spec.ContainsKey($svc)) {
@@ -237,14 +245,37 @@ Write-Host "  R83 release: тег '$Tag', компоненты: $($Services -joi
 Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Проверяем, что все четыре переменные вообще есть в .env: скрипты пишут тег
+# Проверяем, что все нужные переменные вообще есть в .env: скрипты пишут тег
 # заменой строки `VAR=...`, поэтому отсутствие строки = молчаливый no-op
 # (переменная не выставится, compose возьмёт default — и выпуск «не доедет»).
+#
+# R709: опциональные компоненты (gguf-reexport) проверяются ТОЛЬКО когда их
+# действительно собирают (-Services gguf-reexport). Иначе выпуск обычного стенда
+# требовал бы строку тега модуля, которого на этом стенде нет, — ровно та
+# «обязательная зависимость», которой у профиля reexport быть не должно.
 $envLines = Get-Content $envPath
-foreach ($svc in @("balancer", "cppworker", "agent", "webui", "imageworker")) {
+foreach ($svc in $spec.Keys) {
+    if ($spec[$svc].Optional -and -not ($Services -contains $svc)) { continue }
     $varName = $spec[$svc].Var
     if (-not ($envLines | Where-Object { $_ -match "^$varName=" })) {
-        throw "В deployments/.env нет строки '$varName='. Добавьте её (см. комментарий R83 в .env) — иначе тег не запишется."
+        if ($spec[$svc].Optional) {
+            # R709: у ОПЦИОНАЛЬНОГО компонента строки в локальном .env может не
+            # быть вовсе — переменная появилась в контракте позже, чем скопирован
+            # .env. Дописываем сами (это и есть «выпуск пишет тег»), иначе
+            # Set-ImageTagVar молча ничего не заменит и тег «не доедет».
+            #
+            # В DryRun НЕ пишем: сухой прогон обязан не менять deployments/.env
+            # (иначе проверка проводки правит живой конфиг).
+            if ($DryRun) {
+                Write-Host ("DRY: в .env нет {0} — при выпуске строка была бы добавлена ({0}={1})" -f $varName, $spec[$svc].ImageTag) -ForegroundColor Yellow
+            } else {
+                Add-Content -Path $envPath -Value ("{0}={1}" -f $varName, $spec[$svc].ImageTag)
+                $envLines = Get-Content $envPath
+                Write-Host ("[{0}] в deployments/.env не было {1} — строка добавлена: {1}={2}" -f $svc, $varName, $spec[$svc].ImageTag) -ForegroundColor Yellow
+            }
+        } else {
+            throw "В deployments/.env нет строки '$varName='. Добавьте её (см. комментарий R83 в .env) — иначе тег не запишется."
+        }
     }
 }
 
@@ -358,6 +389,30 @@ foreach ($svc in $Services) {
                     }
                     Pop-Location
                 }
+            }
+            "gguf-reexport" {
+                # R709: опциональный модуль ре-экспорта GGUF. Собирается обычным
+                # `docker build`, а не compose-целью: вариантов сборки у него два
+                # (light по умолчанию, full с torch), и оба выражаются аргументами
+                # одной команды — compose-цель нужна была imageworker'у из-за
+                # множества IMAGE_WORKER_* переменных.
+                #
+                # Идентичность: @idArgs уже содержит LLAMA_BUILD/LLAMA_BUILD_DATE
+                # (build-identity.ps1 считает их и для этого сервиса: конвертер
+                # берётся из того же сабмодуля c/llama.cpp), поэтому
+                # /api/reexport/capabilities назовёт версию конвертера из образа.
+                #
+                # torch НЕ ставится по умолчанию: светлый образ собирается без
+                # сети на pip и умеет метаданные/переупаковку. Полный ре-экспорт
+                # включается осознанно: GGUF_REEXPORT_WITH_TORCH=1 в окружении.
+                $reexportTarget = "light"
+                $reexportArgs = @()
+                if ($env:GGUF_REEXPORT_WITH_TORCH -eq "1") {
+                    $reexportTarget = "full"
+                    $reexportArgs += @("--build-arg", "WITH_TORCH=1")
+                }
+                & $dockerBin build @idArgs @reexportArgs -t $imageRef `
+                    -f docker/gguf-reexport/Dockerfile --target $reexportTarget .
             }
         }
         if ($LASTEXITCODE -ne 0) {

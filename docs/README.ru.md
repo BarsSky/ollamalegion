@@ -71,6 +71,7 @@
 | **Troubleshooting** | [RU](operations/troubleshooting.ru.md) | [EN](operations/troubleshooting.md) | Симптомы, причины и исправления из живых инцидентов. |
 | **Инциденты развёртывания** | [RU](operations/deployment-troubleshooting.ru.md) | [EN](operations/deployment-troubleshooting.md) | Ловушки развёртывания и разборы инцидентов. |
 | **Runbook tools/tool_calls** | [RU](operations/runbook-tools.ru.md) | [EN](operations/runbook-tools.md) | Пошаговый дебаг сбросов tool_calls (сценарии A-G). |
+| **Ре-экспорт GGUF** | [RU](operations/gguf-reexport.ru.md) | — | Опциональный модуль (профиль `reexport`): зачем отдельный сервис, API, как WebUI узнаёт о нём, живой прогон на Inkling-2. |
 
 ## API и справочники
 
@@ -95,6 +96,7 @@
 | **Вход и роли WebUI** | [RU](features/webui-auth.ru.md) | [EN](features/webui-auth.md) | Сессии, роли, CSRF, аварийный токен, nginx-прокси. |
 | **Демо-режим WebUI** | [RU](features/webui-demo.ru.md) | [EN](features/webui-demo.md) | Гостевая витрина сценария, включается только WEBUI_DEMO_MODE. |
 | **Агентский цикл Cline** | [RU](features/cline-agent-loop.ru.md) | [EN](features/cline-agent-loop.md) | Контракт tool_calls, ожидание готовности, трассировка, проверка. |
+| **Loop-экспорт Inkling-2** | [RU](features/inkling2-loop.ru.md) | [EN](features/inkling2-loop.md) | Почему файл объявляет визиты, что меняет патч и живой вердикт загрузки/KV. |
 
 ## Релизы
 

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * GGUF Renderer — master-detail layout
  *
  * Left panel:  list of registered llama.cpp backends
@@ -126,6 +126,13 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         if (!container) return;
         container.innerHTML = buildPageHtml();
         bindEvents(container);
+        // R709: блок «Ре-экспорт GGUF» в хосте #ggufReexportHost. Модуль сам
+        // спрашивает /api/reexport/capabilities и наполняет хост ТОЛЬКО при
+        // ответе: без модуля (или без профиля reexport) страница выглядит как
+        // раньше — ни блока, ни вкладки. Вызов не блокирует рендер страницы.
+        if (window.GgufReexport && typeof window.GgufReexport.mount === 'function') {
+            window.GgufReexport.mount();
+        }
         // === Регистрируем callback, чтобы GgufLoadProgress мог дёргать
         // renderBackendsList() при обновлении loadingModels. ===
         if (window.GgufLoadProgress && typeof window.GgufLoadProgress.registerBackendsRefreshFn === 'function') {
@@ -160,6 +167,14 @@ const GgufRenderer = (window.GgufRenderer = (function () {
                 '<i class="fas fa-hourglass-half" aria-hidden="true"></i>' +
                 '<span id="ggufAutoStatusText"></span>' +
             '</div>' +
+            // R709: хост блока «Ре-экспорт». Создаётся ВСЕГДА и пустым.
+            //
+            // ЗАЧЕМ ПУСТОЙ ХОСТ, А НЕ ГОТОВАЯ РАЗМЕТКА. Ре-экспорт — опциональный
+            // модуль (compose-профиль reexport). На стенде без него страница
+            // обязана выглядеть ровно как раньше: пустой div невидим и ничего не
+            // занимает. Наполняет его js/modules/gguf-reexport.js — и только если
+            // GET /api/reexport/capabilities ответил (иначе блока нет вообще).
+            '<div id="ggufReexportHost"></div>' +
             '<div class="gguf-master-layout">' +
                 // Left: backend list
                 renderBackendsPanel() +

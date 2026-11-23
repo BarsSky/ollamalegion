@@ -305,9 +305,16 @@ check('R680/3: файловый шрифтовой location не перепис�
 });
 
 check('R680/3: правка не добавила в шаблон новых ${VAR}', function () {
-    // entrypoint.sh подставляет sed'ом РОВНО шесть переменных; любая другая
-    // ${VAR} осталась бы литералом, и nginx -t упал бы на неизвестной переменной.
-    const expected = ['NGINX_PORT', 'API_HOST', 'API_PORT', 'LB_PORT', 'CPPWORKER_HOST', 'CPPWORKER_PORT'];
+    // entrypoint.sh подставляет sed'ом РОВНО перечисленные переменные; любая
+    // другая ${VAR} осталась бы литералом, и nginx -t упал бы на неизвестной
+    // переменной. Список обязан совпадать с sed-строками entrypoint.sh —
+    // расхождение ловится ещё и scripts/…/reexport-nginx-proxy-r709.test.js.
+    //
+    // R709: добавлены REEXPORT_HOST/REEXPORT_PORT (прокси опционального модуля
+    // ре-экспорта GGUF). Их дефолты задаются в entrypoint, поэтому в шаблоне они
+    // появляются только вместе с sed-подстановкой и никогда — литералами.
+    const expected = ['NGINX_PORT', 'API_HOST', 'API_PORT', 'LB_PORT', 'CPPWORKER_HOST', 'CPPWORKER_PORT',
+        'REEXPORT_HOST', 'REEXPORT_PORT'];
     const found = (stripComments(confSrc).match(/\$\{[A-Z0-9_]+\}/g) || [])
         .map(function (m) { return m.slice(2, -1); })
         .filter(function (v, i, arr) { return arr.indexOf(v) === i; })

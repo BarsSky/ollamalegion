@@ -119,9 +119,15 @@ function Get-BuildIdentity {
     $llamaCommit = ''
     $llamaDate = ''
     $rpcProto = ''
-    # Значения llama.cpp нужны только образу, который его линкует — cppworker.
-    # Для остальных пусто, и в ldflags их не передаём: пустое не выдаём за факт.
-    if ($Service -eq 'cppworker') {
+    # Значения llama.cpp нужны образам, которые приносят его код с собой:
+    #   cppworker      — линкует llama.cpp (коммит важен для совместимости узлов
+    #                    раскладки, RPC_PROTO читается из ggml-rpc.h);
+    #   gguf-reexport  — несёт конвертер llama.cpp (его исходники) в таргете full;
+    #                    без штампа /api/reexport/capabilities не может ответить,
+    #                    КАКОЙ версией конвертера сделан файл. RPC-протокол этому
+    #                    сервису не нужен вовсе — он не говорит по RPC.
+    # Для остальных пусто: пустое не выдаём за факт.
+    if ($Service -in @('cppworker', 'gguf-reexport')) {
         $llamaDir = Join-Path $RepoRoot 'c/llama.cpp'
         if (-not (Test-Path $llamaDir)) {
             throw "R486: нет $llamaDir — не могу запечь коммит llama.cpp"
@@ -130,7 +136,9 @@ function Get-BuildIdentity {
         if (-not $llamaCommit) { throw "R486: git -C c/llama.cpp rev-parse недоступен — коммит llama.cpp не вычислить" }
         $llamaDate = Get-GitValueR486 -RepoRoot $llamaDir -GitArgs @('log', '-1', '--format=%cs')
         if (-not $llamaDate) { throw "R486: дату коммита llama.cpp получить не удалось" }
-        $rpcProto = Read-RpcProtoR486 -RepoRoot $RepoRoot
+        if ($Service -eq 'cppworker') {
+            $rpcProto = Read-RpcProtoR486 -RepoRoot $RepoRoot
+        }
     }
 
     return [pscustomobject]@{
@@ -164,9 +172,13 @@ function Get-BuildArgLinesR486 {
         BUILD_DATE      = $Identity.BuildDate
         BUILD_AUTHOR    = $Identity.Author
     }
-    if ($Identity.Service -eq 'cppworker') {
+    if ($Identity.Service -in @('cppworker', 'gguf-reexport')) {
         $pairs['LLAMA_BUILD'] = $Identity.LlamaBuild
         $pairs['LLAMA_BUILD_DATE'] = $Identity.LlamaBuildDate
+    }
+    if ($Identity.Service -eq 'cppworker') {
+        # RPC_PROTO — только воркеру: gguf-reexport по RPC не разговаривает, и
+        # пустая метка протокола в его образе была бы ложным фактом.
         $pairs['RPC_PROTO'] = $Identity.RpcProto
     }
     $lines = New-Object System.Collections.Generic.List[string]

@@ -1350,6 +1350,125 @@ services:
     profiles: ["worker", "full"]
 
   # ═══════════════════════════════════════════════════════════════════════════
+  # gguf-reexport — ре-экспорт GGUF (ОПЦИОНАЛЬНЫЙ модуль)
+  # Profiles: reexport — и НИ ОДНОГО другого.
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ПОЧЕМУ ОТДЕЛЬНЫЙ СЕРВИС, А НЕ РУЧКА В cppworker/imageworker. Ре-экспорт — это
+  # python-конвертер llama.cpp (для полного пути numpy/torch/transformers) и работа
+  # на десятки гигабайт: 16 ГиБ модель = 16 ГиБ чтения и 16 ГиБ записи на томе
+  # моделей. Образ воркера от этого не должен расти, а операция «переупакуй модель»
+  # не должна занимать его единственный слот инференса. Полный разбор:
+  # docs/operations/gguf-reexport.ru.md.
+  #
+  # ПОЧЕМУ ПРОФИЛЬ, А НЕ ОБЫЧНЫЙ СЕРВИС. Ровно по прецеденту RPC-раскладки
+  # (rpc-node выше): модуль нужен не всем стендам, и «нет модуля» — нормальное
+  # состояние, а не поломка. Поэтому:
+  #   * `--profile reexport`            — поднять ТОЛЬКО модуль (он самодостаточен);
+  #   * `--profile full --profile reexport` — стенд + модуль;
+  #   * без профиля reexport ничего не меняется: сервис не создаётся, порт не
+  #     публикуется, образ не собирается, обязательных зависимостей не появляется.
+  #
+  # КАК WEBUI УЗНАЁТ О МОДУЛЕ. WebUI не «знает» ни флага, ни профиля: он делает
+  # GET /api/reexport/capabilities через nginx (тот же origin, отдельного порта и
+  # CORS нет). Ответ 200 → блок «Ре-экспорт» на странице моделей появляется;
+  # 502/таймаут (модуля нет) → блока нет вообще. Никакой настройки в WebUI не
+  # требуется, и «выключили профиль» не оставляет мёртвой вкладки.
+  #
+  # ТОМА. Тот же ${MODELS_DIR}, что у cppworker и imageworker, и RW: ре-экспорт
+  # пишет НОВЫЙ файл рядом с исходным, чтобы воркер увидел его после
+  # POST /api/models/refresh. Исходный файл сервис только читает — это проверяется
+  # в коде (результат не может совпасть с источником).
+  #
+  # ГДЕ РЕЗУЛЬТАТ НЕ ВЛЕЗАЕТ. Если тома моделей не хватает, стандартный путь —
+  # смонтировать второй диск и задать REEXPORT_OUT_DIR (env есть ниже). ВАЖНО:
+  # одного env мало — нужен ещё volume на этот путь; поэтому по умолчанию env
+  # пуст и сервис пишет рядом с моделью (см. override-пример в
+  # docs/operations/gguf-reexport.ru.md).
+  # ===========================================================================
+  gguf-reexport:
+    image: ${IMAGE_REGISTRY:-}ollama-legion/gguf-reexport:${GGUF_REEXPORT_TAG:-r261121-r709}
+    # Собирается из исходников: на машине без образа `up -d` не должен упираться в
+    # `pull access denied`. Таргет `light` (по умолчанию) не требует ни torch, ни
+    # сабмодуля c/llama.cpp: это python3 + стандартная библиотека.
+    build:
+      context: ..
+      dockerfile: docker/gguf-reexport/Dockerfile
+      # light — метаданные/переупаковка GGUF (без torch);
+      # full  — плюс полный ре-экспорт из HF-чекпойнта (--build-arg WITH_TORCH=1,
+      #         +2.5 ГБ и минуты сборки). Один Dockerfile, цель выбирается здесь.
+      target: ${GGUF_REEXPORT_BUILD_TARGET:-light}
+      args:
+        WITH_TORCH: ${GGUF_REEXPORT_WITH_TORCH:-0}
+        # R486: идентичность сборки — обязательные args (см. блок у loadbalancer
+        # выше). Значения считает scripts/build-identity.ps1; release-all.ps1
+        # передаёт их и собирает этот образ как обычный компонент выпуска.
+        SERVICE: gguf-reexport
+        VERSION: ${GGUF_REEXPORT_TAG:-r261121-r709}
+        IMAGE_TAG: ${GGUF_REEXPORT_TAG:-r261121-r709}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
+        # Версия конвертера llama.cpp: тот же сабмодуль, что у cppworker, и те же
+        # build-arg'и. Печётся в образ (identity.json → /api/reexport/capabilities),
+        # поэтому «какой конвертер реально работает» отвечает образ, а не .env.
+        LLAMA_BUILD: ${LLAMA_BUILD:-}
+        LLAMA_BUILD_DATE: ${LLAMA_BUILD_DATE:-}
+    container_name: ol-stack-gguf-reexport
+    restart: unless-stopped
+    # Убийство конвертера посреди копирования оставляет недописанный файл;
+    # даём процессу время завершиться самому (Go отменяет контекст, python ловит
+    # SIGTERM). 30 с — с запасом на 16 ГиБ ввод-вывод.
+    stop_grace_period: 30s
+    profiles: ["reexport"]
+    networks: [ol-net]
+    depends_on:
+      # НЕ обязательная зависимость: модуль самодостаточен и в сценарии
+      # `--profile reexport` на машине без стенда должен подниматься один.
+      # required:false — иначе compose отверг бы весь проект (см. комментарии у
+      # webui/ollama-agent выше: depends_on валидируется даже вне активного профиля).
+      loadbalancer:
+        condition: service_healthy
+        required: false
+    environment:
+      - REEXPORT_HOST=0.0.0.0
+      - REEXPORT_PORT=18095
+      - REEXPORT_MODELS_DIR=/app/models
+      - REEXPORT_JOBS_DIR=/app/jobs
+      # Пусто = писать рядом с моделью в томе моделей (обычный случай).
+      # Заданный путь требует СВОЕГО volume — см. комментарий выше.
+      - REEXPORT_OUT_DIR=${GGUF_REEXPORT_OUT_DIR:-}
+      # Токен стека на изменяющие запросы. Чтение (capabilities/models/jobs) без
+      # токена осознанно: WebUI ходит сессией (R222), а не вшитым токеном.
+      - REEXPORT_API_TOKEN=${CPPWORKER_API_TOKEN:-}
+      - REEXPORT_SCAN_DEPTH=${GGUF_REEXPORT_SCAN_DEPTH:-3}
+      # Версия в шапке логов сервиса (образ печёт свою; env — для локального запуска).
+      - APP_VERSION=${GGUF_REEXPORT_TAG:-r261121-r709}
+      - LOG_LEVEL=${GGUF_REEXPORT_LOG_LEVEL:-info}
+    volumes:
+      # Тот же том моделей, что у воркеров, RW: результат должен стать виден
+      # инференсу после пересканирования каталога.
+      - ${MODELS_DIR:-../models}:/app/models:rw
+      # Состояние задач (JSON-файл на задачу). Отдельный том, чтобы пересоздание
+      # контейнера не стирало историю и «прерванные» задачи были видны.
+      - reexport_jobs:/app/jobs
+    ports:
+      # Только loopback: снаружи модуль не нужен (WebUI ходит через nginx
+      # same-origin), но оператору нужен прямой путь для диагностики и
+      # `curl -X POST /api/reexport/jobs`. 0.0.0.0 здесь был бы лишней дверью.
+      - "127.0.0.1:${GGUF_REEXPORT_PORT_HOST:-18095}:18095"
+    healthcheck:
+      # Своим бинарём (в образе нет curl): /health отвечает 200, даже если python
+      # часть недоступна — «жив» и «умеет» это разные вопросы, второй отдаёт
+      # /api/reexport/capabilities с причиной.
+      test: ["CMD", "/app/gguf-reexport", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ═══════════════════════════════════════════════════════════════════════════
   # agent — metrics and registration for OLLAMA backends
   # Profiles: worker | legacy-agent
   #
@@ -1617,3 +1736,9 @@ volumes:
   # HF cache of the image worker (text encoder/VAE weights fetched via the HF layer).
   imageworker_cache:
     name: ol-imageworker-cache
+  # R709: состояние задач ре-экспорта GGUF (JSON-файл на задачу). Отдельный том,
+  # а не папка в моделях: модели — это данные инференса, а здесь служебное
+  # состояние модуля, которое не должно попадать в раздачу/инвентаризацию моделей
+  # и должно переживать пересоздание контейнера.
+  reexport_jobs:
+    name: ol-reexport-jobs

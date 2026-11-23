@@ -37,6 +37,15 @@ fi
 : "${LB_PORT:=18080}"
 : "${CPPWORKER_HOST:=cppworker-gpu}"
 : "${CPPWORKER_PORT:=18092}"
+# R709: ОПЦИОНАЛЬНЫЙ модуль ре-экспорта GGUF. Профиль compose `reexport` по
+# умолчанию ВЫКЛЮЧЕН, поэтому контейнера с таким именем на стенде обычно нет —
+# и это нормально: nginx резолвит upstream в момент запроса, а не на старте
+# (см. location /api/reexport/ в webui/nginx.conf). Defaults обязательны: без них
+# sed оставил бы в шаблоне литерал ${REEXPORT_HOST}, nginx счёл бы его неизвестной
+# переменной и НЕ СТАРТОВАЛ — то есть отсутствие опционального модуля ломало бы
+# панель. Значение совпадает с именем сервиса в docker-compose.stack.yml.
+: "${REEXPORT_HOST:=gguf-reexport}"
+: "${REEXPORT_PORT:=18095}"
 # === API_TOKEN fallback chain (Round 32 #7, 2026-08-10) ===
 # Исторически compose files используют `API_TOKEN`, но некоторые операторы
 # (и я сам при ручном docker run) задают `WEBUI_API_TOKEN` — оба варианта
@@ -123,6 +132,10 @@ fi
 # остальные ${...} в шаблоне (если появятся, например $host nginx) не трогаем.
 echo "[entrypoint] Generating nginx config..."
 export NGINX_PORT API_HOST API_PORT LB_PORT CPPWORKER_HOST CPPWORKER_PORT
+# R709: ре-экспорт GGUF — переменные тоже подставляются (список sed ниже обязан
+# совпадать с числом ${...} в шаблоне; это проверяет
+# webui/tests/reexport-nginx-proxy-r709.test.js).
+export REEXPORT_HOST REEXPORT_PORT
 
 # Экранирование значений для sed (значение может содержать & | \).
 escape_sed_repl() {
@@ -136,6 +149,8 @@ sed \
     -e "s|\${LB_PORT}|$(escape_sed_repl "$LB_PORT")|g" \
     -e "s|\${CPPWORKER_HOST}|$(escape_sed_repl "$CPPWORKER_HOST")|g" \
     -e "s|\${CPPWORKER_PORT}|$(escape_sed_repl "$CPPWORKER_PORT")|g" \
+    -e "s|\${REEXPORT_HOST}|$(escape_sed_repl "$REEXPORT_HOST")|g" \
+    -e "s|\${REEXPORT_PORT}|$(escape_sed_repl "$REEXPORT_PORT")|g" \
     < "$NGINX_TEMPLATE" > "$NGINX_CONF"
 
 # 2. Генерация config.js для рантайм параметров

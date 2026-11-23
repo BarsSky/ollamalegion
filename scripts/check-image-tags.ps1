@@ -100,6 +100,25 @@ if (-not $imageLines) {
 $effective = @{}   # repo → фактически подставляемый тег
 $varSeen = @{}
 
+# --- R709: переменные тегов ОПЦИОНАЛЬНЫХ профилей ---------------------------
+#
+# ЗАЧЕМ ОТДЕЛЬНЫЙ СПИСОК. Правило выше («для каждой переменной тега есть строка
+# VAR= в .env») верно для сервисов, которые стоят на каждом стенде. Опциональный
+# модуль (`gguf-reexport`, профиль reexport) НЕ стоит по умолчанию, и его тег в
+# локальном deployments/.env отсутствует законно: .env — локальный файл, который
+# на большинстве стендов просто ещё не знает об этой переменной. Отслеживаемый
+# контракт — deployments/.env.example (его копируют в .env), и именно его
+# наличие проверяется НИЖЕ, вместо проблемы «нет в .env».
+#
+# ПОЧЕМУ ЭТО НЕ ОСЛАБЛЕНИЕ ПРОВЕРКИ. Переменная обязана быть объявлена в
+# .env.example (иначе проблема), а compose обязан её параметризовать (проверено
+# строкой выше). Единственное, что перестаёт быть ошибкой, — отсутствие строки в
+# ЛОКАЛЬНОМ .env: в этом случае compose возьмёт default из compose-файла, то есть
+# ровно тот тег, который записан в .env.example и в манифесте.
+$optionalProfileVars = @{
+    'GGUF_REEXPORT_TAG' = 'reexport'
+}
+
 foreach ($m in $imageLines) {
     $image = $m.Matches[0].Groups[1].Value
     $lineNo = $m.LineNumber
@@ -120,7 +139,22 @@ foreach ($m in $imageLines) {
         if ($envMap.ContainsKey($name) -and $envMap[$name] -ne "") {
             $value = $envMap[$name]
         } elseif (-not $envMap.ContainsKey($name)) {
-            $problems.Add("строка ${lineNo}: в $usedEnvName нет переменной $name — compose возьмёт default '$default'. Добавьте '$name=$default' в deployments/$usedEnvName.")
+            if ($optionalProfileVars.ContainsKey($name) -and $usedEnvName -ne ".env.example") {
+                # R709: см. блок «переменные тегов ОПЦИОНАЛЬНЫХ профилей» выше.
+                $examplePath = Join-Path $deploymentsDir ".env.example"
+                $declared = $false
+                if (Test-Path $examplePath) {
+                    $declared = [bool](Select-String -Path $examplePath -Pattern ("^\s*" + [regex]::Escape($name) + "="))
+                }
+                if (-not $declared) {
+                    $problems.Add("строка ${lineNo}: переменная $name не объявлена даже в deployments/.env.example — тег опционального модуля должен быть в отслеживаемом контракте (иначе его никто не узнает)")
+                } else {
+                    Write-Host ("  ПРИМЕЧАНИЕ строка {0}: {1} нет в {2}; переменная принадлежит опциональному профилю '{3}' — compose возьмёт default '{4}'. Задайте её в .env перед включением профиля." -f `
+                        $lineNo, $name, $usedEnvName, $optionalProfileVars[$name], $default) -ForegroundColor Yellow
+                }
+            } else {
+                $problems.Add("строка ${lineNo}: в $usedEnvName нет переменной $name — compose возьмёт default '$default'. Добавьте '$name=$default' в deployments/$usedEnvName.")
+            }
         }
         $resolved = $resolved.Replace($v.Value, $value)
     }

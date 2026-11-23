@@ -28,12 +28,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -53,6 +53,7 @@ type standWorkerR696 struct {
 	inferChat      atomic.Int64
 	inferGenerate  atomic.Int64
 	inferOpenAI    atomic.Int64
+	loadCalls      atomic.Int64
 	inferenceDelay time.Duration
 }
 
@@ -66,10 +67,17 @@ func newStandWorkerR696(t *testing.T, id string, loaded bool, total, perSeq int)
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/version", r.URL.Path == "/health", r.URL.Path == "/api/info",
-			r.URL.Path == "/api/models/load", r.URL.Path == "/api/models/reload",
-			r.URL.Path == "/api/models/unload", r.URL.Path == "/v1/models":
+			r.URL.Path == "/api/models/reload", r.URL.Path == "/api/models/unload", r.URL.Path == "/v1/models":
 			rw.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(rw, `{"status":"ok","version":"stand-replay"}`)
+		case r.Method == http.MethodPost && (r.URL.Path == "/load" || r.URL.Path == "/api/models/load"):
+			// БОЕВАЯ ФОРМА: cppworker по умолчанию загружает АСИНХРОННО и
+			// отвечает 202 Accepted СРАЗУ (handlers_model_async.go:16-17), модель
+			// в этот момент ещё НЕ в памяти.
+			w.loadCalls.Add(1)
+			rw.Header().Set("Content-Type", "application/json")
+			rw.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(rw, `{"status":"loading","progressUrl":"/api/models/load/progress"}`)
 		case r.URL.Path == "/api/models", r.URL.Path == "/api/tags":
 			rw.Header().Set("Content-Type", "application/json")
 			if !w.loaded.Load() {
@@ -154,11 +162,27 @@ func (r *standReplayRigR696) setWindowR696(t *testing.T, backendID string, total
 	}}
 	r.proxy.UpdateMetrics(backendID, m)
 	r.proxy.metricsMgr.MarkLlamaCppPolled(backendID, time.Now())
+	// Синхронизируем фейковый воркер: /api/models обязан отвечать тем же окном,
+	// иначе живой опрос R303/preflight увидит другую копию.
+	for _, w := range []*standWorkerR696{r.cpp, r.a10, r.astra} {
+		if w.id == backendID {
+			w.contextLength.Store(int64(total))
+			w.contextPerSeq.Store(int64(perSeq))
+		}
+	}
 }
 
 // newStandReplayR696 — стенд из архива. diskFreeA10 — чтобы фаза «диск
-// освободили» была буквально сменой одного числа.
+// освободили» была буквально сменой одного числа. Флаги из flags.txt второго
+// стенда: LB_SESSION_STICKINESS=true, LB_MODEL_AFFINITY=true.
 func newStandReplayR696(t *testing.T, diskFreeA10 uint64) *standReplayRigR696 {
+	t.Helper()
+	return newStandReplayFlagsR696(t, diskFreeA10, true, true)
+}
+
+// newStandReplayFlagsR696 — тот же стенд с переключаемыми флагами привязки:
+// нужно, чтобы ответить «при каком сочетании заявка с того же IP ещё ждёт».
+func newStandReplayFlagsR696(t *testing.T, diskFreeA10 uint64, stickiness, affinity bool) *standReplayRigR696 {
 	t.Helper()
 
 	cpp := newStandWorkerR696(t, "cppworker-gpu-bundled-agent", true, 131072, 131072)
@@ -190,7 +214,7 @@ func newStandReplayR696(t *testing.T, diskFreeA10 uint64) *standReplayRigR696 {
 				Type: types.BackendTypeImage, Status: types.StatusHealthy, MaxConcurrentReqs: 64, Weight: 1},
 		},
 		Balancing: types.BalancingSettings{
-			ModelAffinity: true, SessionStickiness: true,
+			ModelAffinity: affinity, SessionStickiness: stickiness,
 			FirstByteTimeout: 30, StreamingIdleTimeout: 120, RequestTimeout: 30,
 			QueueMaxSize: 100, SessionTTL: 900, MetricsInterval: 30,
 			ModelLoadTimeout: 30,
@@ -204,6 +228,13 @@ func newStandReplayR696(t *testing.T, diskFreeA10 uint64) *standReplayRigR696 {
 		},
 	}
 	p := newProxyWithCleanup(t, cfg)
+	// Фоновый поллер в тесте только мешает: он перезаписывает кэш окон
+	// настоящими ответами фейковых воркеров. Останавливаем и ждём цикла —
+	// иначе поздний тик перепишет инжектированный снимок (R161).
+	if p.llamaCppMetricsPoller != nil {
+		p.llamaCppMetricsPoller.Stop()
+		p.llamaCppMetricsPoller.WaitStopped(2 * time.Second)
+	}
 
 	copies := []standCopyR696{
 		{id: "cppworker-gpu-bundled-agent", typ: types.BackendTypeLlamaCpp, loaded: true,
@@ -228,6 +259,13 @@ func newStandReplayR696(t *testing.T, diskFreeA10 uint64) *standReplayRigR696 {
 					Name: standModelR696, State: "loaded", Size: uint64(standModelSizeR696),
 					ContextLength: c.total, ContextPerSeq: c.perSeq, MaxSlots: 1, Parallel: 1,
 				}},
+				VramKnown: true, AvailableVRAMMB: c.gpuTotal - c.gpuUsed,
+			}
+		} else {
+			// ASTRA-I9: VRAM ИЗВЕСТНА (архив: availableVramMb=5028, vramKnown=true),
+			// 8 ГБ Quadro RTX 4000. Без этого R493 считал бы «не влезает»
+			// непроверяемым и R659 мог бы начать там загрузку 27B.
+			m.LlamaCpp = types.LlamaCppMetrics{
 				VramKnown: true, AvailableVRAMMB: c.gpuTotal - c.gpuUsed,
 			}
 		}
@@ -388,6 +426,23 @@ func TestStandReplayR696_NarrowFreeCopyStillWaits(t *testing.T) {
 	if rig.a10.inferChat.Load() != 0 {
 		t.Fatalf("узкая копия получила %d inference-запросов, хотя R459 её отклоняет", rig.a10.inferChat.Load())
 	}
+
+	// РАЗЛИЧАЮЩАЯ ПОЛОВИНА: с ДРУГОГО IP (новой сессии) гейта окна нет — та же
+	// свободная узкая копия обслуживает сразу. Это и есть «с того же IP ждёт, с
+	// другого — уходит»: разница не в IP, а в привязке сессии и политике R459.
+	ip2 := "10.0.0.2"
+	code2, elapsed2, backend2, _, body2 := rig.doR696(ip2)
+	t.Logf("ТОТ ЖЕ стенд, другой IP: code=%d elapsed=%v backend=%q", code2, elapsed2.Round(time.Millisecond), backend2)
+	if code2 != http.StatusOK || backend2 != "A10-126" {
+		t.Fatalf("с другого IP ожидался мгновенный 200 от A10-126, получено code=%d backend=%q: %s",
+			code2, backend2, standTruncR696(body2, 400))
+	}
+	if elapsed2 > 1500*time.Millisecond {
+		t.Fatalf("с другого IP заявка обслуживалась %v — гейт окна не должен на неё действовать", elapsed2)
+	}
+	if rig.a10.inferChat.Load() != 1 {
+		t.Fatalf("A10-126 получил %d inference-запросов (ожидался 1 от второго IP)", rig.a10.inferChat.Load())
+	}
 }
 
 // TestStandReplayR696_PerSeqOnlyRecordIsServed — R696: запись о загрузке с
@@ -427,31 +482,149 @@ func TestStandReplayR696_GatesAreNamed(t *testing.T) {
 
 	rig := newStandReplayR696(t, 9480)
 	ip := "192.168.151.151"
-	rig.pinAndBusyR696(t, ip, "cppworker-gpu-bundled-agent")
+	sid := rig.pinAndBusyR696(t, ip, "cppworker-gpu-bundled-agent")
 
-	logPath := os.Getenv("STAND_REPLAY_LOG")
-	if logPath == "" {
-		logPath = t.TempDir() + "\\balancer.log"
-	}
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatalf("не открыть лог: %v", err)
-	}
-	defer f.Close()
-
-	code, _, _, _, body := rig.doR696(ip)
+	buf := logger.NewCaptureBuffer()
+	restore := logger.CaptureToBuffer(buf)
+	code, elapsed, _, _, body := rig.doR696(ip)
+	restore()
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("ожидался 503, получен %d: %s", code, standTruncR696(body, 300))
 	}
-	// why_queued строится тем же проходом, что и отказ, — проверяем его напрямую.
+
+	// Живая строка лога при ожидании: session + need + why_queued с числами.
+	queueLine := ""
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "почему не взяли бэкенды") {
+			queueLine = line
+		}
+	}
+	if queueLine == "" {
+		t.Fatal("в логе нет строки «R480: очередь с гейтом R459 — почему не взяли бэкенды»: " +
+			"оператор не увидит причину ожидания")
+	}
+	t.Logf("ЛОГ ОЖИДАНИЯ (%v): %s", elapsed.Round(time.Millisecond), queueLine)
+	for _, want := range []string{"session", sid, "need", "131072", "A10-126=disk_low", "9480", "10240"} {
+		if !strings.Contains(queueLine, want) {
+			t.Errorf("в строке лога ожидания нет %q: %s", want, queueLine)
+		}
+	}
+	if !strings.Contains(body, "disk_low") {
+		t.Errorf("в теле 503 нет disk_low: %s", standTruncR696(body, 600))
+	}
+	// why_queued строится тем же проходом, что и отказ, — проверяем напрямую.
 	list := rig.proxy.backendRejectionsR460(standModelR696, "")
 	summary := rejectionsSummaryR460(list)
-	_, _ = fmt.Fprintf(f, "why_queued: %s\n", summary)
 	t.Logf("why_queued: %s", summary)
 	if !strings.Contains(summary, "disk_low") {
 		t.Fatalf("why_queued не назвал disk_low: %s", summary)
 	}
 	if !strings.Contains(summary, "9480") || !strings.Contains(summary, "10240") {
 		t.Fatalf("why_queued без чисел диска: %s", summary)
+	}
+}
+
+// TestR696_AsyncLoadAcceptedIsNotLoaded — 202 Accepted от /load означает
+// «загрузка ПРИНЯТА», а не «модель в памяти». Балансерный warmup писал запись
+// State="loaded" с окном на ЛЮБОЙ 2xx, включая 202. R696 сделал такую запись
+// видимой гейтам окна (loadedPerSeqNCtx/loadedWindowFromCache), и копия,
+// которая ещё грузится, начинала проходить гейт R459 «окно известно»: очередь
+// выдавала её слот, а запрос ждал загрузку 30-180 с вместо готовой копии.
+//
+// Тест на ИСХОДНОМ коде КРАСНЫЙ: после 202 в llamaMetrics появляется
+// LoadedModels[{State:"loaded", ContextPerSeq:131072}].
+func TestR696_AsyncLoadAcceptedIsNotLoaded(t *testing.T) {
+	rig := newStandReplayR696(t, 20000)
+	p := rig.proxy
+	host, port := hostPort(rig.astra.url)
+
+	p.warmupLlamaCppModel("ASTRA-I9", host, port, standModelR696,
+		warmupOptions{NumCtx: 131072, ContextPerSeq: 131072})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for rig.astra.loadCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rig.astra.loadCalls.Load() == 0 {
+		t.Fatal("условие теста не выполнено: warmup не дошёл до POST /load")
+	}
+	// Дать горутине warmup обработать ответ 202.
+	time.Sleep(100 * time.Millisecond)
+
+	if got := p.loadedPerSeqNCtx("ASTRA-I9", standModelR696); got != 0 {
+		t.Fatalf("после 202 Accepted (загрузка ещё идёт) окно на слот = %d, ожидалось 0: "+
+			"копия, которая не готова, проходит гейт R459 и забирает заявку у готовой", got)
+	}
+	if n, state := p.loadedWindowFromCache("ASTRA-I9", standModelR696); state == loadedWindowLoaded {
+		t.Fatalf("после 202 Accepted копия считается загруженной: (%d,%v) — "+
+			"preflight/R303 тоже будут считать модель готовой", n, state)
+	}
+}
+
+// TestStandReplayR696_FlagMatrix — ответ на «при каком сочетании
+// LB_SESSION_STICKINESS/LB_MODEL_AFFINITY заявка с того же IP ещё ждёт».
+//
+// Стенд из архива, диск A10-126 ОСВОБОЖДЁН (20000 > 10240): заявка той же
+// сессии обслуживается свободной копией при ЛЮБОМ сочетании флагов. Флаги не
+// «ломают» распределение — его ломает либо диск (копия исключена), либо R459
+// (у свободной копии известно МЕНЬШЕЕ окно).
+//
+// ОТДЕЛЬНЫЙ ФАКТ (item 5 разбора): при disk_free=9480 и stickiness=false заявка
+// всё равно обслуживается A10-126 — но это НЕ «свободная копия» и НЕ
+// распределение: аварийный обход R303 «сессия залипла на узле без модели»
+// перевешивает на ЖИВУЮ копию и НЕ проверяет жёсткий ресурсный гейт. Именно так
+// «запрос с другого адреса сразу ушёл как надо» на втором стенде: его сессия
+// попадала сначала на пустой ASTRA-I9 и спасалась R303 на A10-126, хотя узел
+// был исключён диском. R696 это не менял (и не должен был): правило диска —
+// про ВЫБОР узла, а R303 — про спасение живой сессии.
+func TestStandReplayR696_FlagMatrix(t *testing.T) {
+	t.Setenv("LB_ADMISSION_WAIT_SEC", "2")
+	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "2")
+	t.Setenv("LB_BACKEND_WAIT_SEC", "1")
+
+	ip := "192.168.151.151"
+	cases := []struct {
+		stickiness, affinity bool
+		diskFree             uint64
+	}{
+		{true, true, 20000},   // flags.txt второго стенда
+		{true, false, 20000},  // привязка без model affinity
+		{false, true, 20000},  // affinity без привязки
+		{false, false, 20000}, // без обоих
+		{false, true, 9480},   // диск не освобождён: R303-спасение с исключённого узла
+	}
+	for _, c := range cases {
+		rig := newStandReplayFlagsR696(t, c.diskFree, c.stickiness, c.affinity)
+		rig.pinAndBusyR696(t, ip, "cppworker-gpu-bundled-agent")
+		buf := logger.NewCaptureBuffer()
+		restore := logger.CaptureToBuffer(buf)
+		code, elapsed, backend, qw, body := rig.doR696(ip)
+		restore()
+		t.Logf("stickiness=%v affinity=%v disk_free=%d -> code=%d backend=%q elapsed=%v qw=%q",
+			c.stickiness, c.affinity, c.diskFree, code, backend, elapsed.Round(time.Millisecond), qw)
+		if c.diskFree >= 10240 {
+			if code != http.StatusOK || backend != "A10-126" {
+				t.Fatalf("stickiness=%v affinity=%v: после освобождения диска ожидался 200/A10-126, "+
+					"получено code=%d backend=%q: %s", c.stickiness, c.affinity, code, backend,
+					standTruncR696(body, 500))
+			}
+			if elapsed > 1500*time.Millisecond {
+				t.Fatalf("stickiness=%v affinity=%v: заявка ждала %v свободную копию", c.stickiness, c.affinity, elapsed)
+			}
+			continue
+		}
+		// Диск мал и привязки нет: заявку спасает R303 на живой копии, хотя узел
+		// исключён ресурсным гейтом. Фиксируем ФАКТ и строку лога, а не желаемое
+		// поведение: это характеристика, а не новый контракт.
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if strings.Contains(line, "R303:") {
+				t.Logf("R303-строка: %s", line)
+			}
+		}
+		if code != http.StatusOK || backend != "A10-126" {
+			t.Fatalf("stickiness=%v affinity=%v: ожидалось R303-спасение на A10-126 (200), "+
+				"получено code=%d backend=%q: %s", c.stickiness, c.affinity, code, backend,
+				standTruncR696(body, 500))
+		}
 	}
 }

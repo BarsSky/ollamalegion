@@ -1413,7 +1413,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(waitErr, errAdmissionTimeout):
 				// R117: отчитываемся РЕАЛЬНЫМ бюджетом ожидания (max(admission,
 				// auto-load)), иначе клиент видит 300 c там, где ждал 900.
-				writeAdmissionUnavailable(w, p, model, sessionKey, position, waited, p.admissionWaitBudget())
+				//
+				// R696-fix: в тело 503 передаём «нужное окно» (R459/R480) — иначе
+				// свободная копия с меньшим окном не попадала в backend_rejections
+				// и выглядела способной взять заявку; оператор не видел причины
+				// ожидания именно в гейте окна.
+				gateOpts := admissionUnavailableOpts{}
+				if sessionFromBackend != "" {
+					gateOpts.Need, gateOpts.NeedSource = p.sessionMoveNeedR480(
+						sessionFromBackend, model, sessionKey, parsed.NumCtx,
+						p.promptTokensForMoveR480(parsed.RawBody, path))
+				}
+				writeAdmissionUnavailable(w, p, model, sessionKey, position, waited,
+					p.admissionWaitBudget(), gateOpts)
 			case errors.Is(waitErr, errAdmissionDisabled):
 				http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
 			default:

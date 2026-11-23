@@ -64,6 +64,18 @@ func (p *Proxy) loadedPerSeqNCtxKnownR480(backendID, modelName string) (perSeq i
 	if perSeq > 0 {
 		return perSeq, true
 	}
+	// R696-fix (2026-11-24): «модель ГРУЗИТСЯ» — это известное состояние, и оно
+	// означает «не готово», а не «неизвестно». Раньше такая запись (State
+	// "loading" без окна) проходила дальше к проверке свежести поллера и при
+	// отсутствии метки опроса давала known=false — то есть кандидат ДОПУСКАЛСЯ.
+	// Живое следствие: загрузка принята асинхронно (202, запись loading), а
+	// очередь уже выдаёт слот этой копии; заявка уходит ждать загрузку вместо
+	// готовой копии. Теперь живая сессия ждёт свою копию (правило R459/R139), а
+	// R659-загрузка продолжается в фоне — как только поллер увидит loaded и окно,
+	// гейт начнёт пропускать.
+	if _, state := p.loadedWindowFromCache(backendID, modelName); state == loadedWindowLoading {
+		return 0, true
+	}
 	if p == nil || p.metricsMgr == nil {
 		return 0, false
 	}

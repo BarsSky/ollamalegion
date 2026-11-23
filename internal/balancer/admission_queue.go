@@ -895,9 +895,15 @@ func (lr *LlamaCppRouter) acquireInferenceAdmission(
 // timed out» оператор читал как «очередь переполнена», хотя живой случай был
 // другим: единственная копия занята, а второй бэкенд свободен, но без модели.
 // proxy может быть nil (юнит-тесты) — тогда поле просто отсутствует.
+//
+// R696-fix (2026-11-24): opts передаёт «нужное окно» (R459/R480). Без него
+// свободная копия с ИЗВЕСТНЫМ меньшим окном не попадала в причины вовсе: она
+// выглядела способной взять заявку, и тело 503 перечисляло всех, КРОМЕ неё.
+// Живой случай второго стенда: у свободного A10-126 окно 65536 против 131072 у
+// занятой копии — оператор видел «свободен, ничем не отклонён», а заявка ждала.
 func writeAdmissionUnavailable(
 	w http.ResponseWriter, proxy *Proxy, model, session string,
-	position int, waited, maxWait time.Duration,
+	position int, waited, maxWait time.Duration, opts ...admissionUnavailableOpts,
 ) {
 	capped := waited > 0 && waited < maxWait
 	if capped {
@@ -932,13 +938,32 @@ func writeAdmissionUnavailable(
 			"(balancing.image.coexistence=exclusive); retry after it finishes or lower balancing.image.queueWaitTimeoutSec expectations"
 	}
 	// R460: почему очередь не рассосалась — по каждому бэкенду.
+	var mv *backendRejectionMoveR480
+	if len(opts) > 0 && opts[0].Need > 0 {
+		mv = &backendRejectionMoveR480{Need: opts[0].Need, NeedSource: opts[0].NeedSource}
+	}
 	if proxy != nil {
-		if rejections := proxy.backendRejectionsR460(model, ""); len(rejections) > 0 {
+		if rejections := proxy.backendRejectionsR460(model, "", mv); len(rejections) > 0 {
 			payload["backend_rejections"] = rejections
 			payload["backend_rejections_hint"] = "each entry explains why that backend could not take the request " +
 				"(disabled_by_operator / donor_or_group_worker / model_not_loaded / model_loading / all_slots_busy / " +
 				"resource_limit / disk_low / ram_critical / window_too_small / vram_insufficient)"
 		}
 	}
+	if mv != nil {
+		payload["window_gate"] = map[string]interface{}{
+			"need":        mv.Need,
+			"need_source": mv.NeedSource,
+			"hint":        "R459/R480: копия с известным окном меньше нужного не берёт живую сессию (осознанное правило)",
+		}
+	}
 	writeJSON(w, http.StatusServiceUnavailable, payload)
+}
+
+// admissionUnavailableOpts — контекст гейта окна для тела 503 «ждали и не
+// дождались». Отдельная структура, а не два аргумента: вызывающим без окна
+// (per-backend очередь) менять сигнатуру не нужно.
+type admissionUnavailableOpts struct {
+	Need       int
+	NeedSource string
 }

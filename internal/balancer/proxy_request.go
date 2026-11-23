@@ -1207,6 +1207,38 @@ func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model stri
 		resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			// R696-fix (2026-11-24): 202 Accepted — это «загрузка ПРИНЯТА», а не
+			// «модель загружена».
+			//
+			// ЖИВОЙ ДЕФЕКТ. cppworker по умолчанию грузит АСИНХРОННО и отвечает
+			// 202 Accepted СРАЗУ (cmd/cppworker/handlers_model_async.go:16-17:
+			// «По умолчанию handleLoadModel возвращает 202 Accepted СРАЗУ»), а
+			// warmup ниже проверял только диапазон 2xx и писал запись
+			// State="loaded" с окном на слот. Комментарий R659 «воркер отвечает
+			// 2xx на /load только после успешной загрузки» неверен для
+			// асинхронного режима.
+			//
+			// ЧЕМ ЭТО ВРЕДИЛО ПОСЛЕ R696. R696 научил гейты окна
+			// (loadedPerSeqNCtx / loadedWindowFromCache) читать ContextPerSeq из
+			// этой записи. Запись появлялась в момент 202, то есть у ЕЩЁ
+			// ГРУЗЯЩЕЙСЯ копии с полным окном: гейт R459/R480 считал её готовой,
+			// очередь выдавала её слот, и заявка уходила ждать загрузку
+			// (30–180 с) вместо готовой копии — снаружи это снова «не
+			// распределяет на свободный бэкенд».
+			//
+			// Теперь 202 пишет состояние loading БЕЗ окна: loadedWindowFromCache
+			// отвечает loadedWindowLoading, loadedPerSeqNCtxKnownR480 — «известно,
+			// что не готово» (заявка ждёт свою копию), backendHasModelByID такую
+			// запись загруженной не считает. Готовность подтвердит поллер
+			// (/api/models, ≤30 с, 2 с пока видит loading) или синхронная
+			// загрузка (200).
+			if resp.StatusCode == http.StatusAccepted {
+				logger.Get().Infow("warmupLlamaCppModel: загрузка принята асинхронно (202) — модель ещё грузится, запись «loaded» не создаётся",
+					"backend", backendID, "model", model, "status", resp.StatusCode,
+					"numCtx", opts.NumCtx, "contextPerSeq", opts.ContextPerSeq)
+				p.markLlamaCppModelLoadingInMetrics(backendID, model)
+				return
+			}
 			logger.Get().Infow("warmupLlamaCppModel: model loaded into VRAM",
 				"backend", backendID, "model", model, "status", resp.StatusCode,
 				"numCtx", opts.NumCtx, "contextPerSeq", opts.ContextPerSeq,
@@ -1248,6 +1280,43 @@ func (p *Proxy) updateRunningModelInMetrics(backendID, model string) {
 	})
 	logger.Get().Debugw("updateRunningModelInMetrics: added model to running models",
 		"backend", backendID, "model", model)
+}
+
+// markLlamaCppModelLoadingInMetrics — R696-fix: загрузка ПРИНЯТА (202), но не
+// завершена. Пишем состояние loading БЕЗ окна, чтобы «копия ещё грузится» было
+// отличимо от «копия готова» и от «про этот узел ничего не известно»:
+//   - loadedWindowFromCache → loadedWindowLoading;
+//   - loadedPerSeqNCtxKnownR480 → (0, known=true) — гейт R459/R480 отклоняет
+//     переезд живой сессии на грузящуюся копию;
+//   - backendHasModelByID → false (loading не равно loaded).
+//
+// Существующую запись State="loaded" НЕ понижаем: 202 может прийти на reload уже
+// загруженной модели, и старое окно всё ещё описывает копию, которую поллер
+// вот-вот обновит.
+func (p *Proxy) markLlamaCppModelLoadingInMetrics(backendID, model string) {
+	if p == nil || p.metricsMgr == nil || backendID == "" || model == "" {
+		return
+	}
+	p.metricsMgr.mu.Lock()
+	defer p.metricsMgr.mu.Unlock()
+
+	lm, ok := p.metricsMgr.llamaMetrics[backendID]
+	if !ok {
+		lm = &types.LlamaCppMetrics{LoadedModels: []types.LlamaCppModel{}}
+		p.metricsMgr.llamaMetrics[backendID] = lm
+	}
+	for i, m := range lm.LoadedModels {
+		if m.Name == model {
+			if m.State != "loaded" {
+				lm.LoadedModels[i].State = "loading"
+			}
+			return
+		}
+	}
+	lm.LoadedModels = append(lm.LoadedModels, types.LlamaCppModel{
+		Name:  model,
+		State: "loading",
+	})
 }
 
 // updateLlamaCppRunningModelInMetrics — обновляет LlamaCppMetrics после успешного warmup.

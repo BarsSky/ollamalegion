@@ -519,6 +519,13 @@ func (p *Proxy) loadedPerSeqNCtx(backendID, modelName string) int {
 			!containsFold(m.Name, modelName) && !containsFold(modelName, m.Name) {
 			continue
 		}
+		// R696-fix (2026-11-24): State="loading" — загрузка принята (202), модель
+		// ещё не в памяти. Окно из такой записи (старое, от предыдущего reload)
+		// не описывает то, что копия сможет обслужить СЕЙЧАС: гейт R459/R480
+		// обязан видеть «не готово», а не «окно есть».
+		if m.State == "loading" {
+			continue
+		}
 		if m.ContextPerSeq > 0 {
 			return m.ContextPerSeq
 		}

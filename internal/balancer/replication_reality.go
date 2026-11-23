@@ -89,6 +89,13 @@ func (p *Proxy) backendHasModelByID(backendID, modelName string) bool {
 	}
 	if lm, ok := p.metricsMgr.SnapshotLlamaCppMetrics(backendID); ok && lm != nil {
 		for _, m := range lm.LoadedModels {
+			// R696-fix (2026-11-24): State="loading" — загрузка ПРИНЯТА (202), но
+			// модель ещё не в памяти. Считать её загруженной нельзя: по этому
+			// ответу R493 выбирает узел, R303 «перевешивает» привязку, а failover
+			// считает копию готовой — и заявка уходит на грузящийся узел.
+			if m.State == "loading" {
+				continue
+			}
 			if m.Name == modelName || containsFold(m.Name, modelName) {
 				return true
 			}

@@ -62,13 +62,21 @@ func runFeasible(modelName string, out io.Writer) int {
 	// Pretty print
 	fmt.Fprintf(out, "Model:           %s\n", modelName)
 	fmt.Fprintf(out, "GGUF max:        %d\n", info.GGUFMax)
+	// D4 (2026-11-25): «0 (no free VRAM, model uses all available)» было враньём:
+	// ноль приходит и тогда, когда свободная VRAM есть, но в неё не влезают
+	// ВЕСА + KV (например, 27B на 8-ГБ карте). Оператор читал «нет свободной
+	// памяти» и шёл искать занятый процесс. Теперь печатаем, что известно:
+	// сколько свободно и сколько стоит один токен KV, — из этого видно, что
+	// ограничение в размере модели, а не в занятой памяти.
 	if info.MaxVRAMCtx == 0 {
-		fmt.Fprintf(out, "Max VRAM ctx:    0 (no free VRAM, model uses all available)\n")
+		fmt.Fprintf(out, "Max VRAM ctx:    0 (не влезает: свободно VRAM %d МБ, KV %d Б/токен — веса модели + KV больше свободной VRAM)\n",
+			info.FreeVRAMMB, info.KVPerToken)
 	} else {
 		fmt.Fprintf(out, "Max VRAM ctx:    %d\n", info.MaxVRAMCtx)
 	}
 	if info.MaxRAMCtx == 0 {
-		fmt.Fprintf(out, "Max RAM ctx:     0 (no free RAM, system under pressure)\n")
+		fmt.Fprintf(out, "Max RAM ctx:     0 (не влезает: свободно RAM %d МБ, KV %d Б/токен — веса модели + KV больше свободной RAM)\n",
+			info.FreeRAMMB, info.KVPerToken)
 	} else {
 		fmt.Fprintf(out, "Max RAM ctx:     %d\n", info.MaxRAMCtx)
 	}

@@ -53,11 +53,11 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 
 	for id, backendState := range backendsCopy {
 
-	// R571 (R495 S4): вердикты «во что упёрлась карта» — в снапшот кластера, чтобы
-	// карточка бэкенда показывала причину и подсказку, а не только проценты.
-	// Взяты из того же трекера, что публикует /api/metrics (один источник).
-	bottleneckByIdR571 := p.bottleneckSnapshotR495()
-	throughputByIdR598 := p.throughputSnapshotR598()
+		// R571 (R495 S4): вердикты «во что упёрлась карта» — в снапшот кластера, чтобы
+		// карточка бэкенда показывала причину и подсказку, а не только проценты.
+		// Взяты из того же трекера, что публикует /api/metrics (один источник).
+		bottleneckByIdR571 := p.bottleneckSnapshotR495()
+		throughputByIdR598 := p.throughputSnapshotR598()
 
 		backendState.mu.Lock()
 		status := backendState.Backend.Status
@@ -111,16 +111,16 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			// R250 (2026-10-28): «не использовать бэкенд» — копия операторского
 			// решения в снапшоте кластера. Панель рисует состояние из него, и без
 			// этих полей выключенный узел выглядел бы рабочим.
-			Disabled:       backendConfig.Disabled,
-			DisabledReason: backendConfig.DisabledReason,
-			DisabledSince:  disabledSinceRFC3339(backendConfig.DisabledAt),
-		BottleneckKind:   string(bottleneckByIdR571[id].Kind),
-		BottleneckAdvice: bottleneckByIdR571[id].Advice,
-		// R598 (R495 S2b): средние скорости — данные, не решение.
-		PrefillTpsEma:     throughputByIdR598[id].PrefillTPS,
-		DecodeTpsEma:      throughputByIdR598[id].DecodeTPS,
-		ThroughputSamples: throughputByIdR598[id].DecodeCount,
-	}
+			Disabled:         backendConfig.Disabled,
+			DisabledReason:   backendConfig.DisabledReason,
+			DisabledSince:    disabledSinceRFC3339(backendConfig.DisabledAt),
+			BottleneckKind:   string(bottleneckByIdR571[id].Kind),
+			BottleneckAdvice: bottleneckByIdR571[id].Advice,
+			// R598 (R495 S2b): средние скорости — данные, не решение.
+			PrefillTpsEma:     throughputByIdR598[id].PrefillTPS,
+			DecodeTpsEma:      throughputByIdR598[id].DecodeTPS,
+			ThroughputSamples: throughputByIdR598[id].DecodeCount,
+		}
 
 		// R-Image (2026-10-02): image-бэкенд обязан быть виден в Monitor/WebUI
 		// со своим ПОРТОМ и МОДЕЛЯМИ. У текстовых бэкендов это Ollama/LlamaCpp-
@@ -428,6 +428,13 @@ func (p *Proxy) GetQueueStats() QueueStats {
 		// R117: в отчёт идёт РЕАЛЬНЫЙ бюджет ожидания (max(admission, auto-load)):
 		// UI показывает wait_max_sec именно как предел ожидания запроса.
 		Admission: p.admission.stats(p.admissionWaitBudget()),
+		// D4.1 (2026-11-25): слагаемые бюджета — рядом, чтобы «900» не читалось
+		// как лимит очереди. admission_wait_max_sec — только ожидание слота,
+		// auto_load_wait_sec — ожидание загрузки модели, request_wait_budget_sec —
+		// их максимум (он же admission.wait_max_sec).
+		AdmissionWaitMaxSec:  int(p.admissionWaitTimeout().Seconds()),
+		AutoLoadWaitSec:      int(AutoLoadWaitTimeout().Seconds()),
+		RequestWaitBudgetSec: int(p.admissionWaitBudget().Seconds()),
 		// R78: current_size — сколько запросов ЖДЁТ слот в единой
 		// (admission-)очереди; legacy-канал QueueManager удалён, поэтому раньше
 		// здесь всегда был 0 и панель очереди показывала пустоту.

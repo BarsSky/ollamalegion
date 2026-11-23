@@ -78,14 +78,25 @@ type QueuedRequest struct {
 
 // QueueStats - статистика очереди
 type QueueStats struct {
-	Admission          queueAdmissionStats `json:"admission"`
-	CurrentSize        int                 `json:"current_size"`
-	MaxSize            int                 `json:"max_size"`
-	Processed          int64               `json:"processed_total"`
-	WaitTimeAvgMs      int64               `json:"avg_wait_time_ms"`
-	DispatchByAffinity int64               `json:"dispatch_by_affinity"`
-	DispatchByLoad     int64               `json:"dispatch_by_load"`
-	DispatchByConfig   int64               `json:"dispatch_by_config"`
+	Admission   queueAdmissionStats `json:"admission"`
+	CurrentSize int                 `json:"current_size"`
+	// D4.1 (2026-11-25): одно число «сколько ждать» склеивало три лимита, и
+	// оператор читал не то. В архиве второго стенда было
+	// `admission.wait_max_sec=900` при `LB_ADMISSION_WAIT_SEC=300`, из чего
+	// делался вывод «лимит очереди 900». На деле 900 — бюджет ЗАПРОСА:
+	// max(ожидание слота, ожидание загрузки модели). Правило верное, но из
+	// отчёта не было видно слагаемых. Теперь публикуются оба.
+	// `admission.wait_max_sec` остаётся бюджетом (совместимость) и равен
+	// `request_wait_budget_sec`.
+	AdmissionWaitMaxSec  int   `json:"admission_wait_max_sec,omitempty"`
+	AutoLoadWaitSec      int   `json:"auto_load_wait_sec,omitempty"`
+	RequestWaitBudgetSec int   `json:"request_wait_budget_sec,omitempty"`
+	MaxSize              int   `json:"max_size"`
+	Processed            int64 `json:"processed_total"`
+	WaitTimeAvgMs        int64 `json:"avg_wait_time_ms"`
+	DispatchByAffinity   int64 `json:"dispatch_by_affinity"`
+	DispatchByLoad       int64 `json:"dispatch_by_load"`
+	DispatchByConfig     int64 `json:"dispatch_by_config"`
 
 	// Image — R98 (S8 плана 2026-10-07): поток запросов image-бэкендов
 	// (in_flight/тоталы/rps/длительности, по какому узлу сколько генераций,

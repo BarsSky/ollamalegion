@@ -24,6 +24,22 @@ RUN apk add --no-cache git build-base cmake linux-headers
 WORKDIR /build/llama.cpp
 COPY c/llama.cpp .
 
+# R700 (обновление до b12642, 2026-11-23): нормализуем переводы строк — то же, что
+# уже делает Dockerfile.gpu (R493, 2026-11-15).
+#
+# ЗАЧЕМ. Сабмодуль копируется из рабочего дерева ХОСТА, а на Windows checkout с
+# core.autocrlf=true даёт CRLF. `git apply` сравнивает контекст LF-патча с
+# содержимым файла, и патч не прикладывается («patch does not apply»), хотя
+# логика верна. Проверено в alpine: копия transport.cpp как есть — FAILS,
+# после `sed 's/\r$//'` — APPLIES. До этой правки CPU-образ на Windows-чекауте
+# не собирался вовсе (шаг патчей ниже), и это было не видно, пока образ собирали
+# с Linux-чекаута.
+RUN find . -path ./.git -prune -o -type f \
+        \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.hpp' \
+           -o -name '*.cuh' -o -name '*.cu' -o -name '*.txt' -o -name '*.cmake' \
+           -o -name 'CMakeLists.txt' -o -name '*.py' -o -name '*.json' \) \
+        -print0 | xargs -0 -r sed -i 's/\r$//'
+
 # Инициализируем git-репозиторий (CMake требует git для генерации build-info)
 RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build commit -m "llama.cpp"
 
@@ -70,6 +86,18 @@ RUN mkdir -p build && cd build && \
       # фиксируем номер сборки (по умолчанию он = rev-list --count синтетики).
       -DLLAMA_BUILD_COMMIT="${LLAMA_BUILD}" \
       -DLLAMA_BUILD_NUMBER=0 \
+      # R700 (2026-11-23): паритет с Dockerfile.gpu (v0.5.16) — там флаг стоит с
+      # тех пор, как gemma-4 (Gated Delta Net hybrid attention) дала split с
+      # числом входов больше дефолтных 30. В ggml-backend.cpp это не только
+      # проверка, но и РАЗМЕР МАССИВА (`prefetched[GGML_SCHED_MAX_SPLIT_INPUTS]`
+      # в структуре split), поэтому на CPU-сборке без флага возможна порча
+      # памяти там, где на GPU её не было. В CPU-сборке флаг отсутствовал.
+      #
+      # ЧЕСТНО О ГРАНИЦАХ: этот флаг НЕ вылечил наблюдённый на CPU SIGSEGV при
+      # загрузке gemma-4-E4B (`graph_reserve` -> segfault, см. отчёт R700) —
+      # падение осталось и с ним. То есть причина та другая, а флаг здесь —
+      # выравнивание профиля сборки с GPU-образом, а не «лекарство».
+      -DGGML_SCHED_MAX_SPLIT_INPUTS=128 \
       -DBUILD_SHARED_LIBS=OFF && \
     cmake --build . --config Release -j$(nproc)
 

@@ -81,10 +81,19 @@ var ggufFieldSuffixes = []string{
 
 // ggufModelArchs — известные архитектуры GGUF.
 // Каждая архитектура может иметь префикс для ключей метаданных.
+//
+// R700 (2026-11-23): добавлены inkling2 / inkling2_loop — их знает движок
+// (c/llama.cpp b12642, LLM_ARCH_NAMES), но НЕ знал этот список. Живой эффект на
+// файле Inkling-2-Mini-UD-Q4_K_M.gguf: general.architecture читался ("inkling2"),
+// а все <arch>.* параметры отбрасывались как неизвестные ключи → ContextLength=0,
+// NLayers=0, и `cppworker -feasible` печатал «GGUF max: 0», то есть балансер не
+// мог подобрать окно по метаданным (n_ctx оставался на профиле/дефолте), а
+// gguf_max_context в /api/models был нулевым.
 var ggufModelArchs = []string{
 	"llama", "qwen2", "qwen3", "qwen3moe", "qwen3next", "qwen35", "qwen35moe",
 	"gemma2", "gemma4", "gemma3",
 	"starcoder2", "gpt_bigcode", "falcon", "mpt", "phi3", "bert", "nemotron",
+	"inkling2", "inkling2_loop",
 }
 
 // initGGUFKeyMap инициализирует реверсивный маппинг "gguf key → field index"
@@ -315,6 +324,23 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 			if strings.HasSuffix(key, ".attention.recurrent_layers") {
 				info.HasRecurrentLayersKey = true
 			}
+			// R700 (2026-11-23): <arch>.attention.head_count / head_count_kv у
+			// новых архитектур приходят МАССИВОМ (по элементу на слой) — так
+			// устроен Inkling-2-Mini (48 значений). Раньше такие ключи падали в
+			// общий «пропустить массив», NHeads/NKvHeads оставались 0, и
+			// estimator KV молча уходил в fallback 16384 Б/токен (см.
+			// feasible.go): на этом файле реальные 196608 Б/токен (f16) —
+			// недооценка в 12 раз, то есть РЕКОМЕНДАЦИЯ ОКНА ЗАВЫШАЛАСЬ.
+			// Берём максимум по массиву: это верхняя оценка KV, а верхняя
+			// оценка безопасна (рекомендует меньшее окно, а не большее).
+			if strings.HasSuffix(key, ".attention.head_count") || strings.HasSuffix(key, ".attention.head_count_kv") {
+				if fi, ok := ggufKeyMap[key]; ok {
+					if v, ok2 := readGGUFIntArrayMax(br, elemType, arrLen); ok2 {
+						ggufSetField(info, fi, v)
+						continue
+					}
+				}
+			}
 			// R83 (2026-10-01): <arch>.attention.sliding_window_pattern — массив
 			// из n_layer флагов: '1' = слой со скользящим окном, '0' = глобальный.
 			// Нужен, чтобы отделить глобальный KV (растёт с n_ctx) от оконного:
@@ -455,6 +481,76 @@ func readGGUFBoolArray(br *bufio.Reader, elemType uint32, arrLen uint64) (string
 		}
 	}
 	return string(b), true
+}
+
+// readGGUFIntArrayMax — максимум по целочисленному массиву метаданных.
+//
+// R700 (2026-11-23): нужен для <arch>.attention.head_count(_kv), которые у
+// новых архитектур (Inkling 2) заданы массивом по слоям. Возвращает (max, ok);
+// ok=false — тип элемента не целочисленный или массив пуст, тогда вызывающий
+// код обязан пропустить массив обычным путём.
+func readGGUFIntArrayMax(br *bufio.Reader, elemType uint32, arrLen uint64) (int, bool) {
+	if arrLen == 0 || arrLen > 4096 {
+		return 0, false
+	}
+	maxV := 0
+	for j := uint64(0); j < arrLen; j++ {
+		var v uint64
+		switch elemType {
+		case 0, 7:
+			var x uint8
+			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
+				return 0, false
+			}
+			v = uint64(x)
+		case 1:
+			var x int8
+			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
+				return 0, false
+			}
+			v = uint64(x)
+		case 2:
+			var x uint16
+			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
+				return 0, false
+			}
+			v = uint64(x)
+		case 3:
+			var x int16
+			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
+				return 0, false
+			}
+			v = uint64(x)
+		case 4:
+			var x uint32
+			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
+				return 0, false
+			}
+			v = uint64(x)
+		case 5:
+			var x int32
+			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
+				return 0, false
+			}
+			v = uint64(x)
+		case 10:
+			if err := binary.Read(br, binary.LittleEndian, &v); err != nil {
+				return 0, false
+			}
+		case 11:
+			var x int64
+			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
+				return 0, false
+			}
+			v = uint64(x)
+		default:
+			return 0, false
+		}
+		if int(v) > maxV {
+			maxV = int(v)
+		}
+	}
+	return maxV, true
 }
 
 // ggufTypeSize возвращает размер элемента GGUF metadata value по типу.

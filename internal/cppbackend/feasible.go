@@ -78,6 +78,15 @@ func (b *Backend) ComputeFeasible(modelName string) (*FeasibleInfo, error) {
 	//   Llama-3-8B:        4096 / 32 = 128 ✓
 	//   Mistral-7B:        4096 / 32 = 128 ✓
 	// Fallback chain: C-bridge HeadDimK > NEmbd/NHeads > 128 (safe default).
+	//
+	// R700 (2026-11-23) — ЗАМЕР, НЕ ПРАВКА. Здесь остаётся оценка NEmbd/NHeads,
+	// хотя в GGUF есть точный <arch>.attention.key_length (поле h.KeyLength).
+	// Для Inkling-2-Mini это 2304/24 = 96 вместо 128 (KV на токен 36864 Б вместо
+	// 49152 Б), для gemma-4-E4B — 320 вместо 512. То есть KV ЗАНИЖАЕТСЯ, и
+	// рекомендованное окно завышается — но это свойство оценки ДО обновления
+	// пина, к b12642 отношения не имеет. Правка «сначала key_length» меняет
+	// числа у ВСЕХ моделей стенда (gemma-4: −37.5% окна), поэтому она вынесена
+	// из этой задачи и записана в отчёт как отдельный риск, а не сделана молча.
 	headDimK := h.HeadDimK
 	if headDimK == 0 && h.NEmbd > 0 && h.NHeads > 0 {
 		headDimK = h.NEmbd / h.NHeads

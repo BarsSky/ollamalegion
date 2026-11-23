@@ -13,6 +13,26 @@ type modelInstance struct {
 	handle   *bridge.ModelHandle
 	metadata *bridge.ModelMetadata
 	mu       sync.Mutex
+	// tokenMu — R714 (D2, 2026-11-25): замок ЖИЗНИ СЛОВАРЯ, отдельный от inst.mu.
+	//
+	// ЗАЧЕМ ОТДЕЛЬНЫЙ. inst.mu удерживается ВСЮ генерацию (см. Generate: «держим
+	// mu на всём инференсе»), поэтому любой код, бравший его только чтобы
+	// убедиться «модель загружена и handle жив», вставал в очередь за чужим
+	// inference. Живой дефект: POST /api/tokenize отвечал 46.155 s там, где
+	// соседний узел отдавал 45-47 мс, — балансер писал `exact prompt tokens
+	// unavailable … timeout` и работал «по оценке».
+	//
+	// Токенизатору нужен только словарь модели (в C-мосте это im->vocab,
+	// bridge_count_tokens) — он неизменен, пока модель загружена, и не зависит
+	// от занятости слотов. Поэтому два разных вопроса получают два разных замка:
+	//
+	//	inst.mu     — «можно ли сейчас декодировать» (эксклюзивно, на всю генерацию);
+	//	tokenMu     — «жив ли handle/словарь» (unload берёт на запись, токенизация — на чтение).
+	//
+	// ПОРЯДОК ЗАХВАТА: inst.mu → tokenMu (а также b.mu → tokenMu в публикации
+	// загрузки). Обратного порядка нет нигде: читатель токенизации не берёт ни
+	// inst.mu, ни b.mu, удерживая tokenMu, — поэтому дедлока быть не может.
+	tokenMu sync.RWMutex
 	// Round 13 (2026-07-28): slot manager для multi-slot batched inference.
 	// maxSlots = max(1, inst.info.Parallel). При Parallel=1 (default) —
 	// семантика идентична Round 8 (mu сериализует llama_decode, slot

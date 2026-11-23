@@ -688,7 +688,15 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	b.mu.Lock()
 	_ = handle // R60.57 follow-up: handle уже в inst.handle (pre-allocated)
 	inst.metadata = meta
+	// R714 (D2): публикация «загружено» — под tokenMu, потому что читатель
+	// токенизации проверяет State и handle именно под tokenMu.RLock (см.
+	// getInstanceForTokenize). Порядок захвата b.mu → tokenMu; handle.ptr к
+	// этому моменту уже заполнен мостом (LoadModelWithEarlyHandle), поэтому
+	// reader под tokenMu видит либо «ещё грузится», либо полностью готовый
+	// handle — «полузагруженный» словарь он увидеть не может.
+	inst.tokenMu.Lock()
 	inst.info.State = StateLoaded
+	inst.tokenMu.Unlock()
 	// R493e: публикация того, что загрузчик посчитал ДО этого замка
 	// (см. комментарий у публикации инстанса выше). Здесь и только здесь эти
 	// поля попадают в inst.info, который читают снимки.

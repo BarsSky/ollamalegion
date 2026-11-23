@@ -33,7 +33,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -233,110 +232,28 @@ func (ps *profileSyncerT) applyProfileOnLoad(modelName string) *types.LlamaCppMo
 	if ps == nil {
 		return nil
 	}
-	ps.mu.RLock()
-	defer ps.mu.RUnlock()
-
-	// 1) Exact match
-	if p, ok := ps.cache[modelName]; ok {
-		return &p
+	if found := ps.lookupProfile(modelName); found != nil {
+		return &found.Profile
 	}
-	// 2) Нормализованное сравнение (R83 §3.4, 2026-09-26).
-	//
-	// Раньше здесь было `containsFold(name, modelName) || containsFold(modelName, name)`
-	// по СЫРЫМ строкам, и профиль "Qwen3.8-27B" НЕ находился для имени клиента
-	// "qwen3.8:latest": общий префикс "qwen3.8" обрывался на ':' против '-'.
-	// Живое следствие: для загрузок по имени клиента не применялся весь
-	// pull-профиль — ни kvCacheType, ни contextLength, ни numGpuLayers.
-	//
-	// ДВА прохода, а не один (иначе получается ложное совпадение):
-	//
-	//	1) строгий: разделителями считаются только ':' '.' '_' и пробел.
-	//	   Тогда "qwen3.8:latest" → "qwen3.8" совпадает с "Qwen3.8-27B" → "qwen3.8.27b",
-	//	   но НЕ совпадает с "Qwen3-8B-Instruct-2507" → "qwen3-8b-instruct-2507"
-	//	   ('-' там разделяет имя модели, а не версию). Именно это совпадение
-	//	   ловилось на живом стенде: профиль Qwen3-8B применялся к запросу
-	//	   qwen3.8:latest — при том, что у Qwen3.8-27B kvCacheType=q8_0, а у
-	//	   Qwen3-8B kvCacheType пуст, и гейт с загрузкой разошлись по KV.
-	//	2) мягкий: '-' и '_' тоже становятся разделителями — для имён вида
-	//	   "qwen3" против "Qwen3-8B-Instruct-2507".
-	//
-	// Совпадение — префиксное. Если под него попало несколько профилей
-	// ("Qwen3.8-27B" и "Qwen3.8-27B-UD-Q4_K_M"), берётся самый длинный ключ, а
-	// при равенстве — лексикографически первый: порядок обхода map случаен,
-	// поэтому выбор обязан быть детерминированным.
-	want := normalizeProfileKey(modelName)
-	if want == "" {
+	return nil
+}
+
+// lookupProfile — резолв профиля с ПРИЗНАКОМ того, как он нашёлся (ключ и шаг
+// лестницы). Нужен логам и тестам: «профиля нет» и «профиль найден по
+// нормализованному ключу» — разные факты, и по одному числу их не различить.
+//
+// D1 (2026-11-25): вся лестница поиска переехала в profile_key.go — ОДНО
+// правило «имя модели → ключ профиля» (как window.GgufModelKey у WebUI и
+// balancer.NormalizeModelProfileKey у сервера). Здесь остаётся только замок на
+// снимок карты и вызов правила; прежний префиксный поиск (pickProfileByKey)
+// удалён: он подставлял соседний профиль-префикс вместо своего (D1).
+func (ps *profileSyncerT) lookupProfile(modelName string) *profileLookupD1 {
+	if ps == nil {
 		return nil
 	}
-	if p := pickProfileByKey(ps.cache, want, normStrictProfileKey); p != nil {
-		return p
-	}
-	return pickProfileByKey(ps.cache, want, normalizeProfileKey)
-}
-
-// pickProfileByKey — самый конкретный профиль, чей нормализованный ключ совпал
-// с запросом (равенство или префикс в любую сторону).
-func pickProfileByKey(cache map[string]types.LlamaCppModelProfile,
-	want string, norm func(string) string) *types.LlamaCppModelProfile {
-	var bestName string
-	var best *types.LlamaCppModelProfile
-	for name, p := range cache {
-		have := norm(name)
-		if have == "" {
-			continue
-		}
-		if !(have == want || strings.HasPrefix(have, want) || strings.HasPrefix(want, have)) {
-			continue
-		}
-		if best == nil || len(have) > len(bestName) ||
-			(len(have) == len(bestName) && have < bestName) {
-			prof := p // копия: &p в range-цикле указывал бы на переменную цикла
-			best = &prof
-			bestName = have
-		}
-	}
-	return best
-}
-
-// normalizeProfileKey — ключ сравнения имён моделей и профилей (мягкий вариант).
-//
-// Срезает ollama-тег ("qwen3.8:latest" → "qwen3.8"), расширение .gguf и
-// приводит разделители ('.', '-', ':', '_', пробел) к точке.
-func normalizeProfileKey(name string) string {
-	return profileKeyFor(name, true)
-}
-
-// normStrictProfileKey — тот же ключ, но '-' и '_' НЕ считаются разделителями:
-// они различают версию и имя модели ("Qwen3.8-27B" против "Qwen3-8B").
-func normStrictProfileKey(name string) string {
-	return profileKeyFor(name, false)
-}
-
-func profileKeyFor(name string, dashIsSeparator bool) string {
-	s := strings.ToLower(strings.TrimSpace(name))
-	if i := strings.LastIndex(s, ":"); i >= 0 {
-		s = s[:i]
-	}
-	s = strings.TrimSuffix(s, ".gguf")
-	var b strings.Builder
-	b.Grow(len(s))
-	prevDot := false
-	for _, r := range s {
-		sep := r == '.' || r == ':' || r == ' ' || r == '\t'
-		if dashIsSeparator && (r == '-' || r == '_') {
-			sep = true
-		}
-		if sep {
-			if b.Len() > 0 && !prevDot {
-				b.WriteByte('.')
-				prevDot = true
-			}
-			continue
-		}
-		b.WriteRune(r)
-		prevDot = false
-	}
-	return strings.Trim(b.String(), ".")
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	return findModelProfileD1(ps.cache, modelName)
 }
 
 // snapshotSize — для логов / metrics.

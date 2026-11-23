@@ -509,12 +509,19 @@ func (b *Backend) CountTokens(modelName string, text string) int {
 // оценкой, а получатель считал число точным — на тексте 600 000 символов вышло
 // 300 000 вместо 75 000. Число, о котором неизвестно, чем оно посчитано, нельзя
 // класть в решение про окно (это и есть корень R466).
+//
+// R714 (D2): путь идёт через getInstanceForTokenize, а НЕ через
+// getModelInstance. Прежний вариант брал inst.mu — тот самый мьютекс, который
+// удерживается всю генерацию, — поэтому /api/tokenize ждал окончания чужого
+// запроса (живой замер: 46.155 s против 45–47 мс на соседнем узле). Токенизации
+// нужен только словарь модели, он неизменен, пока модель загружена.
 func (b *Backend) CountTokensExact(modelName string, text string) (int, bool) {
-	inst, err := b.getModelInstance(modelName)
+	inst, release, err := b.getInstanceForTokenize(modelName)
 	if err != nil {
 		// Модель не загружена/выгружена — реального токенизатора нет.
 		return tokencount.Estimate(text), false
 	}
+	defer release()
 	n, exact := inst.handle.CountTokensExact(text)
 	if exact && n <= 0 && text != "" {
 		// llama_tokenize вернул 0 (multilingual / сломанный токенизатор) —

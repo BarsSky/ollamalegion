@@ -125,23 +125,51 @@ func TestApplyProfileToLoadRequest_KVCacheType(t *testing.T) {
 	}
 }
 
-// TestNormalizeProfileKey — R83 §3.4 (2026-09-26): ключ сравнения имён
-// моделей и профилей. Заменил containsFold (см. sync_profile.go): сырое
-// подстрочное сравнение не находило профиль "Qwen3.8-27B" для имени клиента
-// "qwen3.8:latest", потому что общий префикс обрывался на ':' против '-'.
-func TestNormalizeProfileKey(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"qwen3.8:latest", "qwen3.8"},
-		{"Qwen3.8-27B", "qwen3.8.27b"},
-		{"Qwen3.8-27B-UD-Q4_K_M", "qwen3.8.27b.ud.q4.k.m"},
-		{"Qwen3.8-27B-UD-Q4_K_M.gguf", "qwen3.8.27b.ud.q4.k.m"},
-		{"gemma-4-E4B-it-Q4_K_M", "gemma.4.e4b.it.q4.k.m"},
-		{"  Qwen3-8B  ", "qwen3.8b"},
-		{"", ""},
+// TestD1_NormalizedKeyIsBalancerRule — канонический ключ профиля у воркера
+// ОДИН и он принадлежит балансеру (balancer.NormalizeModelProfileKey).
+//
+// ЗАЧЕМ ТЕСТ. Здесь раньше жила воркерская копия правила (normalizeProfileKey с
+// приведением разделителей и срезанием ollama-тега). D1 убрал её: две копии
+// правила «имя модели → ключ» расходятся — и расходятся именно там, где на
+// стенде лежат профили-префиксы (Qwen3.8-27B и Qwen3.8-27B-UD-Q4_K_M). Тест
+// фиксирует, что третий шаг лестницы — ровно функция балансера: trim → `\` в `/`
+// → basename → снять `.gguf` (только это расширение), регистр СОХРАНЯЕТСЯ,
+// суффикс квантования и тег НЕ срезаются.
+func TestD1_NormalizedKeyIsBalancerRule(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"Qwen3.8-27B-UD-Q4_K_M", []string{"Qwen3.8-27B-UD-Q4_K_M", "Qwen3.8-27B-UD-Q4_K_M.gguf"}},
+		{"Qwen3.8-27B-UD-Q4_K_M.gguf", []string{"Qwen3.8-27B-UD-Q4_K_M.gguf", "Qwen3.8-27B-UD-Q4_K_M"}},
+		{"Qwen3.8-27B-UD-Q4_K_M.GGUF", []string{"Qwen3.8-27B-UD-Q4_K_M.GGUF", "Qwen3.8-27B-UD-Q4_K_M"}},
+		{"/app/models/gemma-4-E4B-it-Q4_K_M.gguf", []string{
+			"/app/models/gemma-4-E4B-it-Q4_K_M.gguf", "gemma-4-E4B-it-Q4_K_M.gguf", "gemma-4-E4B-it-Q4_K_M",
+		}},
+		{`C:\models\gemma-4.gguf`, []string{`C:\models\gemma-4.gguf`, "gemma-4.gguf", "gemma-4"}},
+		// Регистр сохраняется: ключ — это имя модели, а не «сравнение без учёта
+		// регистра» (последнее — отдельный, ПОСЛЕДНИЙ шаг лестницы).
+		{"gemma-4", []string{"gemma-4", "gemma-4.gguf"}},
+		// Имя `gguf` — не расширение (len>5): суффикс добавляется.
+		{"gguf", []string{"gguf", "gguf.gguf"}},
+		// Тег клиента (ollama) НЕ срезается: иначе из "qwen3.8:latest" вышел бы
+		// ключ "qwen3.8", который опять начнёт «находиться» по префиксу у соседа.
+		{"qwen3.8:latest", []string{"qwen3.8:latest", "qwen3.8:latest.gguf"}},
 	}
 	for _, c := range cases {
-		if got := normalizeProfileKey(c.in); got != c.want {
-			t.Errorf("normalizeProfileKey(%q) = %q, want %q", c.in, got, c.want)
+		var got []string
+		for _, step := range profileLookupCandidates(c.in) {
+			got = append(got, step.Key)
+		}
+		if len(got) != len(c.want) {
+			t.Errorf("кандидаты(%q) = %v, want %v", c.in, got, c.want)
+			continue
+		}
+		for i := range c.want {
+			if got[i] != c.want[i] {
+				t.Errorf("кандидаты(%q)[%d] = %q, want %q (вся лестница: %v)",
+					c.in, i, got[i], c.want[i], got)
+			}
 		}
 	}
 }

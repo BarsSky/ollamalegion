@@ -115,6 +115,11 @@ func (b *Backend) unloadModel(name string, expect *modelInstance) error {
 	}
 
 	inst.mu.Lock()
+	// R714 (D2): освобождение словаря — под tokenMu на ЗАПИСЬ, чтобы оно не
+	// пересеклось с токенизацией (она берёт tokenMu на чтение). Порядок захвата
+	// inst.mu → tokenMu; токенизация inst.mu не берёт вовсе — поэтому занятый
+	// слот больше не блокирует /api/tokenize.
+	inst.tokenMu.Lock()
 	if inst.handle != nil {
 		inst.handle.FreeModel()
 	}
@@ -125,6 +130,7 @@ func (b *Backend) unloadModel(name string, expect *modelInstance) error {
 	inst.info.LoadingSizeBytes = 0
 	inst.info.LoadingError = ""
 	inst.info.BatchedParallel = false
+	inst.tokenMu.Unlock()
 	inst.mu.Unlock()
 
 	// Записываем метрики

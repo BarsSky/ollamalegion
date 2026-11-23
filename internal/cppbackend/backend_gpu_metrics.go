@@ -154,10 +154,14 @@ func (b *Backend) Close() {
 
 	for name, inst := range b.models {
 		inst.mu.Lock()
+		// R714 (D2): тот же порядок, что в unloadModel — освобождение словаря
+		// под tokenMu на запись (см. modelInstance.tokenMu).
+		inst.tokenMu.Lock()
 		if inst.handle != nil {
 			inst.handle.FreeModel()
 		}
 		inst.info.State = StateUnloaded
+		inst.tokenMu.Unlock()
 		inst.mu.Unlock()
 		delete(b.models, name)
 		logger.Get().Infow("model unloaded on shutdown", "name", name)

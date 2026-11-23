@@ -46,6 +46,11 @@ func TestR83_ProfileWire_KVCacheTypeDecodes(t *testing.T) {
 
 // TestR83_ProfileWire_SyncerDecodePath — тот же JSON через тот же декодер, что в
 // fetchOnce (структура тела ответа), а не «похожий» разбор.
+//
+// D1 (2026-11-25): резолв идёт по имени МОДЕЛИ (то, что реально пришло в
+// загрузку — владелец файла по R154), а не по тегу клиента: угадывание по
+// префиксу для тега удалено вместе с дефектом «чужой профиль» (см.
+// profile_key.go).
 func TestR83_ProfileWire_SyncerDecodePath(t *testing.T) {
 	raw := `{"models":{"Qwen3.8-27B":{"contextLength":32768,"batchSize":512,` +
 		`"numGpuLayers":-2,"kvCacheType":"q8_0"}},"total":1}`
@@ -60,11 +65,16 @@ func TestR83_ProfileWire_SyncerDecodePath(t *testing.T) {
 	}
 
 	ps := &profileSyncerT{cache: body.Models}
-	prof := ps.applyProfileOnLoad("qwen3.8:latest")
+	prof := ps.applyProfileOnLoad("Qwen3.8-27B")
 	if prof == nil {
 		t.Fatal("профиль не найден после декодирования")
 	}
 	if prof.KVCacheType != "q8_0" {
 		t.Errorf("после декодирования и резолва KVCacheType = %q, want q8_0", prof.KVCacheType)
+	}
+	// Тот же профиль находится и по имени файла (так зовёт загрузка балансера).
+	if profFile := ps.applyProfileOnLoad("Qwen3.8-27B.gguf"); profFile == nil ||
+		profFile.KVCacheType != "q8_0" {
+		t.Errorf("после декодирования резолв по имени файла = %+v, want kv q8_0", profFile)
 	}
 }

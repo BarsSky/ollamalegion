@@ -218,8 +218,37 @@ type LlamaCppModel struct {
 	NEmbd        int    `json:"nEmbd,omitempty"`        // n_embd (для KV cache)
 	HeadDimK     int    `json:"headDimK,omitempty"`     // head_dim_k
 	HeadDimV     int    `json:"headDimV,omitempty"`     // head_dim_v
-	MaxContext   int    `json:"maxContext,omitempty"`   // ggufContextLength (макс n_ctx для этой модели)
-	LoadedAt     string `json:"loadedAt,omitempty"`     // RFC3339Nano
+	// R705 (2026-11-24): откуда взята ширина головы K/V.
+	//
+	// cppworker отдаёт head_dim_source вместе с head_dim_k/head_dim_v:
+	//   "gguf"     — <arch>.attention.key_length из модели (факт);
+	//   "computed" — прежняя формула n_embd/n_heads (оценка).
+	// До R705 ширина всегда считалась формулой (Qwen3-4B: 80 вместо 128), но в
+	// API это никак не отличалось от измерения, и R659/AutoTune молча строились
+	// на заниженном KV. Поле едет в WebUI/админку тем же путём, что head_dim_k.
+	HeadDimSource string `json:"headDimSource,omitempty"`
+	// R707 (2026-11-25): РАСКЛАДКА KV по слоям.
+	//
+	// До неё балансер считал KV как NLayers × NKvHeads × HeadDimK × n_ctx, то есть
+	// по всем слоям модели. Для архитектур, где кэш живёт не во всех слоях, это
+	// завышение: gemma-4-E4B — 42 блока, но KV держат 24 слоя (4 глобальных
+	// шириной 512 + 20 оконных шириной 256 с окном 512); Qwen3.8-9B — 33 блока,
+	// но attention-слоёв 8. R659 по такому KV отказывал в загрузке на свободный
+	// узел («окно не влезает»), AutoTune советовал q4_0 вместо q8_0.
+	//
+	// KVPlanSource: "plan" — числа ниже описывают классы слоёв; "flat" — данных
+	// по слоям нет (старый cppworker), считать надо прежней формулой.
+	// Поля приходят из /api/models: kv_plan_source, kv_global_layers, kv_swa_layers,
+	// kv_swa_window, head_dim_swa, head_dim_swa_v, n_kv_heads_swa.
+	KVPlanSource   string `json:"kvPlanSource,omitempty"`
+	KVGlobalLayers int    `json:"kvGlobalLayers,omitempty"`
+	KVSWALayers    int    `json:"kvSwaLayers,omitempty"`
+	KVSWAWindow    int    `json:"kvSwaWindow,omitempty"`
+	HeadDimSWA     int    `json:"headDimSwa,omitempty"`  // ширина головы K оконных слоёв
+	HeadDimSWAV    int    `json:"headDimSwaV,omitempty"` // ширина головы V оконных слоёв
+	NKvHeadsSWA    int    `json:"nKvHeadsSwa,omitempty"` // KV-головы оконных слоёв
+	MaxContext     int    `json:"maxContext,omitempty"`  // ggufContextLength (макс n_ctx для этой модели)
+	LoadedAt       string `json:"loadedAt,omitempty"`    // RFC3339Nano
 	// === Capabilities (Round 18 P0.1, 2026-08-03) ===
 	// Single source of truth для auto-detect (vision, tools, reasoning).
 	// Прокидывается клиенту через X-Model-Capabilities, X-Model-Max-Context,

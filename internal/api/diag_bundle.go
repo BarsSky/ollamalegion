@@ -1,4 +1,4 @@
-// diag_bundle.go — R476 (2026-11-07): один архив со стенда для разбора.
+﻿// diag_bundle.go — R476 (2026-11-07): один архив со стенда для разбора.
 //
 // ЗАЧЕМ. «Пришлите логи» на практике означало несколько сообщений: логи
 // балансера, сводку хода с воркера, промпт, тело запроса, конфигурацию окна.
@@ -8,13 +8,21 @@
 //
 // СОСТАВ АРХИВА:
 //
-//	summary.json          — то же, что /api/v1/diag/summary (версии, флаги,
-//	                        окно, профили, снимок кластера)
+//	summary.json          — то же, что /api/v1/diag/summary (версии сервисов,
+//	                        флаги, окно, профили, снимок кластера)
 //	balancer-logs.txt     — кольцевой буфер логов балансера (LB_LOG_BUFFER_ENTRIES)
+//	balancer-logs.json    — тот же буфер массивом записей (R715: со счётчиком
+//	                        повторов repeated / first_time / last_time)
+//	logs-meta.json        — R715: метаданные окна логов (сколько строк пришло,
+//	                        сколько схлопнуто, какое время покрывает буфер)
+//	failures.json         — последние сбои по стадиям (R477)
+//	identity.json         — запечённая идентичность образа балансера (R486)
 //	flags.txt             — флаги по белому списку: заданные и незаданные
-//	backends/<id>.zip     — диагностический архив воркера (R476)
+//	backends/<id>.zip     — диагностический архив воркера (R476; R715 — и для
+//	                        image_cpp, через /api/v1/sdworker/debug/bundle)
 //	backends/<id>.info.json — /api/info воркера (сборка, GPU, модели)
-//	backends/<id>.error.txt — если воркер не ответил: текст ошибки
+//	backends/<id>.error.txt — если воркер не ответил: код/таймаут и подсказка
+//	backends/<id>.note.txt — только для типов, у которых архива нет по контракту
 //	README.txt            — что это и в каком порядке читать
 //
 // СЕКРЕТЫ: в summary.txt-only флаги (белый список), в логи секретов не пишем;
@@ -26,6 +34,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -46,6 +55,21 @@ const (
 	diagBundlePerBackendTimeoutR476 = 20 * time.Second
 	// diagBundleEntryMaxR476 — предел на вложенный архив/файл.
 	diagBundleEntryMaxR476 = 16 << 20
+	// diagBundleWorkerTimeoutR715 — сколько ждать диагностический АРХИВ воркера.
+	//
+	// R715 (D3): сборка архива у воркера — это чтение буфера и сериализация
+	// десятков килобайт, а не работа модели, поэтому 5 секунд более чем
+	// достаточно. Отдельный (маленький) таймаут нужен, чтобы один зависший
+	// воркер не растягивал сборку всего архива: причина «timeout 5s» в
+	// backends/<id>.error.txt полезнее, чем архив через три минуты.
+	diagBundleWorkerTimeoutR715 = 5 * time.Second
+	// diagBundleLogsMaxEntriesR715 — сколько записей буфера кладём в архив.
+	// R715: при дефолте 5000 это весь типовой буфер, но при
+	// LB_LOG_BUFFER_ENTRIES=20000 архив не должен расти вместе с настройкой.
+	diagBundleLogsMaxEntriesR715 = 5000
+	// diagBundleLogsMaxBytesR715 — предел текста/JSON логов в архиве (2 МБ на
+	// балансерные логи). Иначе одна «болтливая» минута раздувает скачивание.
+	diagBundleLogsMaxBytesR715 = 2 << 20
 )
 
 // handleDiagBundle — GET /api/v1/diag/bundle.
@@ -90,7 +114,17 @@ func (s *Server) handleDiagBundle(w http.ResponseWriter, r *http.Request) {
 	s.diagBundleAddTextR476(zw, "flags.txt", diagBundleFlagsTextR476())
 
 	// 3) Логи балансера из кольцевого буфера.
-	s.diagBundleAddTextR476(zw, "balancer-logs.txt", diagBundleBalancerLogsSinceR476(cutoff))
+	//
+	// R715 (D3): текст + тот же буфер массивом (JSON) + метаданные окна.
+	// Зачем JSON отдельным файлом: по тексту нельзя посчитать, сколько раз
+	// повторилось событие и какое время буфер реально покрывает, — именно этого
+	// не хватало при разборе «13 минут логов». Формат записи — расширение
+	// прежнего (time/level/message/source/fields) полями repeated/first_time/
+	// last_time; старые поля не переименованы.
+	logsSnap := diagBundleBalancerLogsSnapshotR715(cutoff)
+	s.diagBundleAddTextR476(zw, "balancer-logs.txt", logsSnap.Text)
+	s.diagBundleAddTextR476(zw, "balancer-logs.json", logsSnap.JSONText())
+	s.diagBundleAddJSONR476(zw, "logs-meta.json", logsSnap.Meta)
 
 	// 4) По каждому бэкенду — диагностика воркера, если это cppworker.
 	backends := s.diagBundleBackendsR476()
@@ -114,6 +148,13 @@ func (s *Server) diagBundleBackendsR476() []types.Backend {
 }
 
 // diagBundleAddBackendR476 — вложенный архив и /api/info одного бэкенда.
+//
+// R715 (D3): архив воркера забирается не только у llama_cpp. Живой дефект:
+// для image_cpp в архив попадал ТОЛЬКО note.txt «бэкенд не cppworker», поэтому
+// вопрос «почему не грузится image-модель» по архиву не разбирался вообще —
+// ни логов воркера, ни списка моделей, ни версии. Теперь у image-воркера свой
+// эндпоинт (cmd/sdworker/debug_bundle.go), а при недоступности пишется ПРИЧИНА
+// (код HTTP/таймаут/сеть) вместо общего «недоступен».
 func (s *Server) diagBundleAddBackendR476(zw *zip.Writer, b types.Backend, sinceRaw string) {
 	base := ""
 	if s.proxy != nil {
@@ -123,26 +164,42 @@ func (s *Server) diagBundleAddBackendR476(zw *zip.Writer, b types.Backend, since
 		base = fmt.Sprintf("http://%s:%d", b.Host, b.OllamaPort)
 	}
 
-	// /api/info есть у cppworker и у ollama — забираем у любого, ошибку пишем
-	// файлом: «не ответил» — это тоже факт для разбора.
-	if body, err := diagBundleHTTPGetR476(base+"/api/info", b.CppWorkerApiToken); err == nil {
-		s.diagBundleAddTextR476(zw, fmt.Sprintf("backends/%s.info.json", b.ID), string(body))
+	// /api/info есть у cppworker и у ollama, у image-воркера он называется
+	// /api/image/info (см. cmd/sdworker/router.go) — путь выбирается по типу,
+	// а прежний адрес остаётся запасным. Ошибку пишем файлом: «не ответил» —
+	// это тоже факт для разбора.
+	infoBody, infoErr := diagBundleFetchInfoR715(base, b, func(url string) ([]byte, error) {
+		return diagBundleHTTPGetR476(url, b.CppWorkerApiToken)
+	})
+	if infoErr == nil {
+		s.diagBundleAddTextR476(zw, fmt.Sprintf("backends/%s.info.json", b.ID), string(infoBody))
 	} else {
-		s.diagBundleAddTextR476(zw, fmt.Sprintf("backends/%s.info.error.txt", b.ID), err.Error()+"\n")
+		s.diagBundleAddTextR476(zw, fmt.Sprintf("backends/%s.info.error.txt", b.ID), infoErr.Error()+"\n")
 	}
 
-	if b.Type != types.BackendTypeLlamaCpp {
+	workerPath, contract := diagBundleWorkerPathR715(b.Type)
+	if workerPath == "" {
+		// Архива нет по контракту типа (например ollama): это не ошибка сбора,
+		// поэтому note.txt остаётся — но с названной причиной и подсказкой, что
+		// именно можно забрать вместо него.
 		s.diagBundleAddTextR476(zw, fmt.Sprintf("backends/%s.note.txt", b.ID),
-			"бэкенд не cppworker (тип "+string(b.Type)+"): диагностический архив воркера недоступен\n")
+			"диагностического архива нет по контракту типа "+string(b.Type)+"\n"+
+				"contract="+contract+"\n"+
+				"note=/api/info рядом: backends/"+b.ID+".info.json\n")
 		return
 	}
-	bundleURL := base + "/api/v1/cppworker/debug/bundle"
+
+	bundleURL := base + workerPath
 	if strings.TrimSpace(sinceRaw) != "" {
 		bundleURL += "?since=" + url.QueryEscape(sinceRaw)
 	}
-	body, err := diagBundleHTTPGetR476(bundleURL, b.CppWorkerApiToken)
+	body, err := diagBundleHTTPGetTimeoutR715(bundleURL, b.CppWorkerApiToken, diagBundleWorkerTimeoutR715)
 	if err != nil {
-		s.diagBundleAddTextR476(zw, fmt.Sprintf("backends/%s.error.txt", b.ID), err.Error()+"\n")
+		// R715: файл ошибки начинается с прежнего текста ошибки (совместимость),
+		// затем — разобранная причина и подсказка. «Бандл недоступен» без причины
+		// и есть тот дефект, ради которого сделан шаг.
+		s.diagBundleAddTextR476(zw, fmt.Sprintf("backends/%s.error.txt", b.ID),
+			diagBundleWorkerErrorTextR715(err, bundleURL, string(b.Type), workerPath))
 		return
 	}
 	if len(body) > diagBundleEntryMaxR476 {
@@ -158,12 +215,105 @@ func (s *Server) diagBundleAddBackendR476(zw *zip.Writer, b types.Backend, since
 	}
 }
 
+// diagBundleFetchInfoR715 — /api/info бэкенда с учётом типа.
+//
+// R715: у image-воркера (sdworker) нет /api/info — его поверхность это
+// /api/image/info (алиас /info). До правки в архив каждого image-бэкенда
+// попадал backends/<id>.info.error.txt с HTTP 404, хотя воркер жив: оператор
+// читал это как «воркер не отвечает».
+func diagBundleFetchInfoR715(base string, b types.Backend, get func(url string) ([]byte, error)) ([]byte, error) {
+	paths := []string{"/api/info"}
+	if b.Type == types.BackendTypeImage {
+		paths = []string{"/api/image/info", "/api/info"}
+	}
+	var firstErr error
+	for _, path := range paths {
+		body, err := get(base + path)
+		if err == nil {
+			return body, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr == nil {
+		firstErr = fmt.Errorf("backend %s: /api/info недоступен", base)
+	}
+	return nil, firstErr
+}
+
+// diagBundleWorkerPathR715 — путь диагностического архива воркера по типу
+// бэкенда и имя контракта (для note/ошибок).
+//
+// Пути намеренно РАЗНЫЕ у воркеров: cppworker отдаёт /api/v1/cppworker/debug/
+// bundle с R476, imageworker получил аналог /api/v1/sdworker/debug/bundle в
+// R715 (плюс алиас /api/debug/bundle). Один общий путь вида /api/debug/bundle
+// не годится: старые образы cppworker его не знают, а «угадывать» путь по
+// ответу 404 дороже, чем один раз указать тип.
+func diagBundleWorkerPathR715(t types.BackendType) (path, contract string) {
+	switch t {
+	case types.BackendTypeLlamaCpp:
+		return "/api/v1/cppworker/debug/bundle", "GET /api/v1/cppworker/debug/bundle (R476)"
+	case types.BackendTypeImage:
+		return "/api/v1/sdworker/debug/bundle", "GET /api/v1/sdworker/debug/bundle (R715)"
+	default:
+		return "", "нет: балансер/доки знают архивы только у llama_cpp и image_cpp"
+	}
+}
+
+// diagBundleWorkerErrorTextR715 — причина, по которой архив воркера не получен.
+//
+// Текст начинается с исходной ошибки (как было до R715), дальше — поля, по
+// которым видно, что именно случилось: HTTP-код, таймаут, отказ соединения, и
+// что с этим делать. «Пусто вместо архива» — не диагноз.
+func diagBundleWorkerErrorTextR715(err error, bundleURL, backendType, workerPath string) string {
+	var b strings.Builder
+	b.WriteString(err.Error())
+	b.WriteString("\n")
+	b.WriteString("# диагностический архив воркера НЕ получен (R715)\n")
+	b.WriteString("url=" + bundleURL + "\n")
+	b.WriteString("backend_type=" + backendType + "\n")
+	b.WriteString("contract=" + workerPath + "\n")
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		b.WriteString("reason=timeout\n")
+		b.WriteString(fmt.Sprintf("timeout_sec=%d\n", int(diagBundleWorkerTimeoutR715/time.Second)))
+		b.WriteString("hint=за " + fmt.Sprint(int(diagBundleWorkerTimeoutR715/time.Second)) +
+			"с архив не отдан: адрес недостижим (блэкхол/сеть) или воркер завис посреди сбора; " +
+			"проверьте /health воркера и что он не занят загрузкой модели\n")
+	case strings.HasPrefix(err.Error(), "backend "):
+		// Диагностический GET вернул не-200: код уже в тексте ошибки.
+		b.WriteString("reason=http_status\n")
+		if strings.Contains(err.Error(), " 404") {
+			b.WriteString("hint=эндпоинта нет в образе воркера: он старше R715 — соберите образ с новым debug_bundle.go\n")
+		} else if strings.Contains(err.Error(), " 401") || strings.Contains(err.Error(), " 403") {
+			b.WriteString("hint=воркер отклонил токен: сверьте CPPWORKER_API_TOKEN балансера и API_TOKEN воркера\n")
+		} else {
+			b.WriteString("hint=воркер ответил ошибкой; текст ответа — в первой строке\n")
+		}
+	default:
+		b.WriteString("reason=connection\n")
+		b.WriteString("hint=воркер недоступен по сети/порту: проверьте host/port бэкенда и что контейнер поднят\n")
+	}
+	return b.String()
+}
+
 // diagBundleHTTPGetR476 — GET с коротким таймаутом и токеном воркера.
 //
 // Зачем свой клиент: диагностика не должна ни висеть минутами, ни тянуть
 // соединения из общего пула с рабочими таймаутами.
 func diagBundleHTTPGetR476(url, token string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), diagBundlePerBackendTimeoutR476)
+	return diagBundleHTTPGetTimeoutR715(url, token, diagBundlePerBackendTimeoutR476)
+}
+
+// diagBundleHTTPGetTimeoutR715 — тот же GET с явным таймаутом (R715).
+//
+// Таймаут разбора архива воркера (5 с) короче общего (20 с), поэтому длина
+// вынесена в параметр. Ошибка таймаута помечается errors.Is(context.
+// DeadlineExceeded) — по этой метке в архив пишется reason=timeout, а не
+// невнятное «context deadline exceeded».
+func diagBundleHTTPGetTimeoutR715(url, token string, timeout time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -172,9 +322,12 @@ func diagBundleHTTPGetR476(url, token string) ([]byte, error) {
 	if strings.TrimSpace(token) != "" {
 		req.Header.Set("X-API-Token", token)
 	}
-	client := &http.Client{Timeout: diagBundlePerBackendTimeoutR476}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("timeout: %s не ответил за %s: %w", url, timeout, err)
+		}
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -234,37 +387,202 @@ func diagFieldValueR476(v interface{}) string { return logger.FieldValueText(v) 
 // diagBundleBalancerLogsSinceR476 — только записи позже cutoff (нулевое время =
 // без фильтра).
 func diagBundleBalancerLogsSinceR476(cutoff time.Time) string {
+	return diagBundleBalancerLogsSnapshotR715(cutoff).Text
+}
+
+// diagLogsSnapshotR715 — снимок логов балансера для архива: текст, записи
+// массивом и метаданные окна (R715, D3 часть 3).
+type diagLogsSnapshotR715 struct {
+	Text    string
+	Entries []logger.LogEntry
+	// JSON — готовый массив записей (тот же срез, что Entries, но с пределом по
+	// байтам; собирается в diagBundleBalancerLogsSnapshotR715).
+	JSON string
+	Meta map[string]interface{}
+}
+
+// JSONText — записи массивом. Массив, а не объект: так формат остаётся прежним
+// (экспорт /api/v1/logs/export?format=json отдаёт массив), новые поля
+// (repeated/first_time/last_time) добавляются ВНУТРЬ элементов.
+func (s diagLogsSnapshotR715) JSONText() string {
+	if s.JSON != "" {
+		return s.JSON
+	}
+	raw, err := json.MarshalIndent(s.Entries, "", "  ")
+	if err != nil {
+		return "# JSON логов не собран: " + err.Error() + "\n"
+	}
+	return string(raw) + "\n"
+}
+
+// diagBundleBalancerLogsSnapshotR715 — снимок буфера логов с фильтром since,
+// пределами и метаданными окна.
+//
+// ПОЧЕМУ МЕТАДАННЫЕ. Дефект D3 начинался с «архив покрывает 13 минут, и мы не
+// знали об этом до разбора». Теперь logs-meta.json сразу отвечает на вопросы:
+// сколько строк пришло, сколько схлопнуто повторами, какое время буфер покрывает
+// (window_seconds/first_time/last_time) и усечён ли он пределами архива.
+func diagBundleBalancerLogsSnapshotR715(cutoff time.Time) diagLogsSnapshotR715 {
+	snap := diagLogsSnapshotR715{Meta: map[string]interface{}{
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"since":        diagSinceTextR715(cutoff),
+	}}
 	broker := logger.GetBroker()
 	if broker == nil {
-		return "# кольцевой буфер логов не включён (LB_LOG_BUFFER_ENTRIES=0)\n"
+		snap.Text = "# кольцевой буфер логов не включён (LB_LOG_BUFFER_ENTRIES=0)\n"
+		snap.Entries = []logger.LogEntry{}
+		snap.Meta["note"] = "кольцевой буфер не включён (LB_LOG_BUFFER_ENTRIES=0)"
+		return snap
 	}
-	entries := broker.Snapshot()
-	var b strings.Builder
-	for _, e := range entries {
-		if !cutoff.IsZero() && e.Time.Before(cutoff) {
+
+	stats := broker.Stats()
+	all := broker.Snapshot()
+	filtered := make([]logger.LogEntry, 0, len(all))
+	for _, e := range all {
+		if !cutoff.IsZero() && e.LastOccurrence().Before(cutoff) {
 			continue
 		}
-		src := e.Source
-		if src == "" {
-			src = "balancer"
+		filtered = append(filtered, e)
+	}
+
+	// Пределы: не больше maxEntries записей и не больше maxBytes текста. Режем
+	// с ГОЛОВЫ (старое): при разборе свежее важнее, а усечение называется явно.
+	truncated := false
+	if len(filtered) > diagBundleLogsMaxEntriesR715 {
+		truncated = true
+		filtered = filtered[len(filtered)-diagBundleLogsMaxEntriesR715:]
+	}
+
+	// Текст собираем построчно и останавливаемся на пределе байтов: иначе один
+	// «болтливый» интервал раздувает скачиваемый архив.
+	var b strings.Builder
+	linesRendered := 0
+	for _, e := range filtered {
+		line := diagBundleLogLineR715(e)
+		if b.Len()+len(line) > diagBundleLogsMaxBytesR715 {
+			truncated = true
+			break
 		}
-		b.WriteString(fmt.Sprintf("%s %-5s %-9s %s",
-			e.Time.Format("2006-01-02T15:04:05.000Z07:00"),
-			strings.ToUpper(e.Level), src, e.Message))
-		// R493 (2026-11-12, по архиву стенда): в файл попадали ТОЛЬКО сообщения,
-		// структурированные поля терялись. Оператор видел «request trace» без
-		// request_id/path/status/duration, «свободный узел пропущен» — без
-		// backend/model/need_mb/free_mb, то есть архив, сделанный ради разбора,
-		// не позволял разобрать ничего. Поля есть в LogEntry.Fields — печатаем их
-		// общим форматтером (logger.FieldsText: стабильный порядок ключей, тот же
-		// вид, что в архиве воркера).
-		b.WriteString(logger.FieldsText(e.Fields))
-		b.WriteString("\n")
+		b.WriteString(line)
+		linesRendered++
 	}
-	if b.Len() == 0 {
-		return "# буфер пуст\n"
+	if linesRendered == 0 {
+		if len(filtered) > 0 {
+			// Первая же строка больше предела — отдаём её усечённой, иначе файл
+			// будет пустым и «пусто» прочитается как «логов нет».
+			line := diagBundleLogLineR715(filtered[0])
+			if len(line) > diagBundleLogsMaxBytesR715 {
+				line = line[:diagBundleLogsMaxBytesR715]
+			}
+			b.WriteString(line)
+			linesRendered = 1
+		} else {
+			b.WriteString("# буфер пуст\n")
+		}
 	}
+	if truncated {
+		fmt.Fprintf(&b, "\n# ОБРЕЗАНО (R715): показаны последние %d записей из %d "+
+			"(пределы архива: %d записей / %d байт). Полный буфер — GET /api/v1/logs/export\n",
+			linesRendered, len(all), diagBundleLogsMaxEntriesR715, diagBundleLogsMaxBytesR715)
+	}
+	snap.Text = b.String()
+
+	// JSON: те же записи, но с собственным пределом байт. Массив придётся
+	// урезать итеративно — размер элемента заранее неизвестен.
+	jsonEntries := filtered[:0:0]
+	jsonEntries = append(jsonEntries, filtered...)
+	jsonText := ""
+	for attempt := 0; ; attempt++ {
+		raw, err := json.Marshal(jsonEntries)
+		if err != nil {
+			jsonText = "# JSON логов не собран: " + err.Error() + "\n"
+			snap.Meta["json_error"] = err.Error()
+			break
+		}
+		if len(raw) <= diagBundleLogsMaxBytesR715 || len(jsonEntries) <= 1 || attempt >= 8 {
+			rawIndented, indErr := json.MarshalIndent(jsonEntries, "", "  ")
+			if indErr != nil {
+				jsonText = string(raw) + "\n"
+			} else {
+				jsonText = string(rawIndented) + "\n"
+			}
+			if len(raw) > diagBundleLogsMaxBytesR715 {
+				truncated = true
+				snap.Meta["json_truncated"] = true
+			}
+			break
+		}
+		cut := len(jsonEntries) / 4
+		if cut < 1 {
+			cut = 1
+		}
+		jsonEntries = jsonEntries[cut:]
+		truncated = true
+		snap.Meta["json_truncated"] = true
+	}
+	snap.Entries = jsonEntries
+	if jsonText != "" && len(jsonText) > diagBundleLogsMaxBytesR715 {
+		jsonText = jsonText[:diagBundleLogsMaxBytesR715]
+	}
+	snap.JSON = jsonText
+
+	snap.Meta["entries_in_buffer"] = len(all)
+	snap.Meta["entries_in_window"] = len(filtered)
+	snap.Meta["entries_written"] = linesRendered
+	snap.Meta["aggregating"] = stats.Aggregating
+	snap.Meta["buffer_capacity"] = stats.Capacity
+	snap.Meta["published_total"] = stats.PublishedTotal
+	snap.Meta["collapsed_total"] = stats.CollapsedTotal
+	snap.Meta["approx_bytes"] = stats.ApproxBytes
+	snap.Meta["truncated"] = truncated
+	if !stats.FirstTime.IsZero() {
+		snap.Meta["first_time"] = stats.FirstTime.UTC().Format(time.RFC3339Nano)
+		snap.Meta["last_time"] = stats.LastTime.UTC().Format(time.RFC3339Nano)
+		snap.Meta["window_seconds"] = int64(stats.LastTime.Sub(stats.FirstTime).Seconds())
+	}
+	return snap
+}
+
+// diagBundleLogLineR715 — одна строка текстового дампа.
+//
+// Формат прежний (время, уровень, источник, сообщение, поля), поэтому парсеры и
+// глаза оператора не меняются. Для схлопнутой записи в КОНЕЦ строки добавлен
+// счётчик повторов и границы времени — новые поля, прежние не тронуты.
+func diagBundleLogLineR715(e logger.LogEntry) string {
+	src := e.Source
+	if src == "" {
+		src = "balancer"
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("%s %-5s %-9s %s",
+		e.Time.Format("2006-01-02T15:04:05.000Z07:00"),
+		strings.ToUpper(e.Level), src, e.Message))
+	// R493 (2026-11-12, по архиву стенда): в файл попадали ТОЛЬКО сообщения,
+	// структурированные поля терялись. Оператор видел «request trace» без
+	// request_id/path/status/duration, «свободный узел пропущен» — без
+	// backend/model/need_mb/free_mb, то есть архив, сделанный ради разбора,
+	// не позволял разобрать ничего. Поля есть в LogEntry.Fields — печатаем их
+	// общим форматтером (logger.FieldsText: стабильный порядок ключей, тот же
+	// вид, что в архиве воркера).
+	b.WriteString(logger.FieldsText(e.Fields))
+	// R715: повторяющееся событие — одна строка вместо N. repeated/first/last
+	// названы так же, как поля JSON, чтобы разбор текста и JSON совпадал.
+	if e.Repeated > 1 {
+		fmt.Fprintf(&b, " repeated=%d first=%s last=%s",
+			e.Repeated,
+			e.FirstOccurrence().UTC().Format("2006-01-02T15:04:05.000Z"),
+			e.LastOccurrence().UTC().Format("2006-01-02T15:04:05.000Z"))
+	}
+	b.WriteString("\n")
 	return b.String()
+}
+
+// diagSinceTextR715 — как записан параметр since в метаданных.
+func diagSinceTextR715(cutoff time.Time) string {
+	if cutoff.IsZero() {
+		return "нет (весь буфер)"
+	}
+	return cutoff.UTC().Format(time.RFC3339)
 }
 
 // diagBundleSinceCutoffR476 — разобрать `since`: длительность ("30m", "2h") или
@@ -312,18 +630,34 @@ func (s *Server) diagBundleAddTextR476(zw *zip.Writer, name, text string) {
 }
 
 // diagBundleReadmeR476 — как читать архив.
-const diagBundleReadmeR476 = `Диагностический архив OllamaLegion (R476).
+const diagBundleReadmeR476 = `Диагностический архив OllamaLegion (R476, дополнен R715).
 
 Состав:
-  summary.json        — версии всех компонентов, флаги, конфигурация окна,
-                        профили моделей, снимок кластера (бэкенды, модели, очередь)
+  summary.json        — версии ВСЕХ сервисов (секция services: balancer, webui,
+                        cppworker[], imageworker[], agent[]), флаги, конфигурация
+                        окна, профили моделей, снимок кластера (бэкенды, модели,
+                        очередь)
   balancer-logs.txt   — кольцевой буфер логов балансера: время, уровень,
-                        источник, сообщение и структурированные поля (key=value)
+                        источник, сообщение и структурированные поля (key=value).
+                        Повторяющееся событие — ОДНА строка с repeated=N
+                        и границами first=/last=
+  balancer-logs.json  — тот же буфер массивом записей (time/level/message/source/
+                        fields + repeated/first_time/last_time)
+  logs-meta.json      — метаданные окна логов: сколько строк пришло, сколько
+                        схлопнуто, какое время буфер покрывает (window_seconds),
+                        усечён ли файл пределами архива
+  failures.json       — последние сбои по стадиям (какой компонент отказал)
+  identity.json       — запечённая идентичность образа балансера
   flags.txt           — флаги по белому списку (set / unset)
-  backends/<id>.bundle.zip — архив воркера: его логи, промпт, тело запроса,
-                        срывы разбора вызовов, env-флаги (см. README в нём)
+  backends/<id>.bundle.zip — архив воркера: его логи, модели и их состояние,
+                        версия/identity, состояние загрузок, конфиг (см. README
+                        внутри). Есть у llama_cpp (cppworker) и у image_cpp
+                        (imageworker); во втором случае ZIP собран
+                        /api/v1/sdworker/debug/bundle
   backends/<id>.info.json  — /api/info воркера
-  backends/<id>.error.txt  — воркер не ответил (текст ошибки)
+  backends/<id>.error.txt  — архив воркера НЕ получен: причина (http_status/
+                        timeout/connection) и подсказка
+  backends/<id>.note.txt   — только для типа без архива по контракту
 
 Как связать ход клиента с логами:
   1) в balancer-logs.txt найдите строку "request trace" нужного времени;
@@ -332,6 +666,18 @@ const diagBundleReadmeR476 = `Диагностический архив OllamaLe
      "/api/chat stream response summary" — там streamed_content_bytes,
      emitted_len, final_content_len, tool_calls, done_reason, generated_tokens,
      budget_exhausted и dumped_args_instead_of_call.
+
+Почему в логах «одна строка вместо тысячи»: одинаковые события схлопываются
+(R715) — иначе 1565 одинаковых WARN вытесняли из буфера всё остальное, и архив
+покрывал 13 минут вместо часов. Числа в тексте сообщения при схлопывании
+сравниваются без цифр, а идентичность (request_id/backend/model/path) — точно:
+разные запросы не склеиваются.
+
+Как читать схлопнутую запись: время в начале строки — ПЕРВОЕ появление события,
+дальше repeated=N (сколько раз повторилось) и first=/last= (границы). Такая
+запись стоит на месте первого появления, а её last может быть позже следующих
+строк. При «?since=» запись остаётся, если в окно попало хотя бы последнее
+появление.
 
 Чего в архиве НЕТ: токенов и паролей.
 `

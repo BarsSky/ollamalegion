@@ -1,6 +1,7 @@
 package types
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -65,6 +66,23 @@ var diTFamilies = map[string]bool{
 // master-600). Пиновать обязательно; расхождение — повод для contract-теста,
 // а не для «тихой» деградации.
 const PinnedSDServerRevision = "master-929-3f8527a"
+
+// ErrMissingRequiredRole — в наборе нет обязательной роли (diffusion, а для
+// DiT-семейства ещё и отдельного VAE).
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ОШИБКА (R696). Раньше ValidateImageModelProfile возвращала
+// плоскую строку, и воркер не мог отличить «синтаксически сломанный профиль» от
+// «набор неполный». Живой дефект: оператор скачал с HF одиночный файл
+// `Qwen-Image-2.1-Turbo-Uncensored-AD-Q4_K.gguf` (это text encoder Qwen3-VL);
+// синтез честно определил семейство qwen_image, валидатор ответил «family
+// "qwen_image" requires a separate "vae" file» — и каталог выпадал из реестра как
+// invalid profile. Оператор не видел ни модели, ни причины. Теперь неполнота —
+// состояние: воркер регистрирует набор и объясняет, каких ролей не хватает
+// (вердикт совместимости, sdbackend/compat.go).
+var ErrMissingRequiredRole = errors.New("missing required role")
+
+// IsMissingRequiredRole — набор неполный (см. ErrMissingRequiredRole).
+func IsMissingRequiredRole(err error) bool { return errors.Is(err, ErrMissingRequiredRole) }
 
 // ImageModelFile — один файл модели на HuggingFace.
 type ImageModelFile struct {
@@ -268,11 +286,12 @@ func ValidateImageModelProfile(p *ImageModelProfile) error {
 		roles[f.Role] = true
 	}
 	if !roles[ImageFileRoleDiffusion] {
-		return fmt.Errorf("bundle must contain a %q file", ImageFileRoleDiffusion)
+		return fmt.Errorf("%w: bundle must contain a %q file", ErrMissingRequiredRole, ImageFileRoleDiffusion)
 	}
 	// Для DiT-семейств VAE отдельным файлом обязателен.
 	if IsDiTFamily(p.Family) && !roles[ImageFileRoleVae] {
-		return fmt.Errorf("family %q requires a separate %q file", p.Family, ImageFileRoleVae)
+		return fmt.Errorf("%w: family %q requires a separate %q file",
+			ErrMissingRequiredRole, p.Family, ImageFileRoleVae)
 	}
 
 	d := p.Defaults
@@ -339,6 +358,12 @@ func isValidImageFileRole(role string) bool {
 	}
 	return false
 }
+
+// IsValidImageFileRole — экспорт isValidImageFileRole: HTTP-слой воркера
+// валидирует роль файла в пред-проверке набора ДО скачивания (R696), и правило
+// ролей должно жить в одном месте (контракт pkg/types), а не дублироваться в
+// хендлере.
+func IsValidImageFileRole(role string) bool { return isValidImageFileRole(role) }
 
 // BundleDir — каталог, куда складываются файлы этого bundle'а.
 // Схема: <modelsDir>/<name>/ — один каталог на модель (атомарная регистрация:

@@ -96,6 +96,11 @@ func (a *App) setupRouter() http.Handler {
 	// (см. internal/cppbackend/hf_probe.go и docs/features/image-generation.ru.md §8.2).
 	mux.HandleFunc("/api/hf/probe", a.handleHFProbe)
 	mux.HandleFunc("/api/hf/plan", a.handleHFPlan)
+	// R696: пред-проверка ВЫБРАННОГО набора ДО скачивания — тот же вердикт
+	// «imageworker сможет загрузить: да/нет, потому что …», что потом показывает
+	// вкладка «Модели» (POST {name, family, files:[...]}). Читаются только
+	// заголовки выбранных файлов (Range-запрос), веса не скачиваются.
+	mux.HandleFunc("/api/hf/verify", a.handleHFVerify)
 	mux.HandleFunc("/api/hf/download", a.handleHFDownload)
 	mux.HandleFunc("/api/hf/bundle", a.handleHFBundle)
 	// Алиасы: UI пробует их, если канонический путь недоступен

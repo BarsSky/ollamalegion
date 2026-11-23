@@ -8,6 +8,8 @@
 //	GET  /api/hf/files?modelId=&revision=  — файлы репозитория (весовые форматы)
 //	GET  /api/hf/probe?modelId=&filename=&revision= — пред-проверка заголовка
 //	     (как движок увидит файл: family/versionLabel/dit) БЕЗ скачивания
+//	POST /api/hf/verify                    — R696: вердикт по ВЫБРАННОМУ набору
+//	     файлов до скачивания (роли по заголовкам, режим движка, чего не хватает)
 //	POST /api/hf/download                  — одиночный файл → 202
 //	POST /api/hf/bundle                    — bundle целиком → 202 (асинхронно)
 //	GET  /api/hf/progress?modelId=&filename=[&bundleId=]
@@ -27,11 +29,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/internal/sdbackend"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // ============================================================
@@ -286,6 +290,138 @@ func (a *App) handleHFPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, plan)
+}
+
+// ============================================================
+// POST /api/hf/verify
+// ============================================================
+
+// hfVerifyRequest — выбранный в UI набор файлов для пред-проверки ДО скачивания.
+//
+// ПОЧЕМУ ФАЙЛЫ, А НЕ РЕПОЗИТОРИЙ: оператор отмечает галочками 1–5 файлов, и
+// вопрос «сможет ли imageworker это загрузить» зависит от НАБОРА (diffusion + VAE
+// + text encoder), а не от репозитория. Ровно этот вердикт потом покажет вкладка
+// «Модели» — правило одно (sdbackend.VerifyBundleProbes).
+type hfVerifyRequest struct {
+	Name   string       `json:"name"`
+	Family string       `json:"family"`
+	Files  []hfFileSpec `json:"files"`
+	File   *hfFileSpec  `json:"file,omitempty"`
+	// ModelID — репозиторий по умолчанию для файлов, у которых repo не задан.
+	ModelID string `json:"modelId,omitempty"`
+	// Probe=false — не читать заголовки (быстрый ответ по ролям и именам).
+	Probe *bool `json:"probe,omitempty"`
+}
+
+// hfVerifyMaxProbes — сколько заголовков читаем за один вызов. Каждый — Range на
+// 512 КБ; 8 файлов хватает любому реальному набору (diffusion+VAE+TE+опции), а
+// ответ остаётся быстрым.
+const hfVerifyMaxProbes = 8
+
+// handleHFVerify — вердикт по ВЫБРАННОМУ набору до скачивания.
+//
+// Живой дефект (локальный стенд, 2026-11-23): оператор скачал один файл
+// `Qwen-Image-2.1-Turbo-Uncensored-AD-Q4_K.gguf` — это текстовый энкодер Qwen3-VL.
+// Паспорт репозитория показывал «набор собран», потому что роль бралась из имени
+// файла; воркер поднимал движок как all-in-one и получал «get sd version from file
+// failed». Теперь тот же вердикт, что и у загруженной модели, доступен ДО
+// скачивания гигабайтов: роли по заголовкам, режим движка, чего не хватает.
+func (a *App) handleHFVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST")
+		return
+	}
+	hf, ok := a.hfManager(w)
+	if !ok {
+		return
+	}
+	var req hfVerifyRequest
+	if err := decodeHFJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	files := req.Files
+	if len(files) == 0 && req.File != nil {
+		files = []hfFileSpec{*req.File}
+	}
+	if len(files) == 0 {
+		writeError(w, http.StatusBadRequest, "files is required: [{role, repo, filename}]")
+		return
+	}
+	family := strings.TrimSpace(req.Family)
+	if family == "" {
+		family = "other"
+	}
+	if !types.IsValidImageFamily(family) {
+		writeError(w, http.StatusBadRequest, "unknown family "+family)
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = "selection"
+	}
+	profile := &types.ImageModelProfile{Name: name, Family: family}
+	for i, f := range files {
+		filename := strings.TrimSpace(f.Filename)
+		if filename == "" {
+			writeError(w, http.StatusBadRequest, "files["+strconv.Itoa(i)+"].filename is required")
+			return
+		}
+		role := strings.TrimSpace(f.Role)
+		if role == "" {
+			role = sdbackend.SuggestRole(filename)
+		}
+		if !types.IsValidImageFileRole(role) {
+			writeError(w, http.StatusBadRequest, "files["+strconv.Itoa(i)+"]: unknown role "+role)
+			return
+		}
+		profile.Files = append(profile.Files, types.ImageModelFile{
+			Role: role, Repo: strings.TrimSpace(f.Repo), Filename: filename,
+			Revision: strings.TrimSpace(f.Revision),
+		})
+	}
+
+	doProbe := req.Probe == nil || *req.Probe
+	probes := map[string]*cppbackend.HFProbeResult{}
+	probeErrors := map[string]string{}
+	probed := 0
+	if doProbe {
+		hf.SetToken(requestHFToken(r))
+		ctx, cancel := hfContext(r, 60*time.Second)
+		defer cancel()
+		for _, f := range profile.Files {
+			if !sdbackend.IsImageWeightFile(f.Filename) {
+				continue
+			}
+			if probed >= hfVerifyMaxProbes {
+				probeErrors[f.Filename] = "заголовок не читался: выбрано больше " +
+					strconv.Itoa(hfVerifyMaxProbes) + " файлов"
+				continue
+			}
+			repo := f.Repo
+			if repo == "" {
+				repo = strings.TrimSpace(req.ModelID)
+			}
+			if repo == "" {
+				probeErrors[f.Filename] = "не указан репозиторий (repo/modelId)"
+				continue
+			}
+			res, err := hf.ProbeFile(ctx, repo, f.Filename, f.Revision)
+			if err != nil {
+				probeErrors[f.Filename] = err.Error()
+				continue
+			}
+			probes[f.Filename] = res
+			probed++
+		}
+	}
+	compat := sdbackend.VerifyBundleProbes(profile, probes, probeErrors)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"compat": compat,
+		"probed": probed,
+		"files":  len(profile.Files),
+		"family": family,
+	})
 }
 
 // ============================================================

@@ -201,6 +201,10 @@ type loadRequest struct {
 	TimeoutSec int `json:"timeoutSec,omitempty"`
 	// Wait=true — блокирующий вызов (диагностика/скрипты); по умолчанию 202.
 	Wait bool `json:"wait,omitempty"`
+	// Force=true — загрузить, несмотря на вердикт совместимости «не сможет»
+	// (R696). Аварийный клапан: правило обязательных ролей — наше знание о
+	// движке, а не его приговор, поэтому оператор вправе попробовать сам.
+	Force bool `json:"force,omitempty"`
 }
 
 // handleLoadModel — POST /api/image/models/load.
@@ -252,6 +256,32 @@ func (a *App) handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": "loading is already in progress", "model": a.progress.snapshot().Model,
 			"progress": a.progress.snapshot(),
+		})
+		return
+	}
+
+	// R696: вердикт «сможет ли движок поднять этот набор» — ДО запуска.
+	//
+	// ЖИВОЙ ДЕФЕКТ (локальный стенд, 2026-11-23): оператор скачал с HF один файл,
+	// который оказался текстовым энкодером Qwen3-VL; воркер синтезировал профиль
+	// по имени (роль diffusion, family=other), поднял sd-server как all-in-one, и
+	// через полторы минуты в панель пришло только «модель не загрузилась». Причина
+	// («get sd version from file failed», в наборе нет diffusion) лежала в логе
+	// движка. Теперь она возвращается сразу и с конкретикой, а движок не
+	// запускается: unsupported — это отказ по СОДЕРЖИМОМУ файлов, а не догадка.
+	//
+	// incomplete (не хватает VAE/TE) НЕ блокируем: набор может подняться с
+	// дополнительными флагами, и запрещать его — значит спорить с движком. Такие
+	// наборы видны в /api/image/models (compat.verdict=incomplete) и в WebUI.
+	if compat := a.svc.Registry.Compat(name); compat != nil &&
+		compat.Verdict == sdbackend.CompatUnsupported && len(compat.Files) > 0 && !req.Force {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":  sdbackend.LoadBlockedMessage(compat),
+			"code":   "bundle_unsupported",
+			"hint":   sdbackend.LoadBlockedHint(),
+			"model":  name,
+			"compat": compat,
+			"force":  "повторите запрос с force=true, если уверены в профиле модели",
 		})
 		return
 	}

@@ -338,25 +338,31 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 // ПРАВИЛО: причина называется числами того же лимита, что и в
 // checkResourceLimitsLocked (одни и те же функции сравнения — diskLowR696 /
 // ramCriticalR696), и НИЧЕГО не обходится: узел по-прежнему не выбирается.
-func (p *Proxy) hardResourceBlockByIDR696(backendID string) (code, detail string) {
+//
+// R700 (2026-11-24): кроме кода и строки отдаём ЧИСЛА структурой
+// (gateNumbersR700). Из них собирается уведомление оператору («свободно 9480 МБ,
+// минимум 10240 МБ»); вытаскивать их обратно из текста нельзя — формат строки
+// уже менялся, а числа нужны и странице (JSON), и колокольчику.
+func (p *Proxy) hardResourceBlockByIDR696(backendID string) (code, detail string, nums *gateNumbersR700) {
 	if p == nil || p.metricsMgr == nil || backendID == "" {
-		return "", ""
+		return "", "", nil
 	}
 	metrics, ok := p.metricsMgr.SnapshotBackendMetrics(backendID)
 	if !ok || metrics == nil {
-		return "", ""
+		return "", "", nil
 	}
 	limits := p.config.Resources
 	if freeMB, minMB, low := diskLowR696(metrics, limits.Disk.MinFreeMB); low {
 		return rejectDiskLowR460, fmt.Sprintf(
 			"мало места на диске: свободно %d МБ < minFreeMB %d МБ (порог resources.disk.minFreeMB)",
-			freeMB, minMB)
+			freeMB, minMB), &gateNumbersR700{FreeMB: freeMB, MinFreeMB: minMB}
 	}
 	if percent, threshold, critical := ramCriticalR696(metrics, limits.Memory.MaxUsagePercent); critical {
 		return rejectRAMCriticalR460, fmt.Sprintf(
-			"RAM занята %.0f%% > порога %.0f%%", percent, threshold)
+			"RAM занята %.0f%% > порога %.0f%%", percent, threshold),
+			&gateNumbersR700{Percent: percent, Threshold: threshold}
 	}
-	return "", ""
+	return "", "", nil
 }
 
 // diskLowR696 — мало ли места на диске узла (одна арифметика на все потребители).

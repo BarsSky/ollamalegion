@@ -943,11 +943,22 @@ func writeAdmissionUnavailable(
 		mv = &backendRejectionMoveR480{Need: opts[0].Need, NeedSource: opts[0].NeedSource}
 	}
 	if proxy != nil {
-		if rejections := proxy.backendRejectionsR460(model, "", mv); len(rejections) > 0 {
+		rejections := proxy.backendRejectionsR460(model, "", mv)
+		if len(rejections) > 0 {
 			payload["backend_rejections"] = rejections
 			payload["backend_rejections_hint"] = "each entry explains why that backend could not take the request " +
 				"(disabled_by_operator / donor_or_group_worker / model_not_loaded / model_loading / all_slots_busy / " +
 				"resource_limit / disk_low / ram_critical / window_too_small / vram_insufficient)"
+		}
+		// R700 (2026-11-24): те же причины, но готовой фразой с числами и
+		// действием — чтобы клиент/оператор не собирал её из машинных кодов.
+		// Список публикуется в EventBus (дедуп: одно уведомление на эпизод) и
+		// одновременно попадает в тело — страница и колокольчик говорят одно.
+		if notices := proxy.noteGateRejectionsR700(model, rejections); len(notices) > 0 {
+			payload["gate_notices"] = notices
+			payload["why_queued_human"] = gateNoticesSummaryR700(notices)
+			payload["gate_notices_hint"] = "причина ожидания с числами: disk / ram / vram / window / slots; " +
+				"порог диска меняется в «Настройках → Лимиты ресурсов» (resources.disk.minFreeMB)"
 		}
 	}
 	if mv != nil {

@@ -123,6 +123,11 @@
 
     function queuePage(queue, queueTasks, queueHistory) {
         const v = queueView(queue);
+        // R700 (2026-11-24): причины, по которым очередь не рассасывается.
+        // Считаются ОДИН раз на отрисовку: строки причин участвуют и в карточке
+        // (гейт → узел → числа), и в строке ожидающего (та же причина рядом с
+        // его позицией), и две копии легко разошлись бы.
+        const gates = gateNoticesOf(queue);
 
         Utils.setText('queueCurrentSize', v.waiting);
         Utils.setText('queueProcessed', v.processed);
@@ -159,13 +164,76 @@
         const badgeEl = document.getElementById('queueTasksCount');
         if (badgeEl) badgeEl.textContent = v.mode === 'admission' ? v.detail.length : v.waiting;
 
+        renderQueueGates(gates);
+
         Utils.setHTML('queueTasksBody', v.mode === 'admission'
-            ? queueAdmissionRows(v)
-            : queueTasksBody(queueTasks));
+            ? queueAdmissionRows(v, gates)
+            : queueTasksBody(queueTasks, gates));
         // Заголовок «Модель» в admission-режиме не подходит: ожидающий запрос
         // идентифицируется сессией клиента (модель в очередь не передаётся).
         setLabel('queueColModel', v.mode === 'admission' ? 'queue.col_client' : 'sessions.model');
         Utils.setHTML('queueHistoryBody', queueHistoryBody(queueHistory));
+    }
+
+    // ---- R700: причины ожидания (гейты) ------------------------------------
+
+    // gateNoticesOf — снимок причин из /api/v1/queue/stats (поле gates.notices).
+    // Пустой массив, а не undefined: отрисовка ниже не должна проверять форму
+    // ответа на каждом шаге (старый балансер поля не отдаёт). Записи без кода
+    // гейта отбрасываем: нарисовать из них нечего, а «undefined» в таблице
+    // выглядел бы как ещё одна причина.
+    function gateNoticesOf(queue) {
+        const gates = queue && queue.gates;
+        const notices = (gates && Array.isArray(gates.notices)) ? gates.notices : [];
+        return notices.filter(function(n) { return n && typeof n === 'object' && n.gate; });
+    }
+
+    // gateLabel — человеческое имя гейта. Ключи отдельные, потому что «disk» в
+    // таблице читается только тем, кто знает внутренние коды.
+    function gateLabel(gate) {
+        const map = {
+            disk: 'queue.gate.disk',
+            ram: 'queue.gate.ram',
+            vram: 'queue.gate.vram',
+            window: 'queue.gate.window',
+            slots: 'queue.gate.slots'
+        };
+        return map[gate] ? _t(map[gate]) : String(gate || '—');
+    }
+
+    // gateReasonForBackend — причина, относящаяся к конкретному узлу. Нужна,
+    // чтобы строка ожидающего рядом с позицией называла ПРИЧИНУ, а не только
+    // «Ждёт слот»: оператор не должен сопоставлять две таблицы вручную.
+    function gateReasonForBackend(gates, backendID) {
+        if (!gates || !gates.length || !backendID) return null;
+        for (let i = 0; i < gates.length; i++) {
+            if (gates[i] && gates[i].backend_id === backendID) return gates[i];
+        }
+        return null;
+    }
+
+    // queueGateRows — строки таблицы «гейт → узел → причина с числами».
+    function queueGateRows(gates) {
+        if (!gates.length) return '';
+        return gates.map(function(n) {
+            const count = (n.count > 1) ? ' <span class="queue-gate-count">×' + n.count + '</span>' : '';
+            return '<tr>' +
+                '<td><span class="badge badge-warning">' + escapeHtml(gateLabel(n.gate)) + '</span></td>' +
+                '<td>' + escapeHtml(n.backend_id || '-') + '</td>' +
+                '<td>' + escapeHtml(n.message || '') + count + '</td>' +
+            '</tr>';
+        }).join('');
+    }
+
+    // renderQueueGates — карточка причин. Скрывается, когда причин нет: пустая
+    // таблица читалась бы как «причина есть, но её не показали» (ровно это и
+    // было живой жалобой до R700).
+    function renderQueueGates(gates) {
+        const card = document.getElementById('queueGateCard');
+        if (card) card.hidden = gates.length === 0;
+        const count = document.getElementById('queueGateCount');
+        if (count) count.textContent = String(gates.length);
+        Utils.setHTML('queueGatesBody', queueGateRows(gates));
     }
 
     function setLabel(id, key) {
@@ -207,7 +275,11 @@
     }
 
     // queueAdmissionRows — таблица ожидающих слотов.
-    function queueAdmissionRows(v) {
+    //
+    // R700: рядом со строкой ожидающего показываем ПРИЧИНУ ожидания, если она
+    // относится к его узлу (gates[].backend_id). Раньше строка говорила только
+    // «Ждёт слот» — и оператор шёл искать причину в логах балансера.
+    function queueAdmissionRows(v, gates) {
         if (!v.detail.length) return emptyRow(5, _t('queue.no_tasks'));
         return v.detail.map(function(w, index) {
             const waited = (w.waitedMs / 1000).toFixed(1) + _t('renderers.seconds');
@@ -219,30 +291,42 @@
                 ? '<code>' + escapeHtml(w.session || '-') + '</code>'
                 : '<code title="' + escapeHtml(w.session || '') + '">' +
                     escapeHtml(_t('queue.session_unidentified')) + '</code>';
+            const reason = gateReasonForBackend(gates, w.backend);
+            const status = '<span class="queue-task-status pending">' + escapeHtml(_t('queue.admission_status')) + '</span>' +
+                (reason
+                    ? '<div class="queue-task-reason">' + escapeHtml(gateLabel(reason.gate)) + ': ' +
+                        escapeHtml(reason.message || '') + '</div>'
+                    : '');
             return '<tr>' +
                 '<td>' + pos + '</td>' +
                 '<td>' + sess + protocolBadge(w.protocol) + '</td>' +
                 '<td>' + escapeHtml(w.backend || '-') + '</td>' +
                 '<td>' + waited + '</td>' +
-                '<td><span class="queue-task-status pending">' + escapeHtml(_t('queue.admission_status')) + '</span></td>' +
+                '<td>' + status + '</td>' +
             '</tr>';
         }).join('');
     }
 
-    function queueTasksBody(tasks) {
+    function queueTasksBody(tasks, gates) {
         if (!tasks.length) return emptyRow(5, _t('queue.no_tasks'));
         return tasks.map((task, index) => {
             const status = task.status || 'pending';
             const statusClass = status === 'processing' ? 'processing' : (status === 'completed' ? 'completed' : 'pending');
             const statusText = status === 'processing' ? _t('queue.processing') : (status === 'completed' ? _t('queue.completed') : _t('queue.pending'));
             const waitTime = task.waitTimeMs ? (task.waitTimeMs / 1000).toFixed(1) + _t('renderers.seconds') : '-';
+            // R700: причина ожидания рядом с позицией (тот же узел — та же причина).
+            const reason = gateReasonForBackend(gates, task.backend);
+            const reasonHtml = reason
+                ? '<div class="queue-task-reason">' + escapeHtml(gateLabel(reason.gate)) + ': ' +
+                    escapeHtml(reason.message || '') + '</div>'
+                : '';
             return `
                 <tr>
                     <td>${index + 1}</td>
                     <td><code>${escapeHtml(task.model || '-')}</code></td>
                     <td>${escapeHtml(task.backend || 'Auto')}</td>
                     <td>${waitTime}</td>
-                    <td><span class="queue-task-status ${statusClass}">${statusText}</span></td>
+                    <td><span class="queue-task-status ${statusClass}">${statusText}</span>${reasonHtml}</td>
                 </tr>
             `;
         }).join('');

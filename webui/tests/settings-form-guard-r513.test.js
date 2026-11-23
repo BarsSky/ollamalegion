@@ -116,6 +116,17 @@ function helpersSource(...names) {
     }).join('\n') + '\n';
 }
 
+// R700 (2026-11-24): рядом с порогом диска появилась подсказка «что измеряется
+// и сколько сейчас» (updateDiskGuardBounds/refreshDiskGuardHint в app-settings.js).
+// Здесь она ЗАГЛУШАЕТСЯ: этот набор проверяет guard формы (applyServerConfig не
+// затирает ввод), а подсказка целиком — предмет отдельного набора
+// webui/tests/settings-disk-threshold-r700.test.js, который поднимает настоящий
+// модуль с Api/DOM. Без заглушек runner падал бы на ReferenceError, и падало бы
+// НЕ ТО, что проверяется.
+const R700_DISK_HINT_STUBS =
+    'function updateDiskGuardBounds(){}\n' +
+    'function refreshDiskGuardHint(){}\n';
+
 function runApplyServerConfig(editing) {
     const fn = extractFnIndented(settingsJs, 'applyServerConfig');
     const requested = [];
@@ -146,6 +157,7 @@ function runApplyServerConfig(editing) {
     vm.runInContext(safeFormSrc, sandbox, { filename: 'safe-form.js' });
     const runner = new Function('serverConfig', 'window', 'document', 'console', 'localStorage', 'getCurrentPage',
         helpersSource('writeValue', 'writeChecked', 'updateLlamaCppOverridesPanel') +
+        R700_DISK_HINT_STUBS +
         fn.body + '\nreturn null;');
     let error = null;
     try {
@@ -439,6 +451,7 @@ function buildApplyServerConfigStack(dom) {
     const runner = new Function('serverConfig', 'window', 'document', 'console', 'localStorage', 'getCurrentPage',
         'Utils', 'I18N',
         helpersSource('writeValue', 'writeChecked', 'updateLlamaCppOverridesPanel') +
+        R700_DISK_HINT_STUBS +
         fn.body + '\nreturn null;');
     return {
         window: sandbox.window,

@@ -223,11 +223,15 @@ func (p *Proxy) waitForInferenceBackendR480(
 		rejectionMove = &backendRejectionMoveR480{Need: move.need, NeedSource: move.needSource}
 	}
 	rejections := p.backendRejectionsR460(model, bt, rejectionMove)
+	// R700: та же причина, что в логе, становится уведомлением оператору
+	// (одно на гейт и узел, дедуп — gate_notices.go).
+	gateNotices := p.noteGateRejectionsR700(model, rejections)
 	logger.Get().Infow("R480: очередь с гейтом R459 — почему не взяли бэкенды",
 		"model", model, "session", session, "position", position,
 		"need", needForLogR480(move), "wait_max_sec", int(wait.Seconds()),
 		"rejected_backends", len(rejections),
-		"why_queued", rejectionsSummaryR460(rejections))
+		"why_queued", rejectionsSummaryR460(rejections),
+		"gate_notices", gateNoticesSummaryR700(gateNotices))
 	defer aq.remove(admissionAnyBackend, w)
 
 	for {

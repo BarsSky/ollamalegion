@@ -164,11 +164,16 @@ func (p *Proxy) waitForInferenceBackend(
 	// R460 (2026-11-06): очередь — это действие, и у него должна быть видимая
 	// причина. Список строится теми же предикатами, что и отбор.
 	rejections := p.backendRejectionsR460(model, bt)
+	// R700 (2026-11-24): причина ожидания — УВЕДОМЛЕНИЕ (колокольчик + страницы),
+	// а не только строка лога. Возвращённый снимок дальше отдаётся странице через
+	// /api/v1/queue/stats; здесь он нужен ради публикации в EventBus.
+	gateNotices := p.noteGateRejectionsR700(model, rejections)
 	logger.Get().Infow(i18n.T("balancer.unified_queue_r73.enqueued_any_backend_info"),
 		"model", model, "session", session, "position", position,
 		"wait_max_sec", int(wait.Seconds()),
 		"rejected_backends", len(rejections),
-		"why_queued", rejectionsSummaryR460(rejections))
+		"why_queued", rejectionsSummaryR460(rejections),
+		"gate_notices", gateNoticesSummaryR700(gateNotices))
 	defer aq.remove(admissionAnyBackend, w)
 
 	for {

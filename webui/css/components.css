@@ -507,6 +507,22 @@
 .queue-task-status.processing { background: var(--accent-soft); color: var(--accent); }
 .queue-task-status.completed  { background: var(--success-soft); color: var(--success); }
 
+/* R700 (2026-11-24): причина ожидания рядом с позицией в очереди.
+   Отдельной строкой под статусом, а не в title: оператор должен видеть числа
+   («свободно 9480 МБ < 10240 МБ»), не наводя курсор. */
+.queue-task-reason {
+    margin-top: 4px;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    max-width: 420px;
+    white-space: normal;
+}
+/* Счётчик схлопнутых повторов в карточке причин («×12»). */
+.queue-gate-count {
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+}
+
 /* ===== Toggle ===== */
 .toggle {
     display: inline-flex;

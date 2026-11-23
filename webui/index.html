@@ -655,6 +655,33 @@
                         </div>
                     </div>
                 </div>
+                <!-- R700 (2026-11-24): ПОЧЕМУ очередь не рассасывается.
+                     Причина приходит с сервера с числами (queue/stats → gates):
+                     «свободно 9480 МБ, минимум 10240 МБ», «окно 65536 < 131072»,
+                     «заняты все слоты (1/1)». Те же причины уходят в колокольчик
+                     (source=gate) и в тело 503 (gate_notices), поэтому страница,
+                     уведомление и ответ API говорят одно и то же.
+                     Скрыта, пока причин нет: пустая таблица выглядела бы как
+                     «причина есть, но её не показали». -->
+                <div class="card" id="queueGateCard" hidden>
+                    <div class="card-header">
+                        <h3><i class="fas fa-circle-exclamation section-icon-i"></i> <span data-i18n="queue.gates_title">Почему очередь не рассасывается</span></h3>
+                        <span class="badge badge-info" id="queueGateCount">0</span>
+                    </div>
+                    <p class="form-hint" data-i18n="queue.gates_hint">Причина с числами и узлом. Порог диска меняется в «Настройках → Лимиты ресурсов»; уведомление о той же причине приходит в колокольчик.</p>
+                    <div class="table-responsive">
+                        <table class="data-table" id="queueGatesTable">
+                            <thead>
+                                <tr>
+                                    <th data-i18n="queue.gates_col_gate">Гейт</th>
+                                    <th data-i18n="sessions.backend">Бэкенд</th>
+                                    <th data-i18n="queue.gates_col_reason">Причина (числа)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="queueGatesBody"></tbody>
+                        </table>
+                    </div>
+                </div>
                 <!-- Queue Tasks Table -->
                 <div class="card">
                     <div class="card-header">
@@ -1706,8 +1733,19 @@
                                     </div>
                                 </div>
                                 <div class="form-group">
-                                    <label>Min Free Disk (MB)</label>
-                                    <input type="number" id="minFreeDisk" class="form-control" value="10240" min="0">
+                                    <label for="minFreeDisk" data-i18n="settings.min_free_disk">Min Free Disk (MB)</label>
+                                    <input type="number" id="minFreeDisk" class="form-control" value="10240"
+                                           min="0" max="1048576" step="1" aria-describedby="minFreeDiskHint">
+                                    <!-- R700: рядом с порогом — ЧТО именно измеряется и СКОЛЬКО
+                                         сейчас. Живой архив второго стенда: агент меряет
+                                         `df -m /` в СВОЁМ контейнере, а модели лежат в
+                                         bind-томе /app/models — освобождение тома метрику не
+                                         меняет. Без этой подписи оператор снижал порог вслепую. -->
+                                    <div class="form-hint" id="minFreeDiskHint"></div>
+                                    <div class="form-hint" id="minFreeDiskError" hidden style="color:var(--danger)"></div>
+                                    <div class="form-hint">
+                                        <button type="button" class="btn btn-secondary btn-sm" id="minFreeDiskDefault" data-i18n="settings.min_free_disk.default_btn">Сбросить к 10240 МБ</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>

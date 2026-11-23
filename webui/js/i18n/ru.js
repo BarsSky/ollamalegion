@@ -201,6 +201,18 @@ window.I18N_RU = {
   "queue.session_unidentified": "клиент не различает сессии",
   "queue.max_size": "Максимум",
   "queue.workers": "Воркеры",
+  // R700 (2026-11-24): причины, по которым очередь не рассасывается. Тексты
+  // самих причин приходят с сервера (с числами), здесь — только подписи, чтобы
+  // строка «disk_low» не показывалась оператору машинным кодом.
+  "queue.gates_title": "Почему очередь не рассасывается",
+  "queue.gates_hint": "Причина с числами и узлом. Порог диска меняется в «Настройках → Лимиты ресурсов»; уведомление о той же причине приходит в колокольчик.",
+  "queue.gates_col_gate": "Гейт",
+  "queue.gates_col_reason": "Причина (числа)",
+  "queue.gate.disk": "диск",
+  "queue.gate.ram": "RAM",
+  "queue.gate.vram": "VRAM",
+  "queue.gate.window": "окно",
+  "queue.gate.slots": "слоты",
 
   // Logs
   "logs.title": "Системные логи",
@@ -403,6 +415,18 @@ window.I18N_RU = {
     "settings.selection_single": "unified-multistage — единый многоступенчатый выбор: загруженные → прогревающиеся → свободные → fallback, с учётом окна и нагрузки",
     "settings.selection_hint": "Переключателя нет: алгоритм один. Поле algorithm и переменная LB_ALGORITHM удалены; план будущей реализации порядка выбора — docs/plans/2026-11-17-selection-order-plan.md",    "settings.section.general": "Основные настройки",
   "settings.section.limits": "Лимиты ресурсов",
+  // R700 (2026-11-24): порог диска. Рядом с полем обязательно говорим, ЧТО
+  // измеряется: агент выполняет `df -m /` в СВОЁМ контейнере, поэтому
+  // освобождение bind-тома с моделями (/app/models) эту метрику не меняет —
+  // живая жалоба второго стенда звучала ровно так.
+  "settings.min_free_disk": "Min Free Disk (МБ)",
+  "settings.min_free_disk.measured": "Измеряется `df -m /` — корневая ФС контейнера агента. Модели лежат в bind-томе (/app/models), в эту метрику он не входит: освобождение тома число не изменит.",
+  "settings.min_free_disk.current": "Сейчас на узлах — {backends} (порог {threshold} МБ).",
+  "settings.min_free_disk.no_data": "Узлы ещё не прислали метрику диска — сравнивать порог не с чем.",
+  "settings.min_free_disk.blocked": "Узел {backend} ({free} МБ) исключён из выбора: свободно меньше порога {threshold} МБ.",
+  "settings.min_free_disk.invalid": "Min Free Disk: нужно целое число МБ от {min} до {max}.",
+  "settings.min_free_disk.invalid_short": "Порог диска не сохранён: недопустимое значение.",
+  "settings.min_free_disk.default_btn": "Сбросить к 10240 МБ",
   "settings.section.security": "Безопасность",
   // R544 (F10/W6): вместо пустого поля «API Токен» — источник факта (R65d: сервер
   // не принимает токен в PUT, а в GET его не отдаёт).

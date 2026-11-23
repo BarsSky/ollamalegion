@@ -65,6 +65,153 @@
             return true;
         }
 
+    // ---- R700: порог диска (Min Free Disk) ----
+    //
+    // ЖИВАЯ ЖАЛОБА (архив второго стенда). «Снизил порог до 6000, а узел всё
+    // равно исключён» / «освободил 40 ГБ в томе моделей, а метрика диска не
+    // изменилась». Причина — в том, ЧТО измеряется: агент выполняет `df -m /`
+    // в СВОЁМ контейнере, то есть меряет корневую ФС контейнера, а модели лежат
+    // в bind-томе /app/models, который в эту метрику не входит. Освобождение
+    // тома не меняет число, по которому балансер отбрасывает узел.
+    //
+    // Поэтому рядом с полем обязано быть два факта: (1) что именно измеряется;
+    // (2) сколько там СЕЙЧАС на каждом узле (system.diskFree из /api/v1/cluster).
+    // Без них оператор регулирует порог вслепую.
+    var MIN_FREE_DISK_DEFAULT = 10240;
+    var MIN_FREE_DISK_MAX = 1048576;
+    var diskGuardCache = { at: 0, backends: null };
+
+    function i18nT(key, vars, fallback) {
+        var out = fallback || key;
+        try {
+            if (window.I18N && typeof window.I18N.t === 'function') {
+                out = window.I18N.t(key, vars);
+            }
+        } catch (e) { /* i18n не загружен — показываем fallback */ }
+        return out;
+    }
+
+    // updateDiskGuardBounds — границы и умолчание приходят с сервера
+    // (minFreeDiskDefault/minFreeDiskMax в GET /api/v1/cluster/config).
+    // Вторая копия чисел в JS разошлась бы с валидацией на сервере.
+    function updateDiskGuardBounds(serverConfig) {
+        if (!serverConfig) return;
+        var d = parseInt(serverConfig.minFreeDiskDefault, 10);
+        if (Number.isFinite(d) && d >= 0) MIN_FREE_DISK_DEFAULT = d;
+        var m = parseInt(serverConfig.minFreeDiskMax, 10);
+        if (Number.isFinite(m) && m > 0) MIN_FREE_DISK_MAX = m;
+    }
+
+    // loadDiskGuardBackends — метрики диска по узлам. Кэш 15 с: страница
+    // «Настройки» перерисовывается каждые ~5 с, и запрос /api/v1/cluster на
+    // каждый тик ради одной подсказки — лишний трафик.
+    function loadDiskGuardBackends(force) {
+        if (!force && diskGuardCache.backends && (Date.now() - diskGuardCache.at) < 15000) {
+            return Promise.resolve(diskGuardCache.backends);
+        }
+        return Api.cluster().then(function (state) {
+            diskGuardCache.backends = (state && state.backends) || [];
+            diskGuardCache.at = Date.now();
+            return diskGuardCache.backends;
+        }).catch(function () {
+            // Ошибку здесь не показываем: подсказка — не критичный путь, а
+            // «нет данных» честно отрисуется ниже.
+            return diskGuardCache.backends;
+        });
+    }
+
+    // diskFreeMBOf — свободное место узла в МБ.
+    //
+    // ЕДИНИЦА. `types.SystemMetrics.DiskFree` — уже МЕГАБАЙТЫ: агент выполняет
+    // `df -m /` и берёт третье поле (`internal/agent/system.go`, getDiskInfo), а
+    // порог `resources.disk.minFreeMB` сравнивается с ним напрямую
+    // (slot_manager.go: diskLowR696). Пересчитывать «из байт» здесь нельзя —
+    // подсказка показывала бы 9480/1024 = 9 МБ вместо 9480 МБ.
+    function diskFreeMBOf(b) {
+        if (!b || !b.system) return null;
+        var mb = Number(b.system.diskFree);
+        if (!Number.isFinite(mb) || mb <= 0) return null;
+        return Math.round(mb);
+    }
+
+    function clearDiskGuardError() {
+        var err = document.getElementById('minFreeDiskError');
+        if (err) { err.hidden = true; err.textContent = ''; }
+        var el = document.getElementById('minFreeDisk');
+        if (el && el.classList && typeof el.classList.remove === 'function') el.classList.remove('invalid');
+    }
+
+    function showDiskGuardError(text) {
+        var err = document.getElementById('minFreeDiskError');
+        if (err) { err.hidden = false; err.textContent = text; }
+        var el = document.getElementById('minFreeDisk');
+        if (el && el.classList && typeof el.classList.add === 'function') el.classList.add('invalid');
+    }
+
+    // refreshDiskGuardHint — «что измеряется + сколько сейчас» рядом с порогом.
+    function refreshDiskGuardHint() {
+        var hint = document.getElementById('minFreeDiskHint');
+        if (!hint) return;
+        var el = document.getElementById('minFreeDisk');
+        var threshold = el ? parseInt(el.value, 10) : NaN;
+        if (!Number.isFinite(threshold) || threshold < 0) threshold = MIN_FREE_DISK_DEFAULT;
+        loadDiskGuardBackends(false).then(function (backends) {
+            var parts = [];
+            parts.push(i18nT('settings.min_free_disk.measured', {},
+                'Измеряется `df -m /` — корневая ФС контейнера агента. Модели лежат в bind-томе (/app/models), в эту метрику он не входит: освобождение тома число не изменит.'));
+            var rows = [];
+            (backends || []).forEach(function (b) {
+                var free = diskFreeMBOf(b);
+                if (free === null) return;
+                rows.push({ id: (b && b.id) || '?', free: free });
+            });
+            if (!rows.length) {
+                parts.push(i18nT('settings.min_free_disk.no_data', {},
+                    'Узлы ещё не прислали метрику диска — сравнивать порог не с чем.'));
+            } else {
+                rows.sort(function (a, b) { return a.free - b.free; });
+                var list = rows.map(function (r) { return r.id + ': ' + r.free + ' МБ'; }).join(', ');
+                parts.push(i18nT('settings.min_free_disk.current', { backends: list, threshold: threshold },
+                    'Сейчас на узлах — ' + list + ' (порог ' + threshold + ' МБ).'));
+                if (rows[0].free < threshold) {
+                    parts.push(i18nT('settings.min_free_disk.blocked',
+                        { backend: rows[0].id, free: rows[0].free, threshold: threshold },
+                        'Узел ' + rows[0].id + ' (' + rows[0].free + ' МБ) исключён из выбора: свободно меньше порога ' + threshold + ' МБ.'));
+                }
+            }
+            hint.textContent = parts.join(' ');
+        });
+    }
+
+    // bindDiskGuardUI — кнопка «по умолчанию» и живое обновление подсказки.
+    // Навешивается один раз: loadSettings вызывается на каждый вход на страницу
+    // и на каждый тик, повторные слушатели задвоили бы сохранение.
+    var diskGuardBound = false;
+    function bindDiskGuardUI() {
+        if (diskGuardBound) return;
+        var input = document.getElementById('minFreeDisk');
+        var btn = document.getElementById('minFreeDiskDefault');
+        if (!input && !btn) return;
+        diskGuardBound = true;
+        if (input && input.addEventListener) {
+            input.addEventListener('input', function () {
+                clearDiskGuardError();
+                refreshDiskGuardHint();
+            });
+        }
+        if (btn && btn.addEventListener) {
+            btn.addEventListener('click', function (e) {
+                if (e && e.preventDefault) e.preventDefault();
+                if (input) input.value = String(MIN_FREE_DISK_DEFAULT);
+                clearDiskGuardError();
+                refreshDiskGuardHint();
+                // Сохраняем сразу: иначе «сбросил» осталось бы только в поле,
+                // а гейт продолжал бы работать по старому порогу.
+                saveSettings(false);
+            });
+        }
+    }
+
     // ---- Data Fetching ----
 
     /**
@@ -328,6 +475,11 @@
     }
 
     function loadSettings() {
+        // R700: порог диска — кнопка «по умолчанию» и живая подсказка.
+        // Навешиваем до запроса: если сервер недоступен, поле всё равно должно
+        // объяснять, что измеряется.
+        bindDiskGuardUI();
+        refreshDiskGuardHint();
         // --- SERVER-FIRST RULE: сервер = источник истины ---
         // Сначала пытаемся загрузить с сервера. Если не получилось — fallback в localStorage.
         Api.config().then(function (serverConfig) {
@@ -398,6 +550,10 @@
         if (serverConfig.cpuMaxUsage) writeValue(document.getElementById('cpuMaxUsage'), serverConfig.cpuMaxUsage);
         if (serverConfig.ramMaxUsage) writeValue(document.getElementById('ramMaxUsage'), serverConfig.ramMaxUsage);
         if (serverConfig.minFreeDisk) writeValue(document.getElementById('minFreeDisk'), serverConfig.minFreeDisk);
+        // R700: границы порога — с сервера, подсказка («что измеряется + сколько
+        // сейчас») — сразу после заливки значения.
+        updateDiskGuardBounds(serverConfig);
+        refreshDiskGuardHint();
         // R544 (F10/W6): поля #apiToken в разметке больше нет — оно было инертным
         // (сервер не отдаёт apiToken в обычном GET и не принимает в PUT). Токен
         // подставляется сервером в WEBUI_CONFIG.API_TOKEN, см. index.html
@@ -626,6 +782,9 @@
         if (config.cpuMaxUsage) writeValue(document.getElementById('cpuMaxUsage'), config.cpuMaxUsage);
         if (config.ramMaxUsage) writeValue(document.getElementById('ramMaxUsage'), config.ramMaxUsage);
         if (config.minFreeDisk) writeValue(document.getElementById('minFreeDisk'), config.minFreeDisk);
+        // R700: локальный fallback тоже обновляет подсказку — иначе при
+        // недоступном сервере рядом с порогом остался бы пустой блок.
+        refreshDiskGuardHint();
         // R544 (F10/W6): #apiToken и четырёх полей агента в разметке больше нет
         // (см. index.html section-security / section-agent). Заполнять их было
         // нечем и незачем: saveSettings эти значения не читал, а сервер их не
@@ -651,7 +810,31 @@
         var vramMax = parseInt((document.getElementById('vramMaxUsage') && document.getElementById('vramMaxUsage').value)) || 85;
         var cpuMax = parseInt((document.getElementById('cpuMaxUsage') && document.getElementById('cpuMaxUsage').value)) || 80;
         var ramMax = parseInt((document.getElementById('ramMaxUsage') && document.getElementById('ramMaxUsage').value)) || 85;
-        var minDisk = parseInt((document.getElementById('minFreeDisk') && document.getElementById('minFreeDisk').value)) || 10240;
+        var minDisk = MIN_FREE_DISK_DEFAULT;
+        // R700: порог диска читается с ЯВНОЙ валидацией.
+        //
+        // БЫЛО: `parseInt(el.value) || 10240`. Пустое поле, «12.5» и «-1»
+        // превращались в дефолт или (для отрицательного) в мусор на сервере, а
+        // оператор видел «Settings saved» — то есть правка «не применилась»
+        // без единого сообщения. Теперь недопустимое значение не уходит на
+        // сервер: строка ошибки рядом с полем и никакого PUT.
+        var minDiskEl = document.getElementById('minFreeDisk');
+        if (minDiskEl) {
+            var minDiskRaw = String(minDiskEl.value == null ? '' : minDiskEl.value).trim();
+            var minDiskNum = Number(minDiskRaw);
+            var minDiskBad = minDiskRaw === '' || !Number.isFinite(minDiskNum) ||
+                Math.floor(minDiskNum) !== minDiskNum ||
+                minDiskNum < 0 || minDiskNum > MIN_FREE_DISK_MAX;
+            if (minDiskBad) {
+                showDiskGuardError(i18nT('settings.min_free_disk.invalid', { min: 0, max: MIN_FREE_DISK_MAX },
+                    'Min Free Disk: нужно целое число МБ от 0 до ' + MIN_FREE_DISK_MAX + '.'));
+                if (!silent) showToast(i18nT('settings.min_free_disk.invalid_short', {},
+                    'Порог диска не сохранён: недопустимое значение.'), 'error');
+                return;
+            }
+            clearDiskGuardError();
+            minDisk = minDiskNum;
+        }
         // R65d: apiToken больше не читается и не отправляется — сервер его не
         // принимает (нет поля в PUT-структуре). Смена API-токена на лету
         // заблокировала бы текущего оператора, поэтому токены задаются в
@@ -887,6 +1070,10 @@
         Api.updateConfig(config).then(function () {
             return verifySync(config);
         }).then(function () {
+            // R700: порог применился на сервере — подсказка должна сразу
+            // показать новое сравнение (иначе рядом с полем висит старая
+            // строка «узел исключён», хотя он уже проходит).
+            refreshDiskGuardHint();
             if (!silent) showToast(window.I18N ? I18N.t('settings.saved') : 'Settings saved', 'success');
         }).catch(function (err) {
             if (!silent) showToast((window.I18N ? I18N.t('common.error') : 'Error') + ': ' + (err.message || err), 'error');
@@ -993,6 +1180,10 @@
             updateLlamaCppOverridesPanel: updateLlamaCppOverridesPanel,
             verifySync: verifySync,
             mergeBackendConfig: mergeBackendConfig,
+            // R700: подсказка у порога диска (что измеряется + текущее значение).
+            // Экспортируется для теста: проверяется поведение (текст с числами и
+            // упоминанием измеряемой ФС), а не факт наличия функции в файле.
+            refreshDiskGuardHint: refreshDiskGuardHint,
             // R671 (2026-11-21): пять сборщиков данных, ПОТЕРЯННЫХ при выносе в
             // фабрику (R652-R655). Они определены выше в этом же файле, но не
             // возвращались, а `app.js` продолжал звать их bare-именами — панель

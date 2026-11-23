@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 
@@ -15,6 +16,21 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
+
+// minFreeDiskMaxMBR700 — верхняя граница порога диска (1 ТиБ в МБ).
+//
+// ЗАЧЕМ ГРАНИЦА. До R700 поле `minFreeDisk` принималось как есть:
+// `uint64(*req.MinFreeDisk)`. Отрицательное или NaN-значение (его легко получить
+// из `<input type=number>` с пустым/битым значением) превращалось в ОГРОМНЫЙ
+// uint64 — и тогда ЛЮБОЙ узел исключался из выбора по диску, а причина в
+// why_queued выглядела как «мало места: свободно 9480 < минимум 18446744073709551615».
+// Оператор видел «всё сломалось» вместо «в настройку попало мусорное число».
+const minFreeDiskMaxMBR700 = 1048576
+
+// minFreeDiskDefaultMBR700 — заводской порог (совпадает с config.Load и
+// configDefaults); отдаётся WebUI рядом с полем, чтобы «сбросить к умолчанию»
+// не угадывало число.
+const minFreeDiskDefaultMBR700 = 10240
 
 // configDefaults хранит значения по умолчанию для полного сброса конфига
 func configDefaults(cfg *types.LoadBalancerConfig) {
@@ -232,6 +248,10 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			"cpuMaxUsage":         s.config.Resources.CPU.MaxUsagePercent,
 			"ramMaxUsage":         s.config.Resources.Memory.MaxUsagePercent,
 			"minFreeDisk":         s.config.Resources.Disk.MinFreeMB,
+			// R700: границы и умолчание отдаёт сервер — панель не гадает числа
+			// (кнопка «по умолчанию» и подсказка диапазона берут их отсюда).
+			"minFreeDiskDefault": minFreeDiskDefaultMBR700,
+			"minFreeDiskMax":     minFreeDiskMaxMBR700,
 			"operatingMode":       s.config.Balancing.OperatingMode,
 			// R234: язык логов и ошибок. Рантайм-значение (после PUT) может
 			// отличаться от сохранённого "auto", поэтому отдаём и то, и другое:
@@ -443,8 +463,37 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			updatedFields = append(updatedFields, "ramMaxUsage")
 		}
 		if req.MinFreeDisk != nil {
-			s.config.Resources.Disk.MinFreeMB = uint64(*req.MinFreeDisk)
+			// R700 (2026-11-24): порог диска — настройка, которую оператор
+			// меняет в панели, поэтому она ОБЯЗАНА валидироваться.
+			//
+			// Живой дефект до правки: `uint64(*req.MinFreeDisk)` принимал -1
+			// как 18446744073709551615, и гейт диска начинал блокировать ВСЕ
+			// узлы. Ответ при этом был «success», то есть оператор не знал,
+			// что натворил. Теперь мусорное число — 400 с границами.
+			v := *req.MinFreeDisk
+			if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > minFreeDiskMaxMBR700 {
+				s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"success": false,
+					"error": fmt.Sprintf(
+						"minFreeDisk: ожидается целое число МБ от 0 до %d, получено %v",
+						minFreeDiskMaxMBR700, v),
+					"field": "minFreeDisk",
+					"min":   0,
+					"max":   minFreeDiskMaxMBR700,
+					"unit":  "MB",
+				})
+				return
+			}
+			s.config.Resources.Disk.MinFreeMB = uint64(math.Round(v))
 			updatedFields = append(updatedFields, "minFreeDisk")
+			// R700: снять уже показанную причину по диску. Порог и есть причина
+			// («свободно 9480 < 10240»), и после смены значения страница/баннер
+			// обязаны перестать рассказывать об исключённом узле СРАЗУ, а не
+			// через TTL уведомления. Если новый порог всё ещё не пропускает узел,
+			// следующий проход очереди создаст причину заново с новыми числами.
+			if s.proxy != nil {
+				s.proxy.ClearGateNoticesR700(balancer.GateDiskR700)
+			}
 		}
 		if req.Initialized != nil {
 			s.config.Initialized = *req.Initialized
@@ -649,6 +698,8 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 				"cpuMaxUsage":         s.config.Resources.CPU.MaxUsagePercent,
 				"ramMaxUsage":         s.config.Resources.Memory.MaxUsagePercent,
 				"minFreeDisk":         s.config.Resources.Disk.MinFreeMB,
+				"minFreeDiskDefault":  minFreeDiskDefaultMBR700,
+				"minFreeDiskMax":      minFreeDiskMaxMBR700,
 				"operatingMode":       s.config.Balancing.OperatingMode,
 				"initialized":         s.config.Initialized,
 				"backendEngine":       string(s.config.BackendEngine),

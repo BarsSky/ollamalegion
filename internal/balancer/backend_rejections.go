@@ -27,9 +27,14 @@ import (
 // СЕЙЧАС. Reason — машинный код (для фильтра в логах), Detail — числа для
 // человека.
 type backendRejectionR460 struct {
-	BackendID string `json:"backend_id"`
-	Reason    string `json:"reason"`
-	Detail    string `json:"detail,omitempty"`
+	// Numbers — R700: те же числа, но структурой. Detail удобен в логе, а
+	// уведомлению и странице нужны значения по отдельности: «свободно 9480 МБ,
+	// минимум 10240 МБ» собирается из них, а не выдёргивается из текста
+	// (формат лога менялся трижды — парсить его нельзя).
+	Numbers   *gateNumbersR700 `json:"numbers,omitempty"`
+	BackendID string           `json:"backend_id"`
+	Reason    string           `json:"reason"`
+	Detail    string           `json:"detail,omitempty"`
 }
 
 // Коды причин (стабильные, их видно в логе и в теле 503).
@@ -114,6 +119,10 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move .
 			continue
 		}
 		reason, detail := "", ""
+		// R700: числа гейта. Заполняются ровно там, где причина названа, — из
+		// тех же переменных, что попали в Detail, поэтому текст уведомления и
+		// диагностическая строка не могут разойтись.
+		var numbers *gateNumbersR700
 		switch {
 		case p.cannotHostModelR304(id):
 			// Донор раскладки или воркер группы: своих копий не держит.
@@ -191,6 +200,9 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move .
 							reason = rejectVRAMInsufficientR460
 							detail = fmt.Sprintf("модель не влезает: need %s, free %s",
 								formatGiBR493(needMB), formatGiBR493(float64(freeMB)))
+							// R700: в МБ — так оператор сверяет с порогами и с
+							// `system.diskFree`/vramFree в мониторе (обе величины в МБ).
+							numbers = &gateNumbersR700{NeedMB: uint64(needMB + 0.5), FreeMB: uint64(freeMB)}
 						} else if mv != nil && mv.Need > 0 {
 							// R659: размер весов влезает, но окно — нет. Это тот
 							// самый случай, когда «подожди загрузку» не помогает:
@@ -210,6 +222,9 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move .
 									formatGiBR493(float64(fit.KVMB)),
 									formatGiBR493(float64(fit.ReserveMB)),
 									formatGiBR493(float64(fit.FreeMB)))
+								numbers = &gateNumbersR700{
+									NeedMB: uint64(fit.NeedMB), FreeMB: uint64(fit.FreeMB), WindowNeed: mv.Need,
+								}
 							}
 						}
 					}
@@ -221,6 +236,14 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move .
 			if ok, why := p.sessionMoveKeepsWindowNeedR480(id, model, mv.Need, mv.NeedSource); !ok {
 				reason = rejectWindowTooSmallR460
 				detail = why
+				// R700: окно кандидата — вторая половина сравнения. Берём его
+				// тем же источником, что и гейт (loadedPerSeqNCtxKnownR480
+				// внутри sessionMoveKeepsWindowNeedR480); «неизвестно» (0)
+				// оставляем нулём — текст тогда честно опирается на Detail.
+				numbers = &gateNumbersR700{WindowNeed: mv.Need}
+				if have, known := p.loadedPerSeqNCtxKnownR480(id, model); known && have > 0 {
+					numbers.WindowHave = have
+				}
 			}
 		}
 		if reason == "" && !p.checkResourceLimitsLocked(id) {
@@ -229,9 +252,10 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move .
 			// R696: жёсткий отказ называется своими числами и своим кодом.
 			// Порог и проверка — те же, что в checkResourceLimitsLocked
 			// (hardResourceBlockByIDR696 → diskLowR696 / ramCriticalR696).
-			if code, why := p.hardResourceBlockByIDR696(id); code != "" {
+			if code, why, nums := p.hardResourceBlockByIDR696(id); code != "" {
 				reason = code
 				detail = why
+				numbers = nums
 			}
 		}
 		if reason == "" {
@@ -249,17 +273,19 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move .
 			} else if active >= maxReqs {
 				reason = rejectSlotsBusyR460
 				detail = fmt.Sprintf("заняты все слоты (%d/%d)", active, maxReqs)
+				numbers = &gateNumbersR700{SlotsActive: active, SlotsMax: maxReqs}
 			} else if ratio := float64(active) / float64(maxReqs); ratio >= p.loadThresholdR479() {
 				// R479: ровно тот порог, с которым селектор пропускает бэкенд.
 				reason = rejectOverLoadThresholdR460
 				detail = fmt.Sprintf("загрузка %.0f%% ≥ порога %.0f%% (свободно %d из %d слотов)",
 					ratio*100, p.loadThresholdR479()*100, maxReqs-active, maxReqs)
+				numbers = &gateNumbersR700{SlotsActive: active, SlotsMax: maxReqs}
 			}
 		}
 		if reason == "" {
 			continue // бэкенд способен взять запрос — это не «отказ»
 		}
-		out = append(out, backendRejectionR460{BackendID: id, Reason: reason, Detail: detail})
+		out = append(out, backendRejectionR460{BackendID: id, Reason: reason, Detail: detail, Numbers: numbers})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].BackendID < out[j].BackendID })
 	return out

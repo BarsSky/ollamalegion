@@ -200,6 +200,18 @@ window.I18N_EN = {
   "queue.session_unidentified": "client does not distinguish sessions",
   "queue.max_size": "Maximum",
   "queue.workers": "Workers",
+  // R700: why the queue is not draining. The reason texts themselves come from
+  // the balancer (with numbers); these keys label the gate column so the
+  // operator never sees a raw code like "disk_low".
+  "queue.gates_title": "Why the queue is not draining",
+  "queue.gates_hint": "Reason with numbers and node. The disk threshold is changed in Settings → Resource Limits; the same reason is sent to the notification bell.",
+  "queue.gates_col_gate": "Gate",
+  "queue.gates_col_reason": "Reason (numbers)",
+  "queue.gate.disk": "disk",
+  "queue.gate.ram": "RAM",
+  "queue.gate.vram": "VRAM",
+  "queue.gate.window": "window",
+  "queue.gate.slots": "slots",
 
   // Logs
   "logs.title": "System Logs",
@@ -1084,6 +1096,17 @@ window.I18N_EN = {
     "settings.selection_single": "unified-multistage — single multi-stage selection: loaded → warming → free → fallback, considering window and load",
     "settings.selection_hint": "There is no switch: the algorithm is single. The algorithm field and LB_ALGORITHM were removed; the plan for a future selection-order implementation is docs/plans/2026-11-17-selection-order-plan.md",    "settings.section.general": "General Settings",
   "settings.section.limits": "Resource Limits",
+  // R700: disk threshold. The label must say WHAT is measured: the agent runs
+  // `df -m /` inside its own container, so freeing the models bind mount
+  // (/app/models) does not change the number the balancer compares.
+  "settings.min_free_disk": "Min Free Disk (MB)",
+  "settings.min_free_disk.measured": "Measured with `df -m /` — the root FS of the agent container. Models live in a bind mount (/app/models) that is not part of this metric: freeing the volume will not change the number.",
+  "settings.min_free_disk.current": "Current nodes — {backends} (threshold {threshold} MB).",
+  "settings.min_free_disk.no_data": "Nodes have not reported disk metrics yet — there is nothing to compare the threshold with.",
+  "settings.min_free_disk.blocked": "Node {backend} ({free} MB) is excluded from selection: free space is below the {threshold} MB threshold.",
+  "settings.min_free_disk.invalid": "Min Free Disk: an integer number of MB from {min} to {max} is required.",
+  "settings.min_free_disk.invalid_short": "Disk threshold not saved: invalid value.",
+  "settings.min_free_disk.default_btn": "Reset to 10240 MB",
   "settings.section.agent": "Agent Settings",
   "settings.section.security": "Security",
   // R544 (F10/W6): the empty "API Token" field is replaced by the source of fact.

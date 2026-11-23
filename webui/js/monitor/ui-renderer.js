@@ -915,6 +915,21 @@
         text: T('monitor.alert.pendingWithFree', { pending: q.pending_count, backends: freeBks.map(function(b) { return b.id; }).join(', ') })
       }, 'pendingWithFree');
     }
+    // R700 (2026-11-24): ПОЧЕМУ заявка ждёт — гейты с числами (диск, RAM, VRAM,
+    // окно, слоты). ЖИВАЯ ЖАЛОБА: «есть свободный бэкенд, а запрос в очереди»;
+    // причина существовала только в логе балансера (why_queued) и в теле 503,
+    // то есть на мониторе её не было вовсе.
+    //
+    // Данные уже приходят: монитор опрашивает /api/v1/queue/stats, ответ лежит в
+    // data.queueStats.gates.notices (см. gate_notices.go). Ключ — «гейт+узел»:
+    // один баннер на причину, а не на запрос; счётчик «×N» схлопывает повторы
+    // (pushAlert), поэтому ночной поток ожидающих не превращается в стену строк.
+    var gateNotices = (data.queueStats && data.queueStats.gates && data.queueStats.gates.notices) || [];
+    gateNotices.forEach(function(n) {
+      if (!n || !n.gate || !n.message) return;
+      var level = (n.severity === 'critical' || n.severity === 'error') ? 'red' : 'yellow';
+      pushAlert(alerts, { level: level, text: n.message }, 'gate:' + n.gate + ':' + (n.backend_id || ''));
+    });
     all.forEach(function(r) {
       if (r.status === 'pending' && r.enqueued) {
         var w = (Date.now() - new Date(r.enqueued).getTime()) / 1000;

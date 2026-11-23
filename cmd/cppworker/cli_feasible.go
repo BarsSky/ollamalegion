@@ -28,6 +28,7 @@ import (
 	"io"
 	"os"
 
+	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -72,6 +73,11 @@ func runFeasible(modelName string, out io.Writer) int {
 		fmt.Fprintf(out, "Max RAM ctx:     %d\n", info.MaxRAMCtx)
 	}
 	fmt.Fprintf(out, "KV cache type:   %s\n", info.KVCacheType)
+	// R705 (2026-11-24): ширина головы и её ИСТОЧНИК — без этого «KV per token»
+	// не проверить: до правки ширина считалась как n_embd/n_heads (Qwen3-4B —
+	// 80 вместо 128), и число выглядело измеренным.
+	fmt.Fprintf(out, "Head dim K/V:    %d/%d (%s)\n",
+		info.HeadDimK, info.HeadDimV, feasibleHeadDimSourceLabelR705(info.HeadDimSource))
 	fmt.Fprintf(out, "KV per token:    %d bytes\n", info.KVPerToken)
 	fmt.Fprintf(out, "Free VRAM:       %d MB\n", info.FreeVRAMMB)
 	fmt.Fprintf(out, "Free RAM:        %d MB\n", info.FreeRAMMB)
@@ -80,6 +86,20 @@ func runFeasible(modelName string, out io.Writer) int {
 	fmt.Fprintf(out, "Auto-recommended n_ctx: %d (min of VRAM, RAM, GGUF)\n",
 		feasibleAutoRecommended(info))
 	return 0
+}
+
+// feasibleHeadDimSourceLabelR705 — человекочитаемый источник ширины головы для
+// `-feasible`: gguf = <arch>.attention.key_length из модели, computed = прежняя
+// формула n_embd/n_heads (оценка), пусто = данных нет.
+func feasibleHeadDimSourceLabelR705(source string) string {
+	switch source {
+	case bridge.HeadDimSourceGGUF:
+		return "gguf: <arch>.attention.key_length"
+	case bridge.HeadDimSourceComputed:
+		return "computed: n_embd/n_heads (оценка)"
+	default:
+		return "неизвестно"
+	}
 }
 
 // feasibleAutoRecommended вычисляет recommended n_ctx = min(VRAM, RAM, GGUF).

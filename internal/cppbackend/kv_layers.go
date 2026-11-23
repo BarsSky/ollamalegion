@@ -269,3 +269,43 @@ func (h *GGUFHeaderInfo) KVHeadDim() int {
 	}
 	return KVHeadDimFor(h.KeyLength, h.NEmbd, h.NHeads)
 }
+
+// KVHeadVDim — ширина головы V (в элементах): <arch>.attention.value_length,
+// иначе равна ширине K — ровно как у llama.cpp (value_length опционален,
+// src/llama-model.cpp:1662-1663).
+//
+// R705 (2026-11-24): появилась вместе с публикацией head_dim_v. У gemma-4 K и V
+// совпадают (512/512), но в общем случае это разные ключи, и считать V «равной K»
+// без проверки файла — догадка, которую теперь видно (value_length читается).
+func (m *GGUFModelMeta) KVHeadVDim() int {
+	if m == nil {
+		return 0
+	}
+	return headDimVForR705(m.ValueLength, m.KVHeadDim())
+}
+
+// KVHeadVDim — то же для GGUFHeaderInfo.
+func (h *GGUFHeaderInfo) KVHeadVDim() int {
+	if h == nil {
+		return 0
+	}
+	return headDimVForR705(h.ValueLength, h.KVHeadDim())
+}
+
+// KVHeadDimSource — R705: откуда KVHeadDim(): bridge.HeadDimSourceGGUF, если в
+// файле есть <arch>.attention.key_length, иначе HeadDimSourceComputed (прежняя
+// формула n_embd/n_heads). Пусто — данных нет вовсе.
+func (m *GGUFModelMeta) KVHeadDimSource() string {
+	if m == nil {
+		return ""
+	}
+	return headDimSourceForKeyLengthR705(m.KeyLength, m.KVHeadDim())
+}
+
+// KVHeadDimSource — то же для GGUFHeaderInfo.
+func (h *GGUFHeaderInfo) KVHeadDimSource() string {
+	if h == nil {
+		return ""
+	}
+	return headDimSourceForKeyLengthR705(h.KeyLength, h.KVHeadDim())
+}

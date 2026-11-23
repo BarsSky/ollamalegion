@@ -444,12 +444,32 @@ type ModelMetadata struct {
 	NLayers        int
 	NHeads         int
 	NKvHeads       int // NEW: GQA kv heads
-	HeadDimK       int // NEW: K head dim
-	HeadDimV       int // NEW: V head dim
+	HeadDimK       int // R705: реальная ширина головы K (llama_hparams.n_embd_head_k_full)
+	HeadDimV       int // R705: реальная ширина головы V (llama_hparams.n_embd_head_v_full)
 	NEmbd          int
 	NVocab         int
 	SizeTotalBytes uint64
+	// HeadDimSource — R705: откуда взяты HeadDimK/HeadDimV:
+	//   HeadDimSourceGGUF     — из <arch>.attention.key_length/value_length (факт);
+	//   HeadDimSourceComputed — прежняя формула n_embd/n_heads (нет ключа, нестандартная
+	//                           модель или старый мост);
+	//   ""                    — мост не сообщил (старый бинарь); потребитель обязан
+	//                           читать это как Computed, а не как факт.
+	HeadDimSource string
 }
+
+// R705 (2026-11-24): значения HeadDimSource. Одна строка на весь стек: cppworker
+// публикует её в /api/models (head_dim_source), балансер разбирает в
+// types.LlamaCppModel.HeadDimSource, cppbackend кладёт в ModelInfo.HeadDimSource.
+const (
+	// HeadDimSourceGGUF — ширина головы взята из GGUF-метаданных модели
+	// (<arch>.attention.key_length/value_length), то есть из того же ключа,
+	// из которого llama.cpp заполняет llama_hparams при загрузке.
+	HeadDimSourceGGUF = "gguf"
+	// HeadDimSourceComputed — прежняя формула n_embd/n_heads. Число остаётся
+	// рабочим (обратная совместимость), но это ОЦЕНКА, а не измерение.
+	HeadDimSourceComputed = "computed"
+)
 
 // StreamCallback — функция обратного вызова для стриминга
 // Возвращает true для продолжения, false для остановки
@@ -2182,6 +2202,16 @@ func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {
 	cMeta := C.bridge_get_model_metadata(m.ptr)
 	defer C.bridge_free_model_metadata(&cMeta)
 
+	// R705: источник ширины головы. 0 (UNKNOWN) у старого моста → "" — потребитель
+	// обязан прочитать это как «число посчитано формулой», а не как факт.
+	headDimSource := ""
+	switch cMeta.head_dim_source {
+	case C.BRIDGE_HEAD_DIM_SOURCE_GGUF:
+		headDimSource = HeadDimSourceGGUF
+	case C.BRIDGE_HEAD_DIM_SOURCE_COMPUTED:
+		headDimSource = HeadDimSourceComputed
+	}
+
 	return &ModelMetadata{
 		Description:    C.GoString(cMeta.description),
 		Architecture:   C.GoString(cMeta.architecture),
@@ -2194,6 +2224,7 @@ func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {
 		NEmbd:          int(cMeta.n_embd),
 		NVocab:         int(cMeta.n_vocab),
 		SizeTotalBytes: uint64(cMeta.size_total),
+		HeadDimSource:  headDimSource,
 	}, nil
 }
 

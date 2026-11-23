@@ -52,9 +52,9 @@ func TestEstimateKVCacheMB_KVTypeScales(t *testing.T) {
 		nEmbd   = 2560
 		nCtx    = 32768
 	)
-	f16 := estimateKVCacheMB(nLayers, nHeads, nKv, nEmbd, nCtx, "f16")
-	q8 := estimateKVCacheMB(nLayers, nHeads, nKv, nEmbd, nCtx, "q8_0")
-	q4 := estimateKVCacheMB(nLayers, nHeads, nKv, nEmbd, nCtx, "q4_0")
+	f16 := estimateKVCacheMB(nLayers, nHeads, nKv, nEmbd, 0, 0, nCtx, "f16")
+	q8 := estimateKVCacheMB(nLayers, nHeads, nKv, nEmbd, 0, 0, nCtx, "q8_0")
+	q4 := estimateKVCacheMB(nLayers, nHeads, nKv, nEmbd, 0, 0, nCtx, "q4_0")
 
 	if f16 == 0 || q8 == 0 || q4 == 0 {
 		t.Fatalf("оценки не должны быть нулевыми: f16=%d q8=%d q4=%d", f16, q8, q4)
@@ -91,8 +91,8 @@ func TestCalculateResourceLimits_KVTypeRaisesNCtxCeiling(t *testing.T) {
 	//
 	// Сравниваем через прямой вызов estimateKVCacheMB (та же формула, что и в
 	// CalculateResourceLimits) — она детерминирована и не требует GPU.
-	kvF16 := estimateKVCacheMB(42, 8, 2, 2560, 32768, "f16")
-	kvQ4 := estimateKVCacheMB(42, 8, 2, 2560, 32768, "q4_0")
+	kvF16 := estimateKVCacheMB(42, 8, 2, 2560, 0, 0, 32768, "f16")
+	kvQ4 := estimateKVCacheMB(42, 8, 2, 2560, 0, 0, 32768, "q4_0")
 	if kvQ4 >= kvF16 {
 		t.Fatalf("q4_0 не уменьшил KV: q4=%d f16=%d", kvQ4, kvF16)
 	}

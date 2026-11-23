@@ -331,3 +331,27 @@ func (b *Backend) SetModelGeometryForTest(name string, nLayers, nKvHeads, headDi
 	inst.info.NEmbd = nEmbd
 	return nil
 }
+
+// SetModelHeadDimForTest — R705 (2026-11-24): выставить ширину головы K/V вместе
+// с её ИСТОЧНИКОМ (bridge.HeadDimSourceGGUF | HeadDimSourceComputed).
+//
+// ЗАЧЕМ ОТДЕЛЬНО ОТ SetModelGeometryForTest. R705 меняет не только число, но и
+// происхождение: head_dim_k=128 обязан быть помечен как gguf (из
+// <arch>.attention.key_length), а 80 — как computed (прежняя формула
+// n_embd/n_heads). Тест провода обязан проверять оба поля, иначе «источник»
+// можно потерять, и занижение снова станет невидимым.
+func (b *Backend) SetModelHeadDimForTest(name string, headDimK, headDimV int, source string) error {
+	if b == nil {
+		return fmt.Errorf("nil backend")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	inst, ok := b.models[name]
+	if !ok || inst == nil {
+		return fmt.Errorf("model %s is not injected", name)
+	}
+	inst.info.HeadDimK = headDimK
+	inst.info.HeadDimV = headDimV
+	inst.info.HeadDimSource = source
+	return nil
+}

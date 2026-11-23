@@ -109,7 +109,7 @@ FROM alpine:latest AS bridge-builder
 RUN apk add --no-cache build-base cmake nlohmann-json
 
 WORKDIR /build/bridge
-COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/prefix_cache.h c/bridge/prefix_cache.c c/bridge/window_fit.h c/bridge/window_fit.c c/bridge/kv_budget.h c/bridge/kv_budget.c c/bridge/kv_budget_ggml.h c/bridge/CMakeLists.txt ./
+COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/head_dim.h c/bridge/head_dim.c c/bridge/prefix_cache.h c/bridge/prefix_cache.c c/bridge/window_fit.h c/bridge/window_fit.c c/bridge/kv_budget.h c/bridge/kv_budget.c c/bridge/kv_budget_ggml.h c/bridge/CMakeLists.txt ./
 COPY c/bridge/csrc ./csrc/
 
 # Копируем собранный llama.cpp из предыдущего stage

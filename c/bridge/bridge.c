@@ -18,6 +18,8 @@
 #include "bridge_internal.h"
 // R248/B2: extern "C" граница к libmtmd (mmproj passthrough).
 #include "csrc/vision_mtmd.h"
+#include "csrc/model_hparams.h" // R705: реальная ширина головы K/V из llama_hparams
+#include "head_dim.h"           // R705: решение «GGUF или формула» (чистая логика)
 #include "prefix_cache.h" // R493: кэш префилла (см. prefix_cache.h)
 #include "window_fit.h"   // R493: окно СЛОТА и текст отказа декода (см. window_fit.h)
 #include "kv_budget.h"    // R590: KV на токен и потолок n_ctx по VRAM (см. kv_budget.h)
@@ -3522,6 +3524,20 @@ InferenceResult bridge_get_embeddings(
 // Метаданные модели — РЕАЛЬНАЯ через llama_model_*()
 // ============================================================
 
+// bridge_model_meta_int — целое значение из GGUF-метаданных загруженной модели.
+//
+// R705 (2026-11-24): используется, чтобы отличить РЕАЛЬНУЮ ширину головы
+// (<arch>.attention.key_length) от формулы n_embd/n_heads. Публичный
+// llama_model_meta_val_str отдаёт любое скалярное значение строкой
+// (src/llama-model.cpp:4004-4012, gguf_kv заполняется gguf_kv_to_str на :1509-1511).
+// Возвращает 0, если ключа нет или значение не число.
+static int bridge_model_meta_int(const struct llama_model * model, const char * key) {
+    char buf[64];
+    if (model == NULL || key == NULL) return 0;
+    if (llama_model_meta_val_str(model, key, buf, sizeof(buf) - 1) <= 0) return 0;
+    return atoi(buf);
+}
+
 ModelMetadata bridge_get_model_metadata(ModelHandle model) {
     ModelMetadata metadata = {0};
 
@@ -3553,17 +3569,61 @@ ModelMetadata bridge_get_model_metadata(ModelHandle model) {
     metadata.n_heads = (int)llama_model_n_head(im->model);
     metadata.n_head_kv = (int)llama_model_n_head_kv(im->model);  // public API
 
-    // head_dim computed inline (n_embd_head_k/v are NOT in public llama.h header)
-
     int _n_embd = (int)llama_model_n_embd(im->model); int _n_heads = (int)llama_model_n_head(im->model);
-
-    metadata.n_embd_head_k = (_n_heads > 0) ? _n_embd / _n_heads : 0;
-
-    metadata.n_embd_head_v = (_n_heads > 0) ? _n_embd / _n_heads : 0;
-
     metadata.n_embd = _n_embd;
     metadata.n_vocab = (int)llama_vocab_n_tokens(im->vocab);
     metadata.size_total = 0; // будет заполнено из Go-уровня через stat()
+
+    // R705 (2026-11-24): ШИРИНА ГОЛОВЫ K/V — РЕАЛЬНАЯ, а не n_embd/n_heads.
+    //
+    // ЧТО БЫЛО НЕ ТАК. Здесь стояло `n_embd / n_heads` с комментарием «n_embd_head_k/v
+    // are NOT in public llama.h header». Для Qwen3-4B это 2560/32 = 80 при реальных
+    // 128 (тензоры blk.*.attn_q = 32×128, attn_k = 8×128), для gemma-4-E4B —
+    // 320 при 512 (ключ gemma4.attention.key_length), для Inkling-2-Mini —
+    // 96 при 128. Число публиковалось в /api/models (head_dim_k) и уезжало в
+    // балансер: KV/токен занижался (Qwen3-4B — на 60 %), «сколько окна влезет»
+    // завышалось, R659 мог поднять окно, которое физически не помещается.
+    //
+    // ЧТО ТЕПЕРЬ. Число берётся из llama.cpp — из тех же полей, которые движок
+    // использует для KV-cache:
+    //   * src/llama-model.cpp:1659-1663 — hparams.n_embd_head_k_full := n_embd/n_head,
+    //     затем ПЕРЕОПРЕДЕЛЯЕТСЯ ключом LLM_KV_ATTENTION_KEY_LENGTH
+    //     (<arch>.attention.key_length); аналогично value_length;
+    //   * src/llama-hparams.h:92-95 — сами поля n_embd_head_k_full/v_full;
+    //   * src/llama-model.h:812-818 — struct llama_model с полем llama_hparams hparams.
+    // Читает их extern "C"-фасад csrc/model_hparams.cpp (в публичном llama.h
+    // b12642 доступа к hparams нет — только n_embd/n_head/n_head_kv).
+    //
+    // Само решение «что публиковать и как это назвать» вынесено в чистую функцию
+    // bridge_head_dim_resolve (c/bridge/head_dim.c): её проверяет standalone-тест
+    // c/bridge/tests/test_head_dim.c. Источник (GGUF/COMPUTED) едет в API полем
+    // head_dim_source, чтобы занижение больше не выглядело измерением.
+    {
+        char key_k[256];
+        char key_v[256];
+        snprintf(key_k, sizeof(key_k), "%s.attention.key_length", metadata.architecture);
+        snprintf(key_v, sizeof(key_v), "%s.attention.value_length", metadata.architecture);
+        const int meta_k = bridge_model_meta_int(im->model, key_k);
+        const int meta_v = bridge_model_meta_int(im->model, key_v);
+
+        const bridge_head_dim hd = bridge_head_dim_resolve(
+            _n_embd, _n_heads,
+            ollamalegion_model_head_dim_k_full(im->model),
+            ollamalegion_model_head_dim_v_full(im->model),
+            meta_k, meta_v);
+
+        metadata.n_embd_head_k = hd.head_dim_k;
+        metadata.n_embd_head_v = hd.head_dim_v;
+        metadata.head_dim_source = hd.source;
+
+        // Громко о расхождении с прежней формулой: именно это число теперь
+        // меняет KV/токен и решения балансера, и оно обязано быть в логе загрузки.
+        if (_n_heads > 0 && hd.head_dim_k > 0 && hd.head_dim_k != _n_embd / _n_heads) {
+            printf("[bridge] R705: head_dim K/V из модели = %d/%d (формула n_embd/n_heads = %d, n_embd=%d n_heads=%d); источник: %s\n",
+                   hd.head_dim_k, hd.head_dim_v, _n_embd / _n_heads, _n_embd, _n_heads,
+                   hd.source == BRIDGE_HEAD_DIM_SOURCE_GGUF ? "attention.key_length" : "n_embd/n_heads");
+        }
+    }
 
     return metadata;
 }

@@ -76,12 +76,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build/bridge
-COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/prefix_cache.h c/bridge/prefix_cache.c c/bridge/window_fit.h c/bridge/window_fit.c c/bridge/kv_budget.h c/bridge/kv_budget.c c/bridge/kv_budget_ggml.h c/bridge/CMakeLists.txt ./
+COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/head_dim.h c/bridge/head_dim.c c/bridge/prefix_cache.h c/bridge/prefix_cache.c c/bridge/window_fit.h c/bridge/window_fit.c c/bridge/kv_budget.h c/bridge/kv_budget.c c/bridge/kv_budget_ggml.h c/bridge/CMakeLists.txt ./
 COPY c/bridge/csrc ./csrc/
 COPY --from=llama-builder /build/llama.cpp/include /build/llama.cpp/include
 COPY --from=llama-builder /build/llama.cpp/ggml/include /build/llama.cpp/ggml/include
 COPY --from=llama-builder /build/llama.cpp/ggml/src/ggml-cpu /build/llama.cpp/ggml/src/ggml-cpu
 COPY --from=llama-builder /build/llama.cpp/common /build/llama.cpp/common
+# R705 (2026-11-24): приватные заголовки llama.cpp (src/) нужны C++-фасаду моста
+# csrc/model_hparams.cpp — он читает llama_model->hparams (n_embd_head_k_full).
+COPY --from=llama-builder /build/llama.cpp/src /build/llama.cpp/src
 COPY --from=llama-builder /build/llama.cpp/build/src /build/llama.cpp/build/src
 COPY --from=llama-builder /build/llama.cpp/build/ggml/src /build/llama.cpp/build/ggml/src
 COPY --from=llama-builder /build/llama.cpp/build/common /build/llama.cpp/build/common

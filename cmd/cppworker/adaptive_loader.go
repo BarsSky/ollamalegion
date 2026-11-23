@@ -511,10 +511,13 @@ func SelectStrategyWithKV(
 				nKvHeads = 4
 			}
 		}
-		// head_dim: NEmbd/NHeads, если известны; иначе типовое 128.
+		// head_dim: <arch>.attention.key_length (R705), если он есть в метаданных,
+		// иначе NEmbd/NHeads, иначе типовое 128. Прежняя формула ошиблась бы для
+		// Qwen3-4B (80 вместо 128), gemma-4-E4B (320 вместо 512) и Inkling-2-Mini
+		// (96 вместо 128): KV на токен занижался, а maxViableNCtx — завышался.
 		headDim := int64(128)
-		if meta.NEmbd > 0 && meta.NHeads > 0 {
-			headDim = int64(meta.NEmbd / meta.NHeads)
+		if hd := cppbackend.KVHeadDimFor(meta.KeyLength, meta.NEmbd, meta.NHeads); hd > 0 {
+			headDim = int64(hd)
 		}
 
 		// Auto-select optimal kvCacheType based on available VRAM.

@@ -294,6 +294,18 @@ func kvCacheBytesForModel(m cppbackend.ModelInfo, nCtx int, kvCacheType string) 
 			return bytes, true
 		}
 	}
+	// R705 (2026-11-24): у ЗАГРУЖЕННОЙ модели ширина головы ИЗВЕСТНА и она реальная
+	// (ModelInfo.HeadDimK/V приходят из llama_hparams), поэтому даже консервативная
+	// оценка не должна пересчитывать её как n_embd/n_heads. Иначе для Qwen3-4B KV
+	// занижался на 60 % (80 вместо 128), а вместе с ним — gpu_layers и окно.
+	// Верхнюю границу здесь даёт ЧИСЛО СЛОЁВ (все блоки модели), а не ширина:
+	// поэтому второй результат по-прежнему false («оценка сверху»).
+	if m.HeadDimK > 0 {
+		if bytes := estimateKVCacheBytesWithHeadDim(nCtx, m.NLayers, m.NKvHeads,
+			m.NHeads, m.HeadDimK, m.HeadDimV, kvCacheType); bytes > 0 {
+			return bytes, false
+		}
+	}
 	return estimateKVCacheBytes(nCtx, m.NLayers, m.NEmbd, m.NHeads, m.NKvHeads, kvCacheType), false
 }
 
@@ -331,8 +343,8 @@ func estimateKVCacheBytesForLayers(nCtx, kvLayers, nKvHeads, kvHeadDim int, kvCa
 //
 // ВНИМАНИЕ: это КОНСЕРВАТИВНАЯ ОЦЕНКА СВЕРХУ для путей, где известны только
 // параметры модели (block_count, n_embd, n_heads, n_kv_heads). Она завышает
-// KV для гибридных моделей (где KV держат не все слои) и для моделей с
-// attention.key_length ≠ n_embd/n_heads. Там, где есть метаданные GGUF,
+// KV для гибридных моделей (где KV держат не все слои) и пересчитывает ширину
+// головы формулой n_embd/n_heads. Там, где есть метаданные GGUF,
 // используйте estimateKVCacheBytesForLayers — иначе раскладка снова начнёт
 // занижать gpu_layers (см. R83 §9.4 шаг 2).
 //
@@ -354,27 +366,55 @@ func estimateKVCacheBytes(nCtx, nLayers, nEmbd, nHeads, nKvHeads int, kvCacheTyp
 		return 0
 	}
 	if nEmbd <= 0 || nHeads <= 0 {
-		// Fallback: 4 MB на 1K токенов для типичной 7B модели.
+		// Нет ни ширины головы, ни n_embd/n_heads — выдумывать нельзя.
 		return int64(nCtx) * 4096
-	}
-	effKVHeads := nKvHeads
-	if effKVHeads <= 0 {
-		// Fallback to MHA (nHeads) when n_kv_heads is unknown.
-		// Using MHA is the safe upper bound for VRAM estimation:
-		//   - actual GQA models use LESS KV-cache (smaller than estimate)
-		//   - actual MHA models match the estimate exactly
-		// Going with nHeads/4 (1:4 GQA ratio) would underestimate VRAM for
-		// MHA models and cause false OOM. The conservative MHA fallback ensures
-		// we never claim more n_ctx than the worst-case model can handle.
-		effKVHeads = nHeads
-	}
-	if effKVHeads <= 0 {
-		effKVHeads = 1
 	}
 	headDim := nEmbd / nHeads
 	if headDim <= 0 {
 		headDim = nEmbd
 	}
+	return estimateKVCacheBytesWithHeadDim(nCtx, nLayers, nKvHeads, nHeads, headDim, headDim, kvCacheType)
+}
+
+// estimateKVCacheBytesWithHeadDim — консервативная оценка (все блоки модели) при
+// ИЗВЕСТНОЙ ширине головы K/V.
+//
+// R705 (2026-11-24). Зачем отдельная функция: ширина головы — единственное, что
+// нельзя «оценить сверху» формулой n_embd/n_heads, потому что она бывает МЕНЬШЕ
+// реальной (Qwen3-4B: 80 вместо 128 — KV занижается на 60 %; gemma-4-E4B: 320
+// против 512; Inkling-2-Mini: 96 против 128). Там, где ширина известна (загруженная
+// модель → ModelInfo.HeadDimK/V из llama_hparams), верхнюю границу даёт число
+// слоёв, а не ширина.
+//
+// headDimV <= 0 означает «как K» (llama.cpp: attention.value_length опционален).
+func estimateKVCacheBytesWithHeadDim(nCtx, nLayers, nKvHeads, nHeads, headDimK, headDimV int, kvCacheType string) int64 {
+	if nCtx <= 0 || nLayers <= 0 {
+		return 0
+	}
+	if headDimK <= 0 {
+		// Ширина неизвестна: прежний fallback «4 MB на 1K токенов для 7B».
+		return int64(nCtx) * 4096
+	}
+	if headDimV <= 0 {
+		headDimV = headDimK
+	}
+	effKVHeads := nKvHeads
+	if effKVHeads <= 0 {
+		// n_kv_heads неизвестен → MHA (nHeads) как безопасная верхняя граница:
+		// GQA-модель потребит меньше, MHA совпадёт, переподписки не будет.
+		effKVHeads = nHeads
+	}
+	if effKVHeads <= 0 {
+		effKVHeads = 1
+	}
+	// bytesPerType — байты на ПАРУ (K+V) элементов (f16 4/1, q8_0 2/1, q4_0 1/1),
+	// поэтому берём среднюю ширину головы: при headDimK == headDimV это ровно
+	// headDimK, то есть формула сводится к прежней 4 × n_ctx × n_layers × kv_heads
+	// × head_dim. Отличие только в источнике ширины (R705: реальная, а не формула).
+	avgHeadDim := (headDimK + headDimV) / 2
+	if avgHeadDim <= 0 {
+		avgHeadDim = headDimK
+	}
 	bytesPerType := kvCacheBytesPerType(kvCacheType)
-	return bytesPerType * int64(nCtx) * int64(nLayers) * int64(effKVHeads) * int64(headDim)
+	return bytesPerType * int64(nCtx) * int64(nLayers) * int64(effKVHeads) * int64(avgHeadDim)
 }

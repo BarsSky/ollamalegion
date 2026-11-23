@@ -366,7 +366,12 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 			NKvHeads         int    `json:"n_kv_heads,nKvHeads,omitempty"`
 			HeadDimK         int    `json:"head_dim_k,headDimK,omitempty"`
 			HeadDimV         int    `json:"head_dim_v,headDimV,omitempty"`
-			NEmbd            int    `json:"n_embd,nEmbd,omitempty"`
+			// R705 (2026-11-24): источник ширины головы из /api/models
+			// ("gguf" — <arch>.attention.key_length, "computed" — прежняя формула
+			// n_embd/n_heads). Пробрасывается в types.LlamaCppModel.HeadDimSource,
+			// чтобы R659/AutoTune видели, факт это или оценка.
+			HeadDimSource string `json:"head_dim_source,headDimSource,omitempty"`
+			NEmbd         int    `json:"n_embd,nEmbd,omitempty"`
 			// R45: ContextSize was the smoking gun. cppworker returns
 			// "context_size" but the previous tag was "contextSize", so
 			// LoadedModels[].ContextLength was always 0, breaking
@@ -551,8 +556,11 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 			NEmbd:        m.NEmbd,
 			HeadDimK:     m.HeadDimK,
 			HeadDimV:     m.HeadDimV,
-			MaxContext:   m.GGUFContextLength,
-			LoadedAt:     m.LoadedAt,
+			// R705: источник ширины ("gguf" | "computed" | "") — без него нельзя
+			// отличить измеренную <arch>.attention.key_length от прежней формулы.
+			HeadDimSource: m.HeadDimSource,
+			MaxContext:    m.GGUFContextLength,
+			LoadedAt:      m.LoadedAt,
 			// Round 34 (2026-08-12) Phase 2 + Round 53.2 (2026-08-24):
 			// runtime params из /api/models. Pre-R53.2 использовались
 			// preflight_nctx.go::paramsMatch() для trigger reload при флаговом

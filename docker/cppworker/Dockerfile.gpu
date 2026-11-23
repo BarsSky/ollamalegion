@@ -230,7 +230,7 @@ WORKDIR /build/bridge
 # R493 (2026-11-16): prefix_cache.{c,h} — кэш префилла. CMakeLists моста
 # перечисляет prefix_cache.c в BRIDGE_SOURCES, поэтому без этого COPY сборка
 # падает на этапе generate: «Cannot find source file: prefix_cache.c».
-COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/prefix_cache.h c/bridge/prefix_cache.c c/bridge/window_fit.h c/bridge/window_fit.c c/bridge/kv_budget.h c/bridge/kv_budget.c c/bridge/kv_budget_ggml.h c/bridge/CMakeLists.txt ./
+COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/head_dim.h c/bridge/head_dim.c c/bridge/prefix_cache.h c/bridge/prefix_cache.c c/bridge/window_fit.h c/bridge/window_fit.c c/bridge/kv_budget.h c/bridge/kv_budget.c c/bridge/kv_budget_ggml.h c/bridge/CMakeLists.txt ./
 COPY c/bridge/csrc ./csrc/
 
 COPY --from=llama-builder /build/llama.cpp/include /build/llama.cpp/include
@@ -241,6 +241,11 @@ COPY --from=llama-builder /build/llama.cpp/ggml/src/ggml-cpu /build/llama.cpp/gg
 COPY --from=llama-builder /build/llama.cpp/common /build/llama.cpp/common
 COPY --from=llama-builder /build/llama.cpp/build/src /build/llama.cpp/build/src
 COPY --from=llama-builder /build/llama.cpp/build/ggml/src /build/llama.cpp/build/ggml/src
+# R705 (2026-11-24): приватные заголовки llama.cpp (src/) нужны C++-фасаду моста
+# csrc/model_hparams.cpp — он читает llama_model->hparams (n_embd_head_k_full);
+# в публичном include/llama.h аксессоров нет (см. csrc/model_hparams.cpp).
+# CMake моста добавляет ${LLAMA_CPP_ROOT}/src в include-пути.
+COPY --from=llama-builder /build/llama.cpp/src /build/llama.cpp/src
 # Round 14a: libcommon.a содержит реализацию common_chat_templates_apply и других
 # C++ API. Без неё линковка chat_thinking.cpp упадёт (undefined reference).
 COPY --from=llama-builder /build/llama.cpp/build/common /build/llama.cpp/build/common

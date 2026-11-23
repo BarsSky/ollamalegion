@@ -41,9 +41,11 @@ func (b *Backend) refreshGPUDeviceVRAM() {
 // estimateKVCacheMB вычисляет размер KV Cache в MB для заданных параметров модели.
 // Формула:
 //
-//	KV Cache (bytes) = 2 × n_layers × n_ctx × n_kv_heads × head_dim × bytes_per_elem
+//	KV Cache (bytes) = (head_dim_k + head_dim_v) × n_layers × n_ctx × n_kv_heads × bytes_per_elem
 //
-// где head_dim = n_embd / n_heads, bytes_per_elem = 2 для fp16 (стандартный KV cache).
+// где head_dim_k/v — РЕАЛЬНЫЕ ширины голов K и V (R705: из llama_hparams, то есть
+// <arch>.attention.key_length/value_length). Если они не переданы (0), берётся
+// прежняя формула n_embd / n_heads — для вызовов без геометрии и для сверки.
 // Для GQA моделей n_kv_heads < n_heads, для MHA n_kv_heads = n_heads.
 //
 // Добавляет 10% буфера безопасности для избежания граничных OOM.
@@ -57,44 +59,59 @@ func (b *Backend) refreshGPUDeviceVRAM() {
 // autotune-бюджет: `min(free + usage, total)` клипуется размером карты, поэтому
 // решения не ломались, но оператор видел физически невозможное значение.
 //
+// R705 (2026-11-24): head_dim_k/head_dim_v — ПАРАМЕТРЫ, а не n_embd/n_heads.
+// У Qwen3-4B это 128 против 80 (KV занижался на 60 %), у gemma-4-E4B — 512
+// против 320, у Inkling-2-Mini — 128 против 96. size_vram — не только показ: он
+// уезжает в балансер (VRAMUsage → autotune-бюджет), поэтому ширина обязана быть
+// реальной. Ноль в параметрах означает «геометрии нет» и включает прежнюю
+// формулу — обратная совместимость всех существующих вызовов сохранена.
+//
 // Считать KV здесь, а в воркере — только вызывать: второй формулы быть не должно
 // (иначе «в логе одно, в решении другое», ровно как в R83).
-func EstimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int, kvType string) int {
-	return int(estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx, kvType))
+func EstimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, headDimK, headDimV, nCtx int, kvType string) int {
+	return int(estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, headDimK, headDimV, nCtx, kvType))
 }
-func estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int, kvCacheType string) uint64 {
+func estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, headDimK, headDimV, nCtx int, kvCacheType string) uint64 {
 	if nLayers <= 0 || nCtx <= 0 {
 		return 0
 	}
 
-	// Safe-fail: если nHeads или nEmbd неизвестны (0/отрицательные),
-	// невозможно корректно вычислить head_dim = n_embd/n_heads.
-	// Возвращаем 0 чтобы caller использовал другой метод оценки
-	// (например, реальные метрики из cppworker или иной эвристический fallback).
-	// Лучше недооценить размер и загрузить с чуть меньшим n_ctx,
-	// чем переоценить и нарваться на OOM в production.
-	if nHeads <= 0 || nEmbd <= 0 {
+	// Ширина головы: сначала РЕАЛЬНАЯ (R705), затем прежняя формула.
+	// Safe-fail сохраняется: если ни реальной ширины, ни n_embd/n_heads нет,
+	// посчитать корректно нельзя, и лучше вернуть 0, чем выдумать число
+	// (caller использует другой метод оценки / консервативный fallback).
+	hdK, hdV := headDimK, headDimV
+	if hdK <= 0 || hdV <= 0 {
+		if nHeads <= 0 || nEmbd <= 0 {
+			return 0
+		}
+		formula := nEmbd / nHeads
+		if hdK <= 0 {
+			hdK = formula
+		}
+		if hdV <= 0 {
+			hdV = hdK
+		}
+	}
+	if hdK <= 0 || hdV <= 0 {
 		return 0
 	}
 
 	if nKvHeads <= 0 {
 		nKvHeads = nHeads // MHA (no GQA)
 	}
-
-	// head_dim = n_embd / n_heads (обычно 128 для большинства моделей)
-	headDim := nEmbd / nHeads
-	if headDim <= 0 {
-		headDim = 128 // fallback (теоретически недостижимо после проверки выше)
+	if nKvHeads <= 0 {
+		return 0
 	}
 
-	// KV Cache = 2 (K+V) × n_layers × n_ctx × n_kv_heads × head_dim × bytes_per_elem
+	// KV Cache = (K+V) × n_layers × n_ctx × n_kv_heads × bytes_per_elem
 	//
 	// R67a (2026-09-23): bytes_per_elem зависит от kvCacheType (f16 → 2 байта,
 	// q8_0 → 34/32, q4_0 → 18/32). Раньше всегда было 2 (fp16), из-за чего при
 	// q8_0/q4_0 требования к VRAM завышались в 2-4 раза и n_ctx упирался в
 	// заниженный потолок даже на GPU с большим запасом VRAM.
 	num, den := kvCacheBytesPerElem(kvCacheType)
-	elements := uint64(2) * uint64(nLayers) * uint64(nCtx) * uint64(nKvHeads) * uint64(headDim)
+	elements := uint64(hdK+hdV) * uint64(nLayers) * uint64(nCtx) * uint64(nKvHeads)
 	kvBytes := elements * num / den
 
 	// Конвертируем в MB и добавляем 10% безопасности

@@ -231,7 +231,12 @@ func estimateVRAMSizeForModel(m *cppbackend.ModelInfo, sizeBytes uint64) uint64 
 	fraction := float64(gpuLayers) / float64(m.NLayers)
 
 	weights := uint64(float64(sizeBytes) * fraction)
-	kvMB := cppbackend.EstimateKVCacheMB(m.NLayers, m.NHeads, m.NKvHeads, m.NEmbd, m.ContextSize, m.KVCacheType)
+	// R705 (2026-11-24): ширина головы K/V — РЕАЛЬНАЯ (из llama_hparams через
+	// ModelInfo), а не n_embd/n_heads. У Qwen3-4B прежняя формула давала 80
+	// против 128, и size_vram занижался по KV; число уезжает в балансер
+	// (VRAMUsage → autotune-бюджет), поэтому геометрия передаётся явно.
+	kvMB := cppbackend.EstimateKVCacheMB(m.NLayers, m.NHeads, m.NKvHeads, m.NEmbd,
+		m.HeadDimK, m.HeadDimV, m.ContextSize, m.KVCacheType)
 	kv := uint64(float64(kvMB) * 1024 * 1024 * fraction)
 	return weights + kv
 }
@@ -423,8 +428,13 @@ func writeOllamaShowLoadedResponse(w http.ResponseWriter, info *cppbackend.Model
 	modelInfo := map[string]interface{}{
 		"architecture": info.Architecture, "n_layers": info.NLayers,
 		"n_heads": info.NHeads, "n_embd": info.NEmbd,
+		// R705 (2026-11-24): head_dim_k/head_dim_v — реальная ширина головы из
+		// llama_hparams (<arch>.attention.key_length), а не n_embd/n_heads.
+		// head_dim_source говорит, факт это (gguf) или прежняя оценка (computed):
+		// иначе занижённая ширина (Qwen3-4B: 80 вместо 128) выглядела измеренной.
 		"n_kv_heads": info.NKvHeads, "head_dim_k": info.HeadDimK, "head_dim_v": info.HeadDimV,
-		"n_vocab": info.NVocab, "context_size": perSlotNCtx,
+		"head_dim_source": info.HeadDimSource,
+		"n_vocab":         info.NVocab, "context_size": perSlotNCtx,
 		"context_size_total": info.ContextSize, "parallel": info.Parallel,
 		"gpu_layers": info.GPULayers, "kv_cache_type": info.KVCacheType, "state": info.State,
 	}
@@ -490,9 +500,14 @@ func writeOllamaShowMetadataResponse(w http.ResponseWriter, meta *cppbackend.GGU
 		"n_heads":      meta.NHeads,
 		"n_embd":       nEmbd,
 		"n_kv_heads":   meta.NKvHeads,
-		"head_dim_k":   0, // не из GGUF header
-		"head_dim_v":   0, // не из GGUF header
-		"n_vocab":      0, // runtime-only (load required)
+		// R705 (2026-11-24): ширина головы K/V ЕСТЬ в GGUF-заголовке
+		// (<arch>.attention.key_length/value_length) — незачем отдавать 0, из-за
+		// которого клиент/панель считали KV по n_embd/n_heads. head_dim_source
+		// говорит, взято ли число из файла (gguf) или это формула (computed).
+		"head_dim_k":      meta.KVHeadDim(),
+		"head_dim_v":      meta.KVHeadVDim(),
+		"head_dim_source": meta.KVHeadDimSource(),
+		"n_vocab":         0, // runtime-only (load required)
 		// context_size заполнен, когда GGUF-заголовок прочитан; 0 — только если
 		// метаданные недоступны (тогда поле остаётся честным нулём).
 		"context_size": contextSize,

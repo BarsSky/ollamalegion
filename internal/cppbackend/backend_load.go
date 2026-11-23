@@ -721,8 +721,18 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	}
 	inst.info.NHeads = meta.NHeads
 	inst.info.NKvHeads = meta.NKvHeads // BUG 13
-	inst.info.HeadDimK = meta.HeadDimK // Phase 3 (2026-07-06): expose to /api/show
-	inst.info.HeadDimV = meta.HeadDimV // Phase 3
+	// R705 (2026-11-24): ширина головы K/V — РЕАЛЬНАЯ, из llama.cpp.
+	//
+	// Раньше здесь было то, что присылал C-мост, а мост считал n_embd/n_heads
+	// (c/bridge/bridge.c, bridge_get_model_metadata): у Qwen3-4B публиковалось 80
+	// при реальных 128, у gemma-4-E4B — 320 при 512. Число уезжало в /api/models
+	// → балансер (KV/токен, R659, AutoTune) и занижало KV (Qwen3-4B — на 60 %).
+	// Теперь мост отдаёт n_embd_head_k_full/v_full из llama_hparams (там лежит
+	// <arch>.attention.key_length), а HeadDimSource говорит, факт это или прежняя
+	// формула — чтобы занижение больше не выглядело измерением.
+	inst.info.HeadDimK = meta.HeadDimK // R705: llama_hparams.n_embd_head_k_full
+	inst.info.HeadDimV = meta.HeadDimV // R705: llama_hparams.n_embd_head_v_full
+	inst.info.HeadDimSource = resolveHeadDimSourceR705(meta.HeadDimSource, meta.HeadDimK)
 	inst.info.NEmbd = meta.NEmbd
 	inst.info.NVocab = meta.NVocab
 	// R83-fix: реальное окно пишем ниже (после чтения у llama.cpp) — здесь

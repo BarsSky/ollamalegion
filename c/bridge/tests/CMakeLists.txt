@@ -118,6 +118,8 @@ add_executable(test_batch_n_tokens
     # R493: bridge.c ссылается на bridge_prefix_* — без этого файла линковка падает.
     ../prefix_cache.c
     ../window_fit.c
+    # R705: bridge_get_model_metadata решает ширину головы через head_dim.c.
+    ../head_dim.c
     # R248/B2: bridge.c вызывает bridge_mtmd_* (mmproj) — компилируем обёртку.
     ../csrc/vision_mtmd.cpp
 )
@@ -144,6 +146,8 @@ add_library(bridge_compile_all OBJECT
     ../bridge.c
     ../prefix_cache.c
     ../window_fit.c
+    # R705: см. test_batch_n_tokens — bridge.c зовёт bridge_head_dim_resolve.
+    ../head_dim.c
     ../csrc/chat_thinking.cpp
     ../csrc/vision_mtmd.cpp
 )
@@ -168,6 +172,8 @@ add_executable(test_batched_batch
     # R493: см. test_batch_n_tokens.
     ../prefix_cache.c
     ../window_fit.c
+    # R705: см. test_batch_n_tokens.
+    ../head_dim.c
     # R248/B2: см. test_batch_n_tokens.
     ../csrc/vision_mtmd.cpp
 )
@@ -282,6 +288,24 @@ target_include_directories(test_kv_budget PRIVATE
 target_compile_features(test_kv_budget PRIVATE c_std_99)
 add_test(NAME test_kv_budget COMMAND test_kv_budget)
 
+# test_head_dim — R705 (2026-11-24): решение «ширина головы K/V из модели или
+# формулой». Без libllama: bridge_head_dim_resolve принимает уже прочитанные
+# значения (hparams из csrc/model_hparams.cpp и наличие attention.key_length), а
+# тест проверяет РЕШЕНИЕ и его источники на числах реальных моделей стенда.
+#
+# Живой факт: мост публиковал head_dim_k = n_embd/n_heads — Qwen3-4B 80 вместо 128,
+# gemma-4-E4B 320 вместо 512, Inkling-2-Mini 96 вместо 128. KV/токен занижался
+# (Qwen3-4B — на 60 %), и балансер (R659/AutoTune) строил решения на этом числе.
+add_executable(test_head_dim
+    test_head_dim.c
+    ../head_dim.c
+)
+target_include_directories(test_head_dim PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_compile_features(test_head_dim PRIVATE c_std_99)
+add_test(NAME test_head_dim COMMAND test_head_dim)
+
 add_test(NAME test_prefix_cache COMMAND test_prefix_cache)
 add_test(NAME test_batch_n_tokens COMMAND test_batch_n_tokens)
 add_test(NAME test_batched_batch COMMAND test_batched_batch)
@@ -295,7 +319,7 @@ add_test(NAME abort_syntax_test COMMAND abort_syntax_test)
 add_custom_target(bridge-tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
     DEPENDS test_prefix_cache test_batch_n_tokens test_batched_batch test_abort_api
-            test_embeddings_mode abort_syntax_test test_window_fit test_kv_budget
+            test_embeddings_mode abort_syntax_test test_window_fit test_kv_budget test_head_dim
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running bridge regression tests (ctest)"
 )

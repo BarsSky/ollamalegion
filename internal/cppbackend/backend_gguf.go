@@ -40,6 +40,13 @@ type GGUFHeaderInfo struct {
 	FullAttentionInterval int  `json:"fullAttentionInterval,omitempty"` // *.full_attention_interval
 	HasRecurrentLayersKey bool `json:"hasRecurrentLayersKey,omitempty"` // в файле есть явный список рекуррентных слоёв
 
+	// R705 (2026-11-24): источник HeadDimK/HeadDimV (bridge.HeadDimSourceGGUF |
+	// HeadDimSourceComputed | ""). НЕ читается из файла: выставляется резолвером —
+	// на пути loaded_info берётся из ModelInfo.HeadDimSource (llama_hparams), на
+	// пути заголовка — из наличия <arch>.attention.key_length. Нужен, чтобы
+	// ComputeFeasible опубликовал head_dim_source рядом с числом.
+	HeadDimSource string `json:"headDimSource,omitempty"`
+
 	// R83 (2026-10-01): KV-sharing и скользящее окно (gemma4/gemma3n).
 	//
 	// У gemma-4-E4B кэш держат 24 слоя из 42 (shared_kv_layers=18), из них

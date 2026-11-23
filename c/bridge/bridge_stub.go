@@ -203,12 +203,22 @@ type ModelMetadata struct {
 	NLayers        int
 	NHeads         int
 	NKvHeads       int // NEW: GQA kv heads (added 2026-07-06)
-	HeadDimK       int // NEW: K head dim (added 2026-07-06)
-	HeadDimV       int // NEW: V head dim (added 2026-07-06)
+	HeadDimK       int // R705: реальная ширина головы K (см. bridge.go)
+	HeadDimV       int // R705: реальная ширина головы V (см. bridge.go)
 	NEmbd          int
 	NVocab         int
 	SizeTotalBytes uint64
+	// HeadDimSource — R705: в stub-сборке реальной модели нет, поэтому мост не
+	// сообщает источник (""); потребитель трактует это как computed, а не как факт.
+	HeadDimSource string
 }
+
+// R705: те же значения источника, что в реальном мосту (bridge.go) — нужны,
+// чтобы код, собранный с -tags llama_stub, компилировался и не расходился.
+const (
+	HeadDimSourceGGUF     = "gguf"
+	HeadDimSourceComputed = "computed"
+)
 
 // StreamCallback — функция обратного вызова для стриминга
 type StreamCallback func(token string) bool

@@ -105,13 +105,21 @@ set(BRIDGE_SOURCES
     # Вынесена из bridge.c, чтобы её проверял standalone-тест: в ней жила
     # регрессия «f16 в 16 раз больше» (см. kv_budget.h).
     kv_budget.c
+    # R705 (2026-11-24): решение «ширина головы K/V из модели или формулой» —
+    # чистая логика, которую проверяет c/bridge/tests/test_head_dim.c.
+    head_dim.c
     csrc/chat_thinking.cpp
     csrc/vision_mtmd.cpp
+    # R705 (2026-11-24): реальная ширина головы K/V из llama_hparams. В публичном
+    # include/llama.h нет аксессоров n_embd_head_k/v, поэтому читаем приватный
+    # src/llama-model.h из C++-файла (см. csrc/model_hparams.cpp).
+    csrc/model_hparams.cpp
 )
 
 # Заголовки
 set(BRIDGE_HEADERS
     bridge.h
+    head_dim.h
     prefix_cache.h
     window_fit.h
     kv_budget.h
@@ -126,6 +134,9 @@ target_include_directories(ollamalegion_bridge PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/csrc"
     "${LLAMA_CPP_ROOT}/include"
+    # R705: приватные заголовки llama.cpp (src/llama-model.h, src/llama-hparams.h)
+    # нужны csrc/model_hparams.cpp. Стадия bridge-builder в Dockerfile копирует src/.
+    "${LLAMA_CPP_ROOT}/src"
     "${LLAMA_CPP_ROOT}/ggml/include"
     "${LLAMA_CPP_ROOT}/common"
     "${LLAMA_CPP_ROOT}/tools/mtmd"

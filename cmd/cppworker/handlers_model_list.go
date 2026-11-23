@@ -206,9 +206,16 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			// свободный узел без проверки окна. Балансерный поллер уже разбирает
 			// ровно эти имена полей (llamacpp_metrics_poller.go: n_kv_heads,
 			// head_dim_k, head_dim_v), поэтому достаточно их отдать.
-			"n_kv_heads":          m.NKvHeads,
-			"head_dim_k":          m.HeadDimK,
-			"head_dim_v":          m.HeadDimV,
+			"n_kv_heads": m.NKvHeads,
+			"head_dim_k": m.HeadDimK,
+			"head_dim_v": m.HeadDimV,
+			// R705 (2026-11-24): ОТКУДА ширина головы. До этой правки head_dim_k
+			// считался в C-мосте как n_embd/n_heads (Qwen3-4B — 80 вместо 128,
+			// gemma-4-E4B — 320 вместо 512), и в ответе нельзя было отличить
+			// измеренную ширину от оценки. Балансер читает это поле вместе с
+			// head_dim_k: gguf = из <arch>.attention.key_length (факт),
+			// computed = прежняя формула (оценка).
+			"head_dim_source":     m.HeadDimSource,
 			"context_size":        m.ContextSize,
 			"gguf_context_length": m.GGUFContextLength,
 			"size_bytes":          effectiveSize,

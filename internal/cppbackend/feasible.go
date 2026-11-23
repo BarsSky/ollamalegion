@@ -39,6 +39,14 @@ type FeasibleInfo struct {
 	FreeVRAMMB  uint64 `json:"free_vram_mb"`  // observed free VRAM at calc time
 	FreeRAMMB   uint64 `json:"free_ram_mb"`   // observed free RAM at calc time
 	Source      string `json:"source"`        // "gguf" / "loaded_info" / "fallback"
+
+	// R705 (2026-11-24): ширина головы K/V, по которой посчитан KVPerToken, и
+	// ИСТОЧНИК этой ширины (gguf — <arch>.attention.key_length из модели,
+	// computed — прежняя формула n_embd/n_heads). Публикуется, чтобы в отчёте и
+	// в `-feasible` было видно, на чём стоит «сколько влезет», а не только итог.
+	HeadDimK      int    `json:"head_dim_k"`
+	HeadDimV      int    `json:"head_dim_v"`
+	HeadDimSource string `json:"head_dim_source"`
 }
 
 // ComputeFeasible возвращает FeasibleInfo для модели. Порядок предпочтения:
@@ -101,6 +109,22 @@ func (b *Backend) ComputeFeasible(modelName string) (*FeasibleInfo, error) {
 	// V считается равной K, как и раньше.
 	//
 	// Fallback chain сохранён: KeyLength > HeadDimK (C-мост) > NEmbd/NHeads > 128.
+	//
+	// R705 (2026-11-24): вместе с шириной запоминается её ИСТОЧНИК. Резолвер
+	// (resolveGGUFAndKVType) уже знает его для пути loaded_info («мост сказал:
+	// key_length или формула») и для пути GGUF-заголовка. Если источник не задан,
+	// выводим его из того, какое поле дало число: KeyLength/HeadDimK из модели —
+	// факт, NEmbd/NHeads — прежняя формула, дефолт 128 — «неизвестно» (пусто).
+	headDimSource := h.HeadDimSource
+	if headDimSource == "" {
+		switch {
+		case h.KeyLength > 0:
+			headDimSource = bridge.HeadDimSourceGGUF
+		case h.HeadDimK > 0, h.NEmbd > 0 && h.NHeads > 0:
+			headDimSource = bridge.HeadDimSourceComputed
+		}
+	}
+
 	headDimK := h.KeyLength
 	if headDimK <= 0 {
 		headDimK = h.HeadDimK
@@ -172,6 +196,10 @@ func (b *Backend) ComputeFeasible(modelName string) (*FeasibleInfo, error) {
 		FreeVRAMMB:  freeVRAMMB,
 		FreeRAMMB:   freeRAMMB,
 		Source:      source,
+		// R705: видно, какая ширина головы дала KVPerToken и откуда она.
+		HeadDimK:      headDimK,
+		HeadDimV:      headDimV,
+		HeadDimSource: headDimSource,
 	}, nil
 }
 
@@ -201,6 +229,10 @@ func (b *Backend) resolveGGUFAndKVType(modelName string) (*GGUFHeaderInfo, strin
 			HeadDimV:      mi.HeadDimV,
 			NEmbd:         mi.NEmbd,
 			ContextLength: mi.GGUFContextLength, // Round 37: 0 если не проставлено
+			// R705: источник ширины — тот, что сообщил мост при загрузке
+			// (gguf = <arch>.attention.key_length из модели, computed = прежняя
+			// формула). Пусто → ComputeFeasible выведет источник сам.
+			HeadDimSource: resolveHeadDimSourceR705(mi.HeadDimSource, mi.HeadDimK),
 		}
 		// KV type: prefer per-model override, fall back to backend default
 		kvType := mi.KVCacheType
@@ -238,6 +270,9 @@ func (b *Backend) resolveGGUFAndKVType(modelName string) (*GGUFHeaderInfo, strin
 	if err != nil {
 		return nil, "", "", fmt.Errorf("read GGUF header for %q: %w", modelName, err)
 	}
+	// R705: источник ширины для пути «заголовок файла»: ключ
+	// <arch>.attention.key_length есть → gguf, иначе прежняя формула.
+	h.HeadDimSource = headDimSourceForKeyLengthR705(h.KeyLength, h.KVHeadDim())
 
 	// KV type: prefer per-model profile override, fall back to default
 	kvType := meta.KVCacheType

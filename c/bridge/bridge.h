@@ -371,6 +371,20 @@ InferenceResult bridge_get_embeddings(
     const char* text
 );
 
+// R705 (2026-11-24): ОТКУДА взялась опубликованная ширина головы K/V.
+//
+// Зачем признак источника. Число head_dim_k уезжает в /api/models, оттуда — в
+// балансер (KV/токен, «сколько окна влезет», AutoTune). Когда оно посчитано
+// формулой n_embd/n_heads, это видно в API и в логе, а не выглядит измеренным.
+//   GGUF      — <arch>.attention.key_length/value_length (то, что llama.cpp
+//               положил в llama_hparams при загрузке) — реальная ширина модели;
+//   COMPUTED  — прежняя формула n_embd/n_heads (нет ключа в файле, нестандартная
+//               архитектура или старый мост);
+//   UNKNOWN   — не сообщено (старый мост/бинарь).
+#define BRIDGE_HEAD_DIM_SOURCE_UNKNOWN  0
+#define BRIDGE_HEAD_DIM_SOURCE_GGUF     1
+#define BRIDGE_HEAD_DIM_SOURCE_COMPUTED 2
+
 // Получение метаданных модели
 typedef struct {
     char* description;      // GGUF metadata (general.description)
@@ -379,11 +393,14 @@ typedef struct {
     int n_layers;
     int n_heads;
     int n_head_kv;        // GQA kv heads (public API in llama.h)
-    int n_embd_head_k;    // K head dim (computed: n_embd / n_heads)
-    int n_embd_head_v;    // V head dim (computed: n_embd / n_heads)
+    int n_embd_head_k;    // K head dim: llama_hparams.n_embd_head_k_full (R705)
+    int n_embd_head_v;    // V head dim: llama_hparams.n_embd_head_v_full (R705)
     int n_embd;
     int n_vocab;
     uint64_t size_total;    // размер файла в байтах
+    // R705: откуда n_embd_head_k/v (BRIDGE_HEAD_DIM_SOURCE_*). 0 у старого моста —
+    // Go-сторона обязана прочитать это как «число посчитано формулой».
+    int head_dim_source;
 } ModelMetadata;
 ModelMetadata bridge_get_model_metadata(ModelHandle model);
 

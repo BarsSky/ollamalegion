@@ -35,6 +35,11 @@ type archParams struct {
 	HeadDimK int
 	HeadDimV int
 	NEmbd    int
+	// HeadDimSource — R705 (2026-11-24): откуда ширина головы —
+	// "gguf" (<arch>.attention.key_length из модели) или "computed"
+	// (формула n_embd/n_heads, в том числе добранная derive ниже).
+	// Пусто у старого cppworker.
+	HeadDimSource string
 }
 
 // usable — данных достаточно, чтобы посчитать KV cache.
@@ -47,6 +52,10 @@ func (a *archParams) derive() {
 	if a.NEmbd > 0 && a.NHeads > 0 {
 		if a.HeadDimK == 0 {
 			a.HeadDimK = a.NEmbd / a.NHeads
+			// R705: число посчитано ЗДЕСЬ, а не прочитано из модели — источник
+			// обязан это сказать, иначе R659/AutoTune примут оценку за факт
+			// (у Qwen3-4B формула даёт 80 при реальных 128).
+			a.HeadDimSource = "computed"
 		}
 		if a.HeadDimV == 0 {
 			a.HeadDimV = a.HeadDimK
@@ -92,6 +101,11 @@ func applyArchParams(m *types.LlamaCppModel, a archParams) {
 	}
 	if m.HeadDimK == 0 {
 		m.HeadDimK = a.HeadDimK
+		// R705: ширина приехала этим путём — несём и её источник, чтобы оценка
+		// (computed) не выглядела измерением.
+		if m.HeadDimSource == "" {
+			m.HeadDimSource = a.HeadDimSource
+		}
 	}
 	if m.HeadDimV == 0 {
 		m.HeadDimV = a.HeadDimV
@@ -154,6 +168,8 @@ func (p *llamaCppMetricsPoller) fetchArchParams(b backendInfo, name string) (arc
 		HeadDimK: firstIntField(data.ModelInfo, "head_dim_k", "general.head_dim_k", "n_embd_head_k"),
 		HeadDimV: firstIntField(data.ModelInfo, "head_dim_v", "general.head_dim_v", "n_embd_head_v"),
 		NEmbd:    firstIntField(data.ModelInfo, "n_embd", "general.n_embd"),
+		// R705: источник ширины из /api/show (cppworker отдаёт head_dim_source).
+		HeadDimSource: firstStringField(data.ModelInfo, "head_dim_source", "general.head_dim_source"),
 	}
 	arch.derive()
 	if !arch.usable() {

@@ -45,15 +45,25 @@ func (e *AlreadyLoadedAsError) Error() string {
 
 // ModelInfo — информация о загруженной модели
 type ModelInfo struct {
-	Name              string    `json:"name"`
-	Path              string    `json:"path"`
-	State             LoadState `json:"state"`
-	Architecture      string    `json:"architecture,omitempty"`
-	NLayers           int       `json:"nLayers"`
-	NHeads            int       `json:"nHeads"`
-	NKvHeads          int       `json:"nKvHeads"`
-	HeadDimK          int       `json:"headDimK"`
-	HeadDimV          int       `json:"headDimV"`
+	Name         string    `json:"name"`
+	Path         string    `json:"path"`
+	State        LoadState `json:"state"`
+	Architecture string    `json:"architecture,omitempty"`
+	NLayers      int       `json:"nLayers"`
+	NHeads       int       `json:"nHeads"`
+	NKvHeads     int       `json:"nKvHeads"`
+	HeadDimK     int       `json:"headDimK"`
+	HeadDimV     int       `json:"headDimV"`
+	// HeadDimSource — R705 (2026-11-24): откуда взята ширина головы K/V.
+	//
+	//   bridge.HeadDimSourceGGUF     — <arch>.attention.key_length из модели (факт);
+	//   bridge.HeadDimSourceComputed — прежняя формула n_embd/n_heads (оценка);
+	//   ""                           — чисел нет вовсе (неизвестно).
+	//
+	// Поле нужно, чтобы «занижённая ширина» больше не выглядела измеренной: по
+	// нему /api/models отдаёт head_dim_source, а балансер (R659/AutoTune) видит,
+	// можно ли доверять геометрии.
+	HeadDimSource     string    `json:"headDimSource,omitempty"`
 	NEmbd             int       `json:"nEmbd"`
 	NVocab            int       `json:"nVocab"`
 	ContextSize       int       `json:"contextSize"`

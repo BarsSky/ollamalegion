@@ -961,7 +961,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"session", sessionID, "model", model, "from", targetBackend, "to", alt,
 				"reason", "sticky_backend_model_absent",
 				"alt_loaded_per_seq", altPerSeq, "requested_n_ctx", parsed.NumCtx,
-				"covers_request", parsed.NumCtx <= 0 || altPerSeq >= parsed.NumCtx)
+				"covers_request", parsed.NumCtx <= 0 || altPerSeq >= parsed.NumCtx,
+				// D5 (2026-11-25): ЯВНЫЙ ПРИЗНАК ОБХОДА РЕСУРСНОГО ГЕЙТА.
+				//
+				// R303 перевозит заявку туда, где модель уже загружена, НЕ
+				// спрашивая жёсткие лимиты (диск/RAM) — это сознательное
+				// спасение живой сессии: иначе запрос ждал бы ресурсов, хотя
+				// готовая копия уже работает. Живой разбор второго стенда
+				// показал обратную сторону: снаружи это выглядит как «с чужого
+				// IP обслуживается, а с моего — нет», и по логу нельзя было
+				// понять, что ресурсный гейт был обойдён, а не пройден.
+				// Теперь обход назван в самом событии, чтобы разбор не гадал.
+				"resource_gate_bypassed", true,
+				"bypass_policy", "r303_rescue_loaded_copy")
 			targetBackend = alt
 			// Привязку сессии перевешиваем на новый узел: иначе следующий запрос
 			// той же сессии снова вернётся на узел без модели (пинг-понг 503).

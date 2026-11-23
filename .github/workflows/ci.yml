@@ -767,7 +767,7 @@ jobs:
           # регрессии в batched-батче и в abort API проходили мимо CI.
           # Цели зарегистрированы через add_test() в c/bridge/tests/CMakeLists.txt.
           ctest --output-on-failure
-          echo "--- ALL C-BRIDGE TESTS PASSED: batch_n_tokens, batched_batch, abort_api, embeddings_mode, abort_syntax, prefix_cache, window_fit, kv_budget ---"
+          echo "--- ALL C-BRIDGE TESTS PASSED: batch_n_tokens, batched_batch, abort_api, embeddings_mode, abort_syntax, prefix_cache, window_fit, kv_budget, head_dim ---"
 
   # ---------------------------------------------------------------------------
   # Job 3: golangci-lint (только ubuntu, чтобы не дублировать)

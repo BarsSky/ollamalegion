@@ -29,6 +29,11 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 $skipDirPattern = 'node_modules|\\c\\llama\.cpp\\|\\dist\\|test-results|\\\.git\\'
+# R712 (2026-11-25): _diag — каталог диагностики (gitignored, .gitignore '/_diag/'),
+# не боевой код: там дампы заголовков llama.cpp для диффа (new/old-ggml.h и т.п.).
+# Без исключения метрика §5 видит 2400-строчные дампы как «наши файлы» и спорит
+# с тестом-стражем, у которого исключение есть; в CI каталога нет вообще.
+$skipDirPattern = $skipDirPattern + '|\\_diag\\'
 $skipFilePattern = '_test\.go$|\.test\.js$'
 
 function Get-CodeFiles {

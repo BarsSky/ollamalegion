@@ -87,6 +87,7 @@ What the cluster can do for clients.
 | **WebUI auth and roles** | [EN](features/webui-auth.md) | [RU](features/webui-auth.ru.md) | Sessions, roles, CSRF, break-glass token, nginx proxy. |
 | **WebUI demo mode** | [EN](features/webui-demo.md) | [RU](features/webui-demo.ru.md) | Guest showcase of the whole scenario, enabled by WEBUI_DEMO_MODE only. |
 | **Cline agent loop** | [EN](features/cline-agent-loop.md) | [RU](features/cline-agent-loop.ru.md) | Tool-call contract, readiness, tracing and verification. |
+| **Inkling-2 loop export** | [EN](features/inkling2-loop.md) | [RU](features/inkling2-loop.ru.md) | Why the file declares visits, what the patch changes, and the live load/KV verdict. |
 
 ## Releases
 

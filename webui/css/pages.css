@@ -709,6 +709,15 @@
     gap: var(--space-4);
     flex-wrap: wrap;
 }
+/* R708: раскладка KV в карточке модели на диске. Живёт в той же строке меты,
+   что размер и квантизация (вёрстка не меняется), но цифры — моноширинными:
+   «24 слоя» и «57 344 Б/токен» оператор сравнивает глазами с /api/models и
+   логом воркера, а пропорциональные цифры в строке из 5 полей сливаются. */
+.gguf-local-kv {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+    white-space: nowrap;
+    cursor: help;
+}
 
 /* Loaded Model Items */
 .gguf-loaded-model-item {

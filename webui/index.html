@@ -57,7 +57,7 @@
     
     <link rel="stylesheet" href="css/metrics.css?v=R425">
     <link rel="stylesheet" href="css/data.css?v=R425">
-    <link rel="stylesheet" href="css/pages.css?v=R425">
+    <link rel="stylesheet" href="css/pages.css?v=R708">
     <link rel="stylesheet" href="css/layout.css?v=R425">
     <link rel="stylesheet" href="css/responsive.css?v=R425">
     <!-- R232: стили демо-режима (активны только при body.demo-mode) -->
@@ -2697,8 +2697,8 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <div class="toast-container" id="toastContainer"></div>
 
     <!-- i18n Language Packs -->
-    <script defer src="js/i18n/ru.js?v=R425"></script>
-    <script defer src="js/i18n/en.js?v=R425"></script>
+    <script defer src="js/i18n/ru.js?v=R708"></script>
+    <script defer src="js/i18n/en.js?v=R708"></script>
     <script defer src="js/i18n/index.js?v=R425"></script>
     <!-- Runtime config injected by entrypoint for Docker / local nginx -->
     <script defer>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
@@ -2859,12 +2859,12 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          Без него пересборка снова оставляла бы блоки заглушкой «Загрузка…». -->
     <script defer src="js/modules/gguf-async-cache.js?v=R691"></script>
     <script defer src="js/modules/gguf-detail-form-state.js?v=R691"></script>
-    <script defer src="js/modules/gguf-renderer-refresh.js?v=R691"></script>
+    <script defer src="js/modules/gguf-renderer-refresh.js?v=R708"></script>
     <script defer src="js/modules/gguf-page-provider.js?v=R425"></script>
     <!-- R57.5e (2026-09-03): delegated click handler + bindEvents + bindSettingsChange. -->
     <script defer src="js/modules/gguf-renderer-detail.js?v=R425"></script>
     <!-- R656: таб Models правой панели GGUF — фабрика; до gguf-renderer-detail-render.js. -->
-    <script defer src="js/modules/gguf-detail-models.js?v=R656"></script>
+    <script defer src="js/modules/gguf-detail-models.js?v=R708"></script>
     <!-- R668 (2026-11-21): здесь стоял ВТОРОЙ тег gguf-renderer-detail-render.js, а
          фабрика gguf-detail-settings.js не подключалась вовсе. Итог в консоли на
          каждой загрузке: `Uncaught TypeError: window.GgufDetailSettings is not a
@@ -2878,7 +2878,12 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script defer src="js/modules/gguf-detail-params.js?v=R691"></script>
     <script defer src="js/modules/gguf-detail-settings.js?v=R691"></script>
     <!-- R57.5f (2026-09-03): right panel render functions (renderDetailPanel, 4 sub-panes, settings, backend options). -->
-    <script defer src="js/modules/gguf-renderer-detail-render.js?v=R425"></script>
+    <script defer src="js/modules/gguf-renderer-detail-render.js?v=R708"></script>
+    <!-- R709: блок «Ре-экспорт GGUF» (опциональный модуль, профиль reexport).
+         Грузится ДО gguf-renderer.js: рендерер страницы зовёт
+         window.GgufReexport.mount() после сборки разметки. Модуль не падает при
+         отсутствии сервиса — он просто не рисует блок. -->
+    <script defer src="js/modules/gguf-reexport.js?v=R709"></script>
     <script defer src="js/modules/gguf-renderer.js?v=R425"></script>
     <script defer src="js/modules/settings-ui.js?v=R425"></script>
     <!-- R305 (этап 3 рефакторинга настроек): реестр «горячих» настроек балансера

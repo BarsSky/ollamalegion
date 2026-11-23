@@ -24,6 +24,44 @@
 
     const M = (window.GgufModule = window.GgufModule || {});
 
+    // ---- R708: нормализация строки дискового инвентаря -----------------------
+    //
+    // ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. /api/models/files — «вся meta для UI» (R60.3), и
+    // R708 добавил туда раскладку KV. Пока строки собирались ЛИТЕРАЛОМ в двух
+    // местах (fetchDiskModelsAsync и rescanBackendModels), любое новое поле
+    // приходилось протаскивать дважды, а забытое второе место выглядит как
+    // «воркер не отдаёт» — ровно класс R674 (поле передали, но фабрика его не
+    // прочитала). Нормализация теперь одна, и её проверяет node-тест
+    // webui/tests/gguf-kv-plan-r708.test.js.
+    //
+    // ВАЖНО: отсутствующее поле НЕ подставляется нулём/пустой строкой.
+    // Отсутствие раскладки — это состояние «старый воркер», и карточка обязана
+    // промолчать, а не нарисовать «0 слоёв».
+    const DISK_KV_PLAN_FIELDS = [
+        'kv_plan_source', 'kv_plan_exact',
+        'kv_layers', 'kv_global_layers', 'kv_swa_layers', 'kv_swa_window',
+        // Ширины классов: глобальный класс — под именами /api/models (R660/R705),
+        // оконный — под именами R707. Один источник — WireKVPlanFieldsR707.
+        'head_dim_k', 'head_dim_v', 'n_kv_heads',
+        'head_dim_swa', 'head_dim_swa_v', 'n_kv_heads_swa'
+    ];
+
+    function normalizeDiskModelRow(f) {
+        f = f || {};
+        const row = {
+            name: f.name || '-',
+            size: typeof f.size === 'number' ? f.size : (f.sizeBytes || 0),
+            quantization: f.quantization || '',
+            state: 'available', // не загружена
+            path: f.path || ''
+        };
+        DISK_KV_PLAN_FIELDS.forEach(function (k) {
+            if (f[k] !== undefined && f[k] !== null && f[k] !== '') row[k] = f[k];
+        });
+        return row;
+    }
+    M.normalizeDiskModelRow = normalizeDiskModelRow;
+
     // ---- Disk-models fallback (R60.5) ----
     // Асинхронная догрузка списка .gguf файлов на диске через /api/models/files
     // (R60.3 endpoint). Используется когда state.localModels пуст (нет загруженных
@@ -50,16 +88,9 @@
                 const files = (filesBody && Array.isArray(filesBody.files)) ? filesBody.files : [];
                 // Normalize: webui renderModelsPane ожидает объекты с полями
                 // {name, size, quantization, state}. У файлов state всегда
-                // "available" (не загружен).
-                const normalized = files.map(function (f) {
-                    return {
-                        name: f.name || '-',
-                        size: typeof f.size === 'number' ? f.size : (f.sizeBytes || 0),
-                        quantization: f.quantization || '',
-                        state: 'available', // не загружена
-                        path: f.path || '',
-                    };
-                });
+                // "available" (не загружен). R708: нормализация — одна функция
+                // (normalizeDiskModelRow), раскладка KV едет вместе с ней.
+                const normalized = files.map(normalizeDiskModelRow);
                 // R93 (2026-10-09): ПУСТОЙ ответ применяем тоже.
                 //
                 // Было: `if (files.length === 0) return;` — список, который
@@ -155,15 +186,9 @@
                 // Ответ — тот же формат, что /api/models/files: применяем сразу,
                 // без второго запроса.
                 const files = (body && Array.isArray(body.files)) ? body.files : [];
-                state.localModels = files.map(function (f) {
-                    return {
-                        name: f.name || '-',
-                        size: typeof f.size === 'number' ? f.size : (f.sizeBytes || 0),
-                        quantization: f.quantization || '',
-                        state: 'available',
-                        path: f.path || ''
-                    };
-                });
+                // R708: та же нормализация, что и в fetchDiskModelsAsync — иначе
+                // после ручной проверки каталога пропадала бы раскладка KV.
+                state.localModels = files.map(normalizeDiskModelRow);
                 state.diskInventory = state.diskInventory || {};
                 state.diskInventory[backendId] = {
                     count: files.length,

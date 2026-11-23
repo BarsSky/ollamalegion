@@ -507,6 +507,13 @@
     var buildParamSources = ggufDetailModels.buildParamSources;
     var renderParamSources = ggufDetailModels.renderParamSources;
     var buildLoadedFlags = ggufDetailModels.buildLoadedFlags;
+    // R708: раскладка KV в карточке модели на диске. Чистые функции — их
+    // проверяет node-тест webui/tests/gguf-kv-plan-r708.test.js; экспорт нужен,
+    // чтобы тест звал ИХ, а не копию правил.
+    var kvPlanFacts = ggufDetailModels.kvPlanFacts;
+    var kvPlanLineText = ggufDetailModels.kvPlanLineText;
+    var kvPlanLineTitle = ggufDetailModels.kvPlanLineTitle;
+    var renderKVPlanLine = ggufDetailModels.renderKVPlanLine;
     var PARAM_SOURCE_LABELS = ggufDetailModels.PARAM_SOURCE_LABELS;
     var PARAM_SOURCE_HINTS = ggufDetailModels.PARAM_SOURCE_HINTS;
 
@@ -1383,6 +1390,12 @@
     M.renderHostSystemCard = renderHostSystemCard;
     M.hostSystemPayload = hostSystemPayload;
     M.renderModelsPane = renderModelsPane;
+    // R708: раскладка KV в карточке модели на диске (чистые функции — их
+    // проверяет node-тест gguf-kv-plan-r708.test.js).
+    M.kvPlanFacts = kvPlanFacts;
+    M.kvPlanLineText = kvPlanLineText;
+    M.kvPlanLineTitle = kvPlanLineTitle;
+    M.renderKVPlanLine = renderKVPlanLine;
     // R165 (2026-10-17): НЕ переопределяем mergeModelRows. Реализация одна — в
     // gguf-renderer-refresh.js (загружается раньше), и именно она попадает в
     // M.mergeModelRows. Вторая копия здесь удалена: она перекрывала первую, и

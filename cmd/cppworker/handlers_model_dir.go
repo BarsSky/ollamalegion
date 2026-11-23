@@ -91,7 +91,41 @@ func handleListModelsDir(w http.ResponseWriter, r *http.Request) {
 func modelsDirPayload(mm *cppbackend.ModelManager) map[string]interface{} {
 	files := make([]map[string]interface{}, 0)
 	for _, m := range mm.ListModels() {
-		files = append(files, ggufFileMeta(m.Filename, m.SizeBytes, m.ModifiedAt))
+		entry := ggufFileMeta(m.Filename, m.SizeBytes, m.ModifiedAt)
+		// R708 (2026-11-23): РАСКЛАДКА KV — в карточку модели на ДИСКЕ.
+		//
+		// R707 уже публикует её в /api/models, но там только ЗАГРУЖЕННЫЕ модели:
+		// у незагруженного файла карточка «Модели на диске» видела лишь размер и
+		// квантизацию, а вопрос «сколько эта модель съест KV и почему не
+		// «все слои × ширина»» оставался без ответа до загрузки. Здесь тот же
+		// источник — метаданные GGUF → KVPlan() (kv_layers.go), поэтому числа
+		// совпадают с /api/models по построению, а не «примерно».
+		//
+		// Поля не выдумываются: нет метаданных (битый header, каталог без
+		// сканирования) — ключей в ответе нет вовсе, и WebUI не рисует строку.
+		if backend != nil {
+			if plan, ok := backend.KVPlanForModel(m.Filename); ok {
+				for k, v := range plan.WireKVPlanFieldsR707() {
+					entry[k] = v
+				}
+				// Геометрия ГЛОБАЛЬНОГО класса — теми же именами, что отдаёт
+				// /api/models для загруженной модели (R660/R705): head_dim_k,
+				// head_dim_v, n_kv_heads. Ширина V без <arch>.attention.value_length
+				// равна K — ровно как её читает llama.cpp (llama-model.cpp:1662-1663).
+				headDimV := plan.GlobalHeadDimV
+				if headDimV <= 0 {
+					headDimV = plan.GlobalHeadDim
+				}
+				if plan.GlobalHeadDim > 0 {
+					entry["head_dim_k"] = plan.GlobalHeadDim
+					entry["head_dim_v"] = headDimV
+				}
+				if plan.GlobalKVHeads > 0 {
+					entry["n_kv_heads"] = plan.GlobalKVHeads
+				}
+			}
+		}
+		files = append(files, entry)
 	}
 	// R66d (2026-09-23): отдаём и алиасы моделей (<name>.gguf.json из
 	// POST /api/create). Балансер собирает /api/tags именно из этого ответа,

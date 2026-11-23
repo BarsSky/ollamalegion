@@ -39,6 +39,173 @@
         var stripGGUF = ctx.stripGGUF;
         var formatFileSize = ctx.formatFileSize;
 
+    // ----- R708: раскладка KV в карточке модели ------------------------------
+    //
+    // ЗАЧЕМ. Воркер публикует раскладку KV (R707 в /api/models, R708 в
+    // /api/models/files): сколько слоёв держат кэш, сколько из них глобальные
+    // (растут с окном) и сколько живут в скользящем окне (после окна не растут),
+    // и ширина головы K/V у каждого класса. Без этого карточка модели на диске
+    // показывала «24 слоя» рядом с 42 блоками и не давала понять, почему KV на
+    // 32768 токенов — 532 MiB, а не 3 GiB по формуле «все слои × одна ширина».
+    //
+    // ПРАВИЛА (все проверены тестом gguf-kv-plan-r708.test.js):
+    //   * строка рисуется ТОЛЬКО когда раскладка есть (kv_plan_source == "plan").
+    //     flat/пусто — не «—», а НИЧЕГО: у старого воркера раскладки нет, и
+    //     выдумывать её нельзя (это ровно тот дефект, что R213 с f16);
+    //   * Б/токен считается по f16 — наибольшему KV (тип из профиля может его
+    //     уменьшить: q8_0 = 34/32, q4_0 = 18/32 байта на элемент). Число
+    //     подписано через ~ и тип назван в подсказке, а не выдан за факт;
+    //   * оконные слои считаются окном, а не контекстом — иначе для gemma-4
+    //     число снова завышается в разы (20 оконных слоёв шириной 256);
+    //   * неполная раскладка (нет ширины/голов) — строку НЕ рисуем: посчитать
+    //     «примерно» здесь значит соврать в сторону меньшего KV.
+    function kvPlanNumOf(obj, keys) {
+        if (!obj) return 0;
+        for (var i = 0; i < keys.length; i++) {
+            var v = obj[keys[i]];
+            if (v === undefined || v === null || v === '') continue;
+            var n = Number(v);
+            if (isFinite(n) && n > 0) return n;
+        }
+        return 0;
+    }
+
+    /**
+     * kvPlanFacts — раскладка строки карточки модели либо null.
+     *
+     * Возвращает {layers, globalLayers, swaLayers, window, globalDim,
+     * swaDim, perTokenBytes, exact}. null = раскладки нет/она неполна.
+     *
+     * @param {Object} m элемент state.localModels (ответ /api/models/files)
+     */
+    function kvPlanFacts(m) {
+        if (!m || typeof m !== 'object') return null;
+        // "flat" — это прежняя формула «все слои × одна ширина»: раскладки нет,
+        // объяснять в карточке нечего (и «почему не все слои» было бы ложью).
+        if (String(m.kv_plan_source || '') !== 'plan') return null;
+
+        var layers = kvPlanNumOf(m, ['kv_layers']);
+        var globalLayers = kvPlanNumOf(m, ['kv_global_layers']);
+        var swaLayers = kvPlanNumOf(m, ['kv_swa_layers']);
+        var window = kvPlanNumOf(m, ['kv_swa_window']);
+        if (layers <= 0 || globalLayers + swaLayers <= 0) return null;
+
+        var globalDim = kvPlanNumOf(m, ['head_dim_k']);
+        var globalDimV = kvPlanNumOf(m, ['head_dim_v']);
+        if (globalDimV <= 0) globalDimV = globalDim;
+        var globalHeads = kvPlanNumOf(m, ['n_kv_heads']);
+        var swaDim = kvPlanNumOf(m, ['head_dim_swa']);
+        if (swaDim <= 0) swaDim = globalDim;
+        var swaDimV = kvPlanNumOf(m, ['head_dim_swa_v']);
+        if (swaDimV <= 0) swaDimV = swaDim;
+        var swaHeads = kvPlanNumOf(m, ['n_kv_heads_swa']);
+        if (swaHeads <= 0) swaHeads = globalHeads;
+
+        if (globalLayers > 0 && (globalDim <= 0 || globalDimV <= 0 || globalHeads <= 0)) return null;
+        if (swaLayers > 0 && (swaDim <= 0 || swaDimV <= 0 || swaHeads <= 0)) return null;
+
+        // f16: (K+V) элементов × KV-голов × 2 байта на слой на токен.
+        var perToken = globalLayers * globalHeads * (globalDim + globalDimV) * 2 +
+            swaLayers * swaHeads * (swaDim + swaDimV) * 2;
+
+        return {
+            layers: layers,
+            globalLayers: globalLayers,
+            swaLayers: swaLayers,
+            window: window,
+            globalDim: globalDim,
+            swaDim: swaDim,
+            perTokenBytes: perToken,
+            exact: m.kv_plan_exact === true,
+            // Совместимость с ответом старых воркеров: поля могли прийти как
+            // camelCase (балансер), но раскладка опубликована только воркером.
+            source: 'plan'
+        };
+    }
+
+    // kvPlanLayerWord — «24 слоя» / «8 слоёв» без отдельного правила в каждом
+    // переводе: форма выбирается по числу, слово приходит из i18n (ru), в
+    // английском one/layers.
+    function kvPlanLayerWord(n) {
+        var n10 = n % 10, n100 = n % 100, form = 'many';
+        if (n10 === 1 && n100 !== 11) form = 'one';
+        else if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) form = 'few';
+        return _('gguf.kv_plan.layer_' + form);
+    }
+
+    // kvPlanGrouped — «57344» → «57 344». Разряды разделяем пробелом в обеих
+    // локалях: число здесь читают глазами и сравнивают с логом воркера, а
+    // locale-зависимый разделитель (запятая/точка) путался бы с десятичным.
+    function kvPlanGrouped(n) {
+        var s = String(Math.round(Number(n) || 0));
+        return s.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    }
+
+    // kvPlanClassesText — «4 глобальных × 512, 20 SWA × 256».
+    function kvPlanClassesText(f) {
+        var parts = [];
+        if (f.globalLayers > 0) {
+            parts.push(_('gguf.kv_plan.global_part', { layers: f.globalLayers, dim: f.globalDim }));
+        }
+        if (f.swaLayers > 0) {
+            parts.push(_('gguf.kv_plan.swa_part', { layers: f.swaLayers, dim: f.swaDim }));
+        }
+        return parts.join(', ');
+    }
+
+    /**
+     * kvPlanLineText — текст строки: «KV: 24 слоя (4 глобальных × 512,
+     * 20 SWA × 256, окно 512) · по плану · ~57 344 Б/токен».
+     */
+    function kvPlanLineText(f) {
+        var params = {
+            layers: f.layers,
+            layer_word: kvPlanLayerWord(f.layers),
+            classes: kvPlanClassesText(f),
+            source: f.exact ? _('gguf.kv_plan.source_plan')
+                : _('gguf.kv_plan.source_plan_upper'),
+            bytes: kvPlanGrouped(f.perTokenBytes)
+        };
+        if (f.swaLayers > 0 && f.window > 0) {
+            params.window = f.window;
+            return _('gguf.kv_plan.line_window', params);
+        }
+        return _('gguf.kv_plan.line', params);
+    }
+
+    /**
+     * kvPlanLineTitle — подсказка: ПОЧЕМУ не «все слои × ширина» и откуда
+     * Б/токен. Без неё строка с числами снова стала бы «магической».
+     */
+    function kvPlanLineTitle(f) {
+        var params = {
+            layers: f.layers,
+            classes: kvPlanClassesText(f),
+            window: f.window
+        };
+        var title = (f.swaLayers > 0 && f.window > 0)
+            ? _('gguf.kv_plan.title_window', params)
+            : _('gguf.kv_plan.title', params);
+        if (!f.exact) {
+            title += ' ' + _('gguf.kv_plan.title_upper_note');
+        }
+        return title;
+    }
+
+    /**
+     * renderKVPlanLine — HTML строки раскладки KV для карточки модели на диске.
+     *
+     * Пустая строка, если раскладки нет — карточка тогда выглядит ровно как до
+     * R708 (никакого «—»: отсутствие данных не значение).
+     */
+    function renderKVPlanLine(m) {
+        var f = kvPlanFacts(m);
+        if (!f) return '';
+        return '<span class="gguf-local-kv" title="' +
+            Utils.escapeHtml(kvPlanLineTitle(f)) + '">' +
+            Utils.escapeHtml(kvPlanLineText(f)) + '</span>';
+    }
+
     function renderModelsPane() {
         const models = state.localModels || [];
         const inv = (state.diskInventory && state.selectedBackendId)
@@ -101,6 +268,9 @@
                     '<div class="gguf-local-meta">' +
                         '<span>' + _('gguf.model_size') + ': ' + size + '</span>' +
                         '<span>' + _('gguf.quantization') + ': ' + quant + '</span>' +
+                        // R708: раскладка KV — в той же строке меты, что размер и
+                        // квантизация. Нет раскладки (старый воркер) — пусто.
+                        renderKVPlanLine(m) +
                         (isLoaded ? '<span class="badge badge-success">' + _('gguf.tab_loaded') + '</span>' : '') +
                     '</div>' +
                 '</div>' +
@@ -872,6 +1042,12 @@
             buildParamSources: buildParamSources,
             renderParamSources: renderParamSources,
             buildLoadedFlags: buildLoadedFlags,
+            // R708: раскладка KV в карточке модели на диске (чистые функции —
+            // их проверяет node-тест webui/tests/gguf-kv-plan-r708.test.js).
+            kvPlanFacts: kvPlanFacts,
+            kvPlanLineText: kvPlanLineText,
+            kvPlanLineTitle: kvPlanLineTitle,
+            renderKVPlanLine: renderKVPlanLine,
             PARAM_SOURCE_LABELS: PARAM_SOURCE_LABELS,
             PARAM_SOURCE_HINTS: PARAM_SOURCE_HINTS
         };

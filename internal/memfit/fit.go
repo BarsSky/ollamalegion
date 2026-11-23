@@ -234,25 +234,11 @@ func Ceilings(m ModelSpec, kv KVType, b Budget, p Policy) (exactFitCtx, hardCtx 
 
 	if uv := b.UsableVRAM(p); uv > m.SizeBytes {
 		avail := uv.Sub(m.SizeBytes)
-		if s := m.SWAKVLayers(); s > 0 {
-			// KV не линеен по ctx: до окна растут все слои, после — только
-			// глобальные. Считаем по той же формуле, что KVTotalBytes.
-			pg := KVBytesPerLayerPerToken(m.EffectiveKVHeadDim(), m.NKvHeads, kv).
-				Mul(int64(m.GlobalKVLayers()))
-			ps := KVBytesPerLayerPerToken(m.EffectiveSWAHeadDim(), m.NKvHeads, kv).
-				Mul(int64(s))
-			if pg+ps > 0 {
-				exactFitCtx = int(avail / (pg + ps))
-			}
-			if w := m.SWAWindow; w > 0 && exactFitCtx > w {
-				fixed := ps.Mul(int64(w))
-				if avail > fixed && pg > 0 {
-					exactFitCtx = int(avail.Sub(fixed) / pg)
-				}
-			}
-		} else if kvPT > 0 {
-			exactFitCtx = int(avail / kvPT)
-		}
+		// R707: обратная к KVTotalBytes формула живёт в KVShape.MaxCtxForBudget
+		// (классы слоёв: до окна растут все, после — только глобальные). Здесь
+		// остаётся только выбор бюджета: доступная VRAM минус веса. Потолок по
+		// обучающему контексту применяется ниже, как и раньше.
+		exactFitCtx = m.KVShape().MaxCtxForBudget(kv, avail, 0)
 	}
 	if m.TrainCtx > 0 && exactFitCtx > m.TrainCtx {
 		exactFitCtx = m.TrainCtx

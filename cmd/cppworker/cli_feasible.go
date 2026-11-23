@@ -78,6 +78,10 @@ func runFeasible(modelName string, out io.Writer) int {
 	// 80 вместо 128), и число выглядело измеренным.
 	fmt.Fprintf(out, "Head dim K/V:    %d/%d (%s)\n",
 		info.HeadDimK, info.HeadDimV, feasibleHeadDimSourceLabelR705(info.HeadDimSource))
+	// R707 (2026-11-25): РАСКЛАДКА KV по слоям — видно, послойная она или
+	// плоская, и из чего сложилось число «KV per token». Без этой строки
+	// уменьшение KV для gemma-4/Qwen3.8 нельзя ни проверить, ни объяснить.
+	fmt.Fprintf(out, "KV plan:         %s\n", feasibleKVPlanLineR707(info))
 	fmt.Fprintf(out, "KV per token:    %d bytes\n", info.KVPerToken)
 	fmt.Fprintf(out, "Free VRAM:       %d MB\n", info.FreeVRAMMB)
 	fmt.Fprintf(out, "Free RAM:        %d MB\n", info.FreeRAMMB)
@@ -100,6 +104,39 @@ func feasibleHeadDimSourceLabelR705(source string) string {
 	default:
 		return "неизвестно"
 	}
+}
+
+// feasibleKVPlanLineR707 — строка раскладки KV для `-feasible`.
+//
+// Пример (gemma-4-E4B, окно 512):
+//
+//	plan: global 4 × (512+512) × 2 kv-heads + swa 20 × (256+256) × 2 kv-heads, window 512
+//
+// «flat: все 42 слоя» означает, что данных по слоям нет и взята прежняя плоская
+// формула (KVPlanSource == "flat").
+func feasibleKVPlanLineR707(info *cppbackend.FeasibleInfo) string {
+	if info == nil {
+		return "неизвестно"
+	}
+	if info.KVPlanSource != cppbackend.KVPlanSourcePlan {
+		return fmt.Sprintf("flat: все %d слоёв (данных по слоям нет)", info.KVLayers)
+	}
+	exact := "верхняя оценка"
+	if info.KVPlanExact {
+		exact = "по правилу llama.cpp"
+	}
+	globalHeads, swaHeads := info.KVGlobalKVHeads, info.KVSWAKVHeads
+	if swaHeads <= 0 {
+		swaHeads = globalHeads
+	}
+	if info.KVSWALayers == 0 {
+		return fmt.Sprintf("plan: global %d слоёв × (%d+%d) × %d kv-heads (%s)",
+			info.KVGlobalLayers, info.KVGlobalHeadDim, info.KVGlobalHeadDimV, globalHeads, exact)
+	}
+	return fmt.Sprintf(
+		"plan: global %d слоёв × (%d+%d) × %d kv-heads + swa %d слоёв × (%d+%d) × %d kv-heads, окно %d (%s)",
+		info.KVGlobalLayers, info.KVGlobalHeadDim, info.KVGlobalHeadDimV, globalHeads,
+		info.KVSWALayers, info.KVSWAHeadDim, info.KVSWAHeadDimV, swaHeads, info.KVSWAWindow, exact)
 }
 
 // feasibleAutoRecommended вычисляет recommended n_ctx = min(VRAM, RAM, GGUF).

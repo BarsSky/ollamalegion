@@ -86,34 +86,60 @@ func envUint64MB(name string) uint64 {
 	return uint64(v)
 }
 
-// maxVRAMCtxFromMemory — чистая формула потолка окна (R521).
+// maxVRAMCtxFromMemory — чистая формула потолка окна (R521) для ПЛОСКОГО KV.
+//
+// R707: производственный путь послойного расчёта — maxVRAMCtxForPlanR707; эта
+// функция осталась для вырожденного случая «о слоях нет ничего» (тогда KV на
+// токен — defensive-константа, и считается ровно как до R707) и как эталон
+// формулы в тестах R521.
 //
 // freeMB — свободная VRAM СЕЙЧАС, weightsMB — размер весов модели (0 = неизвестен),
 // reserveMB — compute buffer, kvPerToken — байт KV на токен, ggufMax — потолок
 // модели (0 = неизвестен).
-//
-// При неизвестном размере весов считаем консервативно: вычитаем только резерв,
-// как раньше, НО без множителя «половина» — это уже не «половина на буферы», а
-// конкретный резерв. Такой расчёт всё равно завышен для неизвестной модели, и
-// вызывающий обязан это знать (Source=gguf без loaded_info).
 func maxVRAMCtxFromMemory(freeMB, weightsMB, reserveMB uint64, kvPerToken, ggufMax int) int {
+	return maxVRAMCtxFromFlatKVPerTokenR707(freeMB, weightsMB, reserveMB, kvPerToken, ggufMax)
+}
+
+// maxVRAMCtxForPlanR707 — потолок окна по свободной VRAM для ПОСЛОЙНОЙ раскладки.
+//
+// Отличие от maxVRAMCtxFromMemory: бюджет KV делится не на «KV на токен всех
+// слоёв», а на прирост с учётом окна (KVShape.MaxCtxForBudget): после окна растут
+// только глобальные слои. Для gemma-4-E4B это разница между ~7k и ~80k окна на
+// 8-гигабайтной карте при одинаковом бюджете.
+func maxVRAMCtxForPlanR707(freeMB, weightsMB, reserveMB uint64, plan KVPlan, kvType string, ggufMax int) int {
+	availMB, ok := kvBudgetAfterWeightsMB(freeMB, weightsMB, reserveMB)
+	if !ok {
+		return 0
+	}
+	return plan.MaxCtxForBudget(kvType, int64(availMB)*1024*1024, ggufMax)
+}
+
+// maxVRAMCtxFromFlatKVPerTokenR707 — прежняя формула (плоский KV) для путей, у
+// которых есть только число «байт на токен».
+func maxVRAMCtxFromFlatKVPerTokenR707(freeMB, weightsMB, reserveMB uint64, kvPerToken, ggufMax int) int {
 	if kvPerToken <= 0 {
 		return 0
 	}
-	need := reserveMB + fragmentationReserveMB(weightsMB)
-	if freeMB <= weightsMB+need {
-		// Веса и буферы не влезают даже без KV: места нет вовсе.
+	availMB, ok := kvBudgetAfterWeightsMB(freeMB, weightsMB, reserveMB)
+	if !ok {
 		return 0
 	}
-	availMB := freeMB - weightsMB - need
 	ctx := int(availMB*1024*1024) / kvPerToken
-	if ctx < 0 {
-		return 0
-	}
 	if ggufMax > 0 && ctx > ggufMax {
 		ctx = ggufMax
 	}
 	return ctx
+}
+
+// kvBudgetAfterWeightsMB — сколько МБ остаётся под KV после весов, compute-буфера
+// и запаса на фрагментацию. ok=false — места нет вовсе (веса и буферы не влезают).
+func kvBudgetAfterWeightsMB(freeMB, weightsMB, reserveMB uint64) (uint64, bool) {
+	need := reserveMB + fragmentationReserveMB(weightsMB)
+	if freeMB <= weightsMB+need {
+		// Веса и буферы не влезают даже без KV: места нет вовсе.
+		return 0, false
+	}
+	return freeMB - weightsMB - need, true
 }
 
 // weightsSizeMB — размер весов модели в МБ (R521).

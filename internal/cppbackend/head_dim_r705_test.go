@@ -104,11 +104,13 @@ func TestR705_LoadedInfoUsesRealHeadDim(t *testing.T) {
 			info.HeadDimSource, bridge.HeadDimSourceGGUF)
 	}
 
-	// q8_0/q4_0 — прежние коэффициенты (половина и четверть), но от НОВОЙ ширины.
+	// q8_0/q4_0 — ТОЧНЫЕ коэффициенты (34/32, 18/32 от memfit.KVBytesPerElement,
+	// R707), но от НОВОЙ ширины: прежние «/2» и «/4» занижали KV на 6.25 %/12.5 %.
+	const elems = 2 * 36 * 8 * 128
 	for _, tc := range []struct {
 		kvType string
 		want   int
-	}{{"q8_0", wantKV / 2}, {"q4_0", wantKV / 4}} {
+	}{{"q8_0", elems * 34 / 32}, {"q4_0", elems * 18 / 32}} {
 		got := loadedInfoBackendR705(t, ModelInfo{
 			Name: modelName, State: StateLoaded, Architecture: "qwen3",
 			NLayers: 36, NHeads: 32, NKvHeads: 8,
@@ -138,8 +140,14 @@ func TestR705_LoadedInfoUsesRealHeadDim(t *testing.T) {
 // TestR705_Gemma4HeadDimFromModel — gemma-4-E4B: key_length = 512 при
 // n_embd/n_heads = 320.
 //
-// Ожидание f16: (512 + 512) × 42 × 2 × 2 = 172 032 Б/токен;
-// прежняя формула: 2 × 42 × 2 × 320 × 2 = 107 520.
+// Ожидание q4_0 (R707: точный коэффициент 18/32 от memfit.KVBytesPerElement):
+// элементов (2 × 42 × 2 × 512 = 86 016) × 18/32 = 48 384 Б/токен.
+// Прежняя формула по ширине 320 дала бы 2 × 42 × 2 × 320 × 18/32 = 30 240.
+//
+// Здесь метаданных файла нет (каталог пуст), поэтому классы слоёв неизвестны:
+// план вырождается в плоский («все 42 слоя шириной key_length»), и тест
+// проверяет именно ШИРИНУ — послойный расчёт gemma-4 проверяет R83/R707-тест с
+// реальными ключами shared_kv_layers/sliding_window_pattern.
 func TestR705_Gemma4HeadDimFromModel(t *testing.T) {
 	const modelName = "gemma-4-E4B-it-Q4_K_M"
 	b := loadedInfoBackendR705(t, ModelInfo{
@@ -160,24 +168,34 @@ func TestR705_Gemma4HeadDimFromModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputeFeasible: %v", err)
 	}
-	const wantKVQ4 = (512 + 512) * 42 * 2 * 2 / 4 // 43008
+	const elems = 2 * 42 * 2 * 512
+	const wantKVQ4 = elems * 18 / 32 // 48384
 	if info.KVPerToken != wantKVQ4 {
 		t.Fatalf("KVPerToken(q4_0) = %d, want %d (key_length=512, а не 320)",
 			info.KVPerToken, wantKVQ4)
 	}
-	const oldKVQ4 = 2 * 42 * 2 * (2560 / 8) * 2 / 4 // 26880
+	const oldKVQ4 = 2 * 42 * 2 * (2560 / 8) * 18 / 32 // 30240
 	if info.KVPerToken == oldKVQ4 {
 		t.Fatalf("KVPerToken = %d — gemma-4 всё ещё считается по n_embd/n_heads=320", oldKVQ4)
 	}
 	if info.HeadDimK != 512 {
 		t.Errorf("HeadDimK = %d, want 512", info.HeadDimK)
 	}
+	if info.KVPlanSource != KVPlanSourceFlat {
+		t.Errorf("KVPlanSource = %q, want %q — без метаданных файла классами слоёв не владеем",
+			info.KVPlanSource, KVPlanSourceFlat)
+	}
 }
 
 // TestR705_Qwen38Unchanged — Qwen3.8-9B: key_length = 256 = n_embd/n_heads.
 //
-// Числа обязаны остаться прежними: 2 × 32 × 4 × 256 × 2 = 131 072 (f16).
-// Здесь важно, что правка не «сдвинула» ничего там, где ширина и так совпадала.
+// ШИРИНА обязана остаться прежней (256), и это здесь проверяется явно:
+// per-layer вклад = (256 + 256) × 4 × 2 = 4 096 Б/токен (f16).
+//
+// R707: ЧИСЛО KV на токен при этом уменьшилось — и это правильно. qwen35 —
+// гибридная архитектура: KV держат только attention-слои (каждый 4-й), то есть
+// 8 из 32 слоёв, а не все 32. Поэтому 32 768, а не 131 072; на ширину это не
+// влияет, и «совпадение ширины с формулой» проверяется отдельным полем.
 func TestR705_Qwen38Unchanged(t *testing.T) {
 	const modelName = "Qwen3.8-9B-Distill-uncensored-heretic.Q4_K_M"
 	b := loadedInfoBackendR705(t, ModelInfo{
@@ -198,16 +216,24 @@ func TestR705_Qwen38Unchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputeFeasible: %v", err)
 	}
-	const wantKV = (256 + 256) * 32 * 4 * 2 // 131072
+	// Гибридное правило: attention-слоёв 8 из 32 (full_attention_interval по умолчанию 4).
+	const kvLayers = 8
+	const wantKV = (256 + 256) * kvLayers * 4 * 2 // 32768
 	if info.KVPerToken != wantKV {
-		t.Fatalf("KVPerToken = %d, want %d (key_length совпадает с формулой — числа не меняются)",
-			info.KVPerToken, wantKV)
+		t.Fatalf("KVPerToken = %d, want %d (%d attention-слоёв × ширина 256)",
+			info.KVPerToken, wantKV, kvLayers)
 	}
-	// Ровно та же формула, что была до R705.
-	const sameAsOld = 2 * 32 * 4 * (4096 / 16) * 2
-	if info.KVPerToken != sameAsOld {
-		t.Errorf("KVPerToken = %d, want %d — числа изменились там, где ширина совпадала",
-			info.KVPerToken, sameAsOld)
+	// Ширина — ровно та, что даёт и формула (4096/16 = 256): правка не сдвинула её.
+	const widthFromFormula = 4096 / 16
+	if info.HeadDimK != widthFromFormula || info.KVGlobalHeadDim != widthFromFormula {
+		t.Errorf("ширина = %d/%d, want %d — key_length совпадает с n_embd/n_heads",
+			info.HeadDimK, info.KVGlobalHeadDim, widthFromFormula)
+	}
+	if info.KVGlobalLayers != kvLayers {
+		t.Errorf("глобальных KV-слоёв = %d, want %d", info.KVGlobalLayers, kvLayers)
+	}
+	if info.KVPlanSource != KVPlanSourcePlan {
+		t.Errorf("KVPlanSource = %q, want %q", info.KVPlanSource, KVPlanSourcePlan)
 	}
 }
 

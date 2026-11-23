@@ -286,8 +286,12 @@ func TestKVTotalBytes_SWAStopsGrowing(t *testing.T) {
 	if at131072 <= at65536 {
 		t.Errorf("KV должен расти с контекстом: 65536=%d, 131072=%d", at65536, at131072)
 	}
-	// Наивная оценка (все 24 слоя × n_ctx) завысила бы KV в 6 раз.
-	naive := KVBytesPerToken(gemma4KVShared, KVQ4).Mul(65536)
+	// Наивная оценка (все 24 слоя × n_ctx по глобальной ширине) завысила бы KV в 6
+	// раз. R707: «наивная» собирается явно — KVBytesPerToken теперь считает
+	// сумму по КЛАССАМ слоёв (оконные по своей ширине), а не все слои по 512.
+	naiveSpec := gemma4KVShared
+	naiveSpec.KVSWALayers, naiveSpec.SWAWindow = 0, 0
+	naive := KVBytesPerToken(naiveSpec, KVQ4).Mul(65536)
 	if naive < at65536*5 {
 		t.Errorf("наивная оценка %d Б должна быть заметно больше реальных %d Б", naive, at65536)
 	}

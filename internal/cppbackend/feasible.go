@@ -47,6 +47,31 @@ type FeasibleInfo struct {
 	HeadDimK      int    `json:"head_dim_k"`
 	HeadDimV      int    `json:"head_dim_v"`
 	HeadDimSource string `json:"head_dim_source"`
+
+	// R707 (2026-11-25): ОТКУДА цифра KV и как она разложена по слоям.
+	//
+	// До этой правки KVPerToken считался по ВСЕМ слоям модели:
+	// (headDimK+headDimV) · NLayers · NKvHeads · 2. Для моделей, у которых кэш
+	// живёт не во всех слоях, это завышение: gemma-4-E4B — 42 слоя, но KV
+	// держат 24 (4 глобальных шириной 512 + 20 оконных шириной 256 с окном 512);
+	// Qwen3.8-9B — 33 блока, но attention-слоёв 8; Inkling-2-Mini — 48 слотов
+	// кэша, из них 8 глобальных (окно 1024 у остальных 40).
+	//
+	// KVPlanSource — "plan" (послойная раскладка; поля ниже описывают классы) или
+	// "flat" (данных по слоям нет: старый воркер/нестандартная модель, взята
+	// прежняя плоская формула). Видно в API, а не только в коде.
+	KVPlanSource     string `json:"kv_plan_source"`
+	KVPlanExact      bool   `json:"kv_plan_exact"`
+	KVLayers         int    `json:"kv_layers"` // слоёв/слотов с кэшем: global+swa
+	KVGlobalLayers   int    `json:"kv_global_layers"`
+	KVSWALayers      int    `json:"kv_swa_layers"`
+	KVSWAWindow      int    `json:"kv_swa_window"`
+	KVGlobalHeadDim  int    `json:"kv_global_head_dim"`
+	KVGlobalHeadDimV int    `json:"kv_global_head_dim_v"`
+	KVSWAHeadDim     int    `json:"kv_swa_head_dim"`
+	KVSWAHeadDimV    int    `json:"kv_swa_head_dim_v"`
+	KVGlobalKVHeads  int    `json:"kv_global_kv_heads"`
+	KVSWAKVHeads     int    `json:"kv_swa_kv_heads"`
 }
 
 // ComputeFeasible возвращает FeasibleInfo для модели. Порядок предпочтения:
@@ -143,22 +168,32 @@ func (b *Backend) ComputeFeasible(modelName string) (*FeasibleInfo, error) {
 		headDimV = 128
 	}
 
-	// KV per token: (K + V) * NLayers * NKvHeads * 2 bytes (fp16 baseline)
-	//   q4_0: / 4   (4-bit vs 16-bit)
-	//   q8_0: / 2   (8-bit vs 16-bit)
-	//   f16:  * 1   (baseline)
+	// R707 (2026-11-25): KV считается ПО СЛОЯМ, а не «все слои × ширина».
 	//
-	// При key_length == value_length == headDimK это ровно прежняя формула
-	// 2 * NLayers * NKvHeads * headDimK * 2 — для моделей, где метаданные
-	// совпадают с оценкой (Qwen3.8-9B: 4096/16 = 256 = key_length), числа не
-	// меняются (тест «для модели с совпадающим head_dim числа не изменились»).
-	kvPerToken := (headDimK + headDimV) * h.NLayers * h.NKvHeads * 2
-	switch kvType {
-	case "q4_0":
-		kvPerToken = kvPerToken / 4
-	case "q8_0":
-		kvPerToken = kvPerToken / 2
-	}
+	// Раскладка берётся из KVPlan (kv_layers.go): первым делом — метаданные
+	// файла (shared_kv_layers / sliding_window_pattern / full_attention_interval /
+	// скользящее окно), затем — поля заголовка из загруженной модели. Если
+	// данных по слоям нет вовсе, план вырождается в прежнюю плоскую формулу с
+	// KVPlanSource = "flat" — совместимость для старого воркера и нестандартных
+	// моделей.
+	//
+	// Формулу байтов держит memfit.KVShape (одна на стек):
+	//   глобальные слои — Layers · n_kv_heads · (key_length + value_length) · bpe;
+	//   оконные слои    — то же с key_length_swa/value_length_swa, но не более
+	//                     окна токенов (SWA-кэш не растёт после n_swa).
+	// Ссылки: llama-hparams.cpp:140-153 (ширины K/V по классам), :194 (n_swa),
+	// :305 is_swa, :336 has_kv; llama-kv-cache.cpp:163-167 (слои без кэша
+	// пропускаются); gemma4.cpp (n_kv_shared); inkling2-loop.cpp:16-30 (визиты).
+	plan := b.kvPlanForFeasibleR707(modelName, h, source)
+	// Цепочка ширины (R704/R705) остаётся: KeyLength > измеренная HeadDimK >
+	// NEmbd/NHeads > 128. План получает её как fallback — иначе модели без
+	// метаданных потеряли бы прежнюю оценку.
+	plan = plan.withFallbackWidthsR707(headDimK, headDimV, h.NKvHeads)
+
+	// KV per token: СУММА по слоям — глобальные своей шириной, SWA своей
+	// (memfit.KVShape.BytesPerToken). Для плоского плана это ровно прежняя
+	// формула (headDimK + headDimV) · NLayers · NKvHeads · 2 (f16).
+	kvPerToken := int(plan.KVPerTokenBytes(kvType))
 	// Defensive: don't divide by zero
 	if kvPerToken <= 0 {
 		kvPerToken = 16384 // typical q4_0 для 7B модели (fallback)
@@ -177,13 +212,29 @@ func (b *Backend) ComputeFeasible(modelName string) (*FeasibleInfo, error) {
 	// резерв на буферы, а просто доля от того, что ещё не занято.
 	weightsMB := b.weightsSizeMB(modelName)
 	reserveMB := computeBufferReserveMB(weightsMB)
-	maxVRAMCtx := maxVRAMCtxFromMemory(freeVRAMMB, weightsMB, reserveMB, kvPerToken, h.ContextLength)
+	maxVRAMCtx := maxVRAMCtxForPlanR707(freeVRAMMB, weightsMB, reserveMB, plan, kvType, h.ContextLength)
 
+	// Потолок окна по RAM. R707: НЕ «свободная RAM / KV на токен», а та же
+	// обратная формула с окном (KVShape.MaxCtxForBudget): после окна растут
+	// только глобальные слои, поэтому деление на «KV на токен всех слоёв»
+	// занижало окно для моделей со SWA.
 	maxRAMCtx := 0
-	if freeRAMMB > 0 && kvPerToken > 0 {
-		maxRAMCtx = int(freeRAMMB*1024*1024) / kvPerToken
-		if maxRAMCtx > h.ContextLength {
-			maxRAMCtx = h.ContextLength
+	if freeRAMMB > 0 {
+		maxRAMCtx = plan.MaxCtxForBudget(kvType, int64(freeRAMMB)*1024*1024, h.ContextLength)
+	}
+
+	// Вырожденный случай: о слоях нет НИЧЕГО (ни block_count, ни head_count — файл
+	// не GGUF или архитектура не из списка). Послойную раскладку построить не из
+	// чего, и честный ответ — «неизвестно»; но прежнее поведение (defensive
+	// 16384 Б/токен и плоская формула) сохранено, чтобы не менять рекомендацию
+	// там, где до R707 она считалась. В API это видно как kv_plan_source=flat.
+	if plan.KVLayers() == 0 && kvPerToken > 0 {
+		maxVRAMCtx = maxVRAMCtxFromMemory(freeVRAMMB, weightsMB, reserveMB, kvPerToken, h.ContextLength)
+		if freeRAMMB > 0 {
+			maxRAMCtx = int(freeRAMMB*1024*1024) / kvPerToken
+			if h.ContextLength > 0 && maxRAMCtx > h.ContextLength {
+				maxRAMCtx = h.ContextLength
+			}
 		}
 	}
 
@@ -200,7 +251,131 @@ func (b *Backend) ComputeFeasible(modelName string) (*FeasibleInfo, error) {
 		HeadDimK:      headDimK,
 		HeadDimV:      headDimV,
 		HeadDimSource: headDimSource,
+		// R707: видно, ПОСЛОЙНАЯ это раскладка или плоская, и как она разложена.
+		KVPlanSource:     planSourceOfR707(plan),
+		KVPlanExact:      plan.Exact,
+		KVLayers:         plan.KVLayers(),
+		KVGlobalLayers:   plan.GlobalLayers,
+		KVSWALayers:      plan.SWALayers,
+		KVSWAWindow:      plan.SWAWindow,
+		KVGlobalHeadDim:  plan.GlobalHeadDim,
+		KVGlobalHeadDimV: planGlobalHeadDimVR707(plan),
+		KVSWAHeadDim:     plan.SWAHeadDim,
+		KVSWAHeadDimV:    planSWAHeadDimVR707(plan),
+		KVGlobalKVHeads:  plan.GlobalKVHeads,
+		KVSWAKVHeads:     plan.SWAKVHeads,
 	}, nil
+}
+
+// planSourceOfR707 — "plan" | "flat" для API. Пустой источник означает
+// вырожденный план (нет данных даже о числе слоёв) — это тоже "flat".
+func planSourceOfR707(plan KVPlan) string {
+	if plan.Source == KVPlanSourcePlan {
+		return KVPlanSourcePlan
+	}
+	return KVPlanSourceFlat
+}
+
+// planGlobalHeadDimVR707 — ширина V глобального класса с дозаполнением
+// (value_length опционален: llama-model.cpp:1662-1663 берёт K).
+func planGlobalHeadDimVR707(plan KVPlan) int {
+	if plan.GlobalHeadDimV > 0 {
+		return plan.GlobalHeadDimV
+	}
+	return plan.GlobalHeadDim
+}
+
+// planSWAHeadDimVR707 — ширина V оконного класса (0 → как у K оконного класса).
+func planSWAHeadDimVR707(plan KVPlan) int {
+	if plan.SWAHeadDimV > 0 {
+		return plan.SWAHeadDimV
+	}
+	if plan.SWAHeadDim > 0 {
+		return plan.SWAHeadDim
+	}
+	return planGlobalHeadDimVR707(plan)
+}
+
+// kvPlanForFeasibleR707 — раскладка KV для ComputeFeasible.
+//
+// Порядок источников:
+//  1. метаданные GGUF из ModelManager — там есть ключи, определяющие КЛАССЫ
+//     слоёв (shared_kv_layers, sliding_window_pattern, full_attention_interval,
+//     num_loops/loop_*); файл при этом повторно НЕ читается, метаданные уже в
+//     кэше ModelManager;
+//  2. поля заголовка h (для пути «загруженная модель» они содержат измеренную
+//     C-мостом геометрию, но не классы слоёв);
+//  3. плоская формула — если ни там, ни там данных по слоям нет.
+//
+// Для ЗАГРУЖЕННОЙ модели структура берётся из файла, а ширина глобального
+// класса — измеренная (R705: llama_hparams.n_embd_head_k_full), потому что она
+// авторитетнее заголовка: заголовок мог быть прочитан от другой ревизии файла.
+func (b *Backend) kvPlanForFeasibleR707(modelName string, h *GGUFHeaderInfo, source string) KVPlan {
+	if h == nil {
+		return KVPlan{}
+	}
+	// План из того, что уже есть в h: путь заголовка (h прочитан парсером) даёт
+	// полную раскладку, путь loaded_info — только то, что сообщил мост.
+	plan := h.KVPlan()
+	if source != "loaded_info" {
+		return plan
+	}
+	mm := b.ModelManager()
+	if mm == nil {
+		return plan
+	}
+	meta, err := mm.GetModelMetaResolved(modelName)
+	if err != nil || meta == nil {
+		return plan
+	}
+	metaPlan := meta.KVPlan()
+	if metaPlan.Source != KVPlanSourcePlan {
+		return plan // файл тоже без данных по слоям — остаётся плоский план
+	}
+	// Измеренная ширина глобального класса — из h (мост), оконная — из файла.
+	if h.KeyLength > 0 {
+		metaPlan.GlobalHeadDim = h.KeyLength
+		if h.ValueLength > 0 {
+			metaPlan.GlobalHeadDimV = h.ValueLength
+		}
+	}
+	if h.NKvHeads > 0 {
+		metaPlan.GlobalKVHeads = h.NKvHeads
+	}
+	return metaPlan
+}
+
+// withFallbackWidthsR707 — дозаполнить ширины и число KV-голов нулевых классов.
+//
+// Нужно, чтобы план не терял данные там, где ключей <arch>.attention.key_length
+// нет: для таких моделей ширина берётся прежней оценкой (n_embd/n_heads), и это
+// по-прежнему видно в HeadDimSource. Для плоского плана вызов ничего не меняет:
+// его поля уже заполнены тем же значением.
+func (p KVPlan) withFallbackWidthsR707(headDimK, headDimV, nKvHeads int) KVPlan {
+	if p.GlobalHeadDim <= 0 {
+		p.GlobalHeadDim = headDimK
+	}
+	if p.GlobalHeadDimV <= 0 {
+		p.GlobalHeadDimV = headDimV
+		if p.GlobalHeadDimV <= 0 {
+			p.GlobalHeadDimV = headDimK
+		}
+	}
+	if p.GlobalKVHeads <= 0 {
+		p.GlobalKVHeads = nKvHeads
+	}
+	if p.SWALayers > 0 {
+		if p.SWAHeadDim <= 0 {
+			p.SWAHeadDim = p.GlobalHeadDim
+		}
+		if p.SWAHeadDimV <= 0 {
+			p.SWAHeadDimV = p.SWAHeadDim
+		}
+		if p.SWAKVHeads <= 0 {
+			p.SWAKVHeads = p.GlobalKVHeads
+		}
+	}
+	return p
 }
 
 // resolveGGUFAndKVType возвращает GGUF header + kv cache type + source.

@@ -235,8 +235,18 @@ func estimateVRAMSizeForModel(m *cppbackend.ModelInfo, sizeBytes uint64) uint64 
 	// ModelInfo), а не n_embd/n_heads. У Qwen3-4B прежняя формула давала 80
 	// против 128, и size_vram занижался по KV; число уезжает в балансер
 	// (VRAMUsage → autotune-бюджет), поэтому геометрия передаётся явно.
+	//
+	// R707 (2026-11-25): KV считается по РАСКЛАДКЕ (KVPlan), если метаданные
+	// модели известны: оконные слои ограничены окном, shared_kv не считаются.
+	// Раньше size_vram для gemma-4-E4B (4.2 ГБ весов, ctx 32768) показывал
+	// ~3.5× больше KV, чем модель занимает, и это число уходило в бюджет AutoTune.
 	kvMB := cppbackend.EstimateKVCacheMB(m.NLayers, m.NHeads, m.NKvHeads, m.NEmbd,
 		m.HeadDimK, m.HeadDimV, m.ContextSize, m.KVCacheType)
+	if plan, ok := backend.KVPlanForModel(m.Name); ok {
+		if planMB := plan.EstimateKVCacheMB(m.ContextSize, m.KVCacheType); planMB > 0 {
+			kvMB = int(planMB)
+		}
+	}
 	kv := uint64(float64(kvMB) * 1024 * 1024 * fraction)
 	return weights + kv
 }

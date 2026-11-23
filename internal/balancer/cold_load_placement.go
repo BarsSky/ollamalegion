@@ -244,6 +244,9 @@ func (p *Proxy) coldLoadGeometryR659(model string) (*ModelProfileInfo, string, b
 					CurrentContextLength: m.ContextLength,
 					CurrentKVCacheType:   m.KvCacheType,
 				}
+				// R707: раскладка KV — иначе вердикт «влезает ли окно» считался
+				// по всем слоям и отклонял узел, где модель физически грузится.
+				applyKVPlanToProfileR707(best, &m)
 			}
 			if kvType == "" && m.KvCacheType != "" {
 				kvType = m.KvCacheType

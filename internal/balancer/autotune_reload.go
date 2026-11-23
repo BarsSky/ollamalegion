@@ -91,6 +91,9 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 		FeasibleMaxContext:   loadedModel.FeasibleMaxContext,
 		AutoTuneEnabled:      true,
 	}
+	// R707: раскладка KV по слоям из метрик воркера (gemma-4/Qwen3.8 — не все
+	// слои держат кэш). Без неё reload считает KV по NLayers и советует меньше окна.
+	applyKVPlanToProfileR707(prof, &loadedModel)
 	// R54.9: workload-aware analysis — если есть WorkloadTracker, используем
 	// реальную статистику num_ctx чтобы выбрать KV cache type оптимально.
 	var analysis *AutoTuneAnalysis

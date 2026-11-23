@@ -828,43 +828,33 @@ func (b *Backend) KVCacheBytesForModel(name string, nCtx int, kvCacheType string
 		return 0, false
 	}
 	plan := meta.KVPlan()
-	kvLayers := plan.KVLayers()
 	headDim := plan.GlobalHeadDim
 	if headDim <= 0 {
 		headDim = meta.KVHeadDim()
 	}
-	if kvLayers == 0 {
-		kvLayers, _ = meta.KVLayers()
+	heads := plan.GlobalKVHeads
+	if heads <= 0 {
+		heads = meta.NKvHeads
 	}
-	heads := meta.NKvHeads
 	if heads <= 0 {
 		heads = nKvHeads
 	}
 	if heads <= 0 {
 		heads = nHeads
 	}
-	if kvLayers <= 0 || headDim <= 0 || heads <= 0 || nCtx <= 0 {
+	if plan.KVLayers() <= 0 || headDim <= 0 || heads <= 0 || nCtx <= 0 {
 		return 0, false
 	}
-	num, den := memfit.KVBytesPerElement(MemfitKVType(kvCacheType))
-	// R83 (2026-10-01): оконные слои ограничены окном, а не n_ctx.
-	globalLayers := plan.GlobalLayers
-	if globalLayers <= 0 && plan.SWALayers == 0 {
-		globalLayers = kvLayers
-	}
-	perLayer := func(hd int) int64 {
-		if hd <= 0 {
-			hd = headDim
-		}
-		return int64(2) * int64(heads) * int64(hd) * num / den
-	}
-	total := int64(nCtx) * int64(globalLayers) * perLayer(headDim)
-	if swa := plan.SWALayers; swa > 0 {
-		swaCtx := nCtx
-		if plan.SWAWindow > 0 && swaCtx > plan.SWAWindow {
-			swaCtx = plan.SWAWindow
-		}
-		total += int64(swaCtx) * int64(swa) * perLayer(plan.SWAHeadDim)
+	// R707 (2026-11-25): байты считает ТА ЖЕ раскладка, что и у ComputeFeasible
+	// (KVPlan → memfit.KVShape), а не отдельная формула. Прежняя копия брала
+	// «2 × head_dim» (K = V) и одну ширину на все классы: для gemma-4 оконные
+	// слои считались шириной 512 вместо 256, а value_length игнорировался.
+	// Дозаполнение нулевых полей — приёмами ComputeFeasible (withFallbackWidthsR707),
+	// чтобы модели без <arch>.attention.key_length давали прежнюю оценку.
+	plan = plan.withFallbackWidthsR707(headDim, headDim, heads)
+	total := plan.KVBytesAtCtx(kvCacheType, nCtx)
+	if total <= 0 {
+		return 0, false
 	}
 	return total, true
 }

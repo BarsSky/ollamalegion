@@ -58,6 +58,17 @@ type GGUFHeaderInfo struct {
 	SlidingWindow  int    `json:"slidingWindow,omitempty"`  // *.attention.sliding_window
 	SWAKeyLength   int    `json:"swaKeyLength,omitempty"`   // *.attention.key_length_swa
 	SWAPattern     string `json:"swaPattern,omitempty"`     // *.attention.sliding_window_pattern: '1'=окно, '0'=глобальный
+
+	// R707 (2026-11-25): послойная раскладка KV — вторая ширина V у оконного
+	// класса, число KV-голов ПО СЛОЯМ (ключ-массив) и визиты loop-схемы
+	// (inkling2_loop: физических блоков block_count, слотов кэша больше).
+	// Без них gemma-4 считался по ширине глобальных слоёв, а Inkling-2-Mini —
+	// «48 слоёв × 512» без разделения на окно 1024. См. kv_layers.go.
+	SWAValueLength  int   `json:"swaValueLength,omitempty"`  // *.attention.value_length_swa
+	KVHeadsPerLayer []int `json:"kvHeadsPerLayer,omitempty"` // массив *.attention.head_count_kv
+	LoopCount       int   `json:"loopCount,omitempty"`       // *.num_loops
+	LoopCoreStart   int   `json:"loopCoreStart,omitempty"`   // *.loop.core_start / *.loop.start
+	LoopCoreEnd     int   `json:"loopCoreEnd,omitempty"`     // *.loop.core_end / *.loop.end
 }
 
 // ggufFieldSuffixes — суффиксы ключей метаданных для параметров модели.
@@ -84,6 +95,19 @@ var ggufFieldSuffixes = []string{
 	".attention.shared_kv_layers",
 	".attention.sliding_window",
 	".attention.key_length_swa",
+	// R707 (2026-11-25): вторая ширина V оконного класса и визиты loop-схемы.
+	// value_length_swa есть у gemma-4 (256 при key_length_swa = 256), num_loops и
+	// loop.core_start/end — у Inkling-2: k/loop-схема повторяет ядро слоёв, и
+	// каждый визит держит СВОЙ KV (c/llama.cpp/src/models/inkling2-loop.cpp:16-30).
+	".attention.value_length_swa",
+	".num_loops",
+	".loop.core_start",
+	".loop.core_end",
+	// Имена этого же смысла у llama.cpp-лоадера (llama-arch.cpp: LLM_KV_LOOP_START
+	// = "%s.loop.start", LLM_KV_LOOP_END = "%s.loop.end"). Оба написания читаются,
+	// чтобы раскладка не зависела от версии конвертера.
+	".loop.start",
+	".loop.end",
 }
 
 // ggufModelArchs — известные архитектуры GGUF.
@@ -340,10 +364,23 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 			// недооценка в 12 раз, то есть РЕКОМЕНДАЦИЯ ОКНА ЗАВЫШАЛАСЬ.
 			// Берём максимум по массиву: это верхняя оценка KV, а верхняя
 			// оценка безопасна (рекомендует меньшее окно, а не большее).
+			//
+			// R707: для head_count_kv массив сохраняется ПО СЛОЯМ
+			// (info.KVHeadsPerLayer) — раскладка KV считает ширину по классам
+			// слоёв, и «одно максимальное число на модель» для этого мало.
 			if strings.HasSuffix(key, ".attention.head_count") || strings.HasSuffix(key, ".attention.head_count_kv") {
 				if fi, ok := ggufKeyMap[key]; ok {
-					if v, ok2 := readGGUFIntArrayMax(br, elemType, arrLen); ok2 {
-						ggufSetField(info, fi, v)
+					if arr, ok2 := readGGUFIntArray(br, elemType, arrLen); ok2 {
+						maxV := 0
+						for _, v := range arr {
+							if v > maxV {
+								maxV = v
+							}
+						}
+						ggufSetField(info, fi, maxV)
+						if strings.HasSuffix(key, ".attention.head_count_kv") {
+							info.KVHeadsPerLayer = arr
+						}
 						continue
 					}
 				}
@@ -416,6 +453,10 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 //	9 = SharedKVLayers       (.attention.shared_kv_layers)  // R83: KV-sharing
 //	10 = SlidingWindow       (.attention.sliding_window)
 //	11 = SWAKeyLength        (.attention.key_length_swa)
+//	12 = SWAValueLength      (.attention.value_length_swa)  // R707
+//	13 = LoopCount           (.num_loops)                   // R707: визиты loop-схемы
+//	14 = LoopCoreStart       (.loop.core_start / .loop.start)
+//	15 = LoopCoreEnd         (.loop.core_end / .loop.end)
 func ggufSetField(info *GGUFHeaderInfo, fieldIndex, value int) {
 	switch fieldIndex {
 	case 0:
@@ -442,6 +483,14 @@ func ggufSetField(info *GGUFHeaderInfo, fieldIndex, value int) {
 		info.SlidingWindow = value
 	case 11:
 		info.SWAKeyLength = value
+	case 12:
+		info.SWAValueLength = value
+	case 13:
+		info.LoopCount = value
+	case 14:
+		info.LoopCoreStart = value
+	case 15:
+		info.LoopCoreEnd = value
 	}
 }
 
@@ -490,74 +539,74 @@ func readGGUFBoolArray(br *bufio.Reader, elemType uint32, arrLen uint64) (string
 	return string(b), true
 }
 
-// readGGUFIntArrayMax — максимум по целочисленному массиву метаданных.
+// readGGUFIntArray — целочисленный массив метаданных как срез int.
 //
 // R700 (2026-11-23): нужен для <arch>.attention.head_count(_kv), которые у
-// новых архитектур (Inkling 2) заданы массивом по слоям. Возвращает (max, ok);
-// ok=false — тип элемента не целочисленный или массив пуст, тогда вызывающий
-// код обязан пропустить массив обычным путём.
-func readGGUFIntArrayMax(br *bufio.Reader, elemType uint32, arrLen uint64) (int, bool) {
+// новых архитектур (Inkling 2) заданы массивом по слоям.
+// R707: массив нужен ЦЕЛИКОМ, а не максимумом — раскладка KV берёт число голов
+// ПО СЛОЯМ и агрегирует его по классам (глобальные/оконные).
+// ok=false — тип элемента не целочисленный или массив пуст/велик, тогда
+// вызывающий код обязан пропустить массив обычным путём.
+func readGGUFIntArray(br *bufio.Reader, elemType uint32, arrLen uint64) ([]int, bool) {
 	if arrLen == 0 || arrLen > 4096 {
-		return 0, false
+		return nil, false
 	}
-	maxV := 0
+	out := make([]int, 0, arrLen)
 	for j := uint64(0); j < arrLen; j++ {
 		var v uint64
 		switch elemType {
 		case 0, 7:
 			var x uint8
 			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
-				return 0, false
+				return nil, false
 			}
 			v = uint64(x)
 		case 1:
 			var x int8
 			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
-				return 0, false
+				return nil, false
 			}
 			v = uint64(x)
 		case 2:
 			var x uint16
 			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
-				return 0, false
+				return nil, false
 			}
 			v = uint64(x)
 		case 3:
 			var x int16
 			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
-				return 0, false
+				return nil, false
 			}
 			v = uint64(x)
 		case 4:
 			var x uint32
 			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
-				return 0, false
+				return nil, false
 			}
 			v = uint64(x)
 		case 5:
 			var x int32
 			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
-				return 0, false
+				return nil, false
 			}
 			v = uint64(x)
 		case 10:
 			if err := binary.Read(br, binary.LittleEndian, &v); err != nil {
-				return 0, false
+				return nil, false
 			}
 		case 11:
 			var x int64
 			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
-				return 0, false
+				return nil, false
 			}
 			v = uint64(x)
 		default:
-			return 0, false
+			return nil, false
 		}
-		if int(v) > maxV {
-			maxV = int(v)
-		}
+		out = append(out, int(v))
 	}
-	return maxV, true
+	return out, true
 }
 
 // ggufTypeSize возвращает размер элемента GGUF metadata value по типу.

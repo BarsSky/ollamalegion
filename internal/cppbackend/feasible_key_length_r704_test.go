@@ -99,13 +99,17 @@ func TestR704_KeyLengthFromGGUFIsUsed(t *testing.T) {
 		t.Fatalf("KVPerToken = %d — считается по n_embd/n_heads, key_length проигнорирован", oldKV)
 	}
 
-	// q8_0 — половина, q4_0 — четверть (прежние коэффициенты не поехали).
+	// q8_0/q4_0 — ТОЧНЫЕ коэффициенты llama.cpp (34/32 и 18/32, memfit.KVBytesPerElement),
+	// но от НОВОЙ ширины. R707: прежние «/2» и «/4» расходились с memfit на
+	// +6.25 %/+12.5 % в сторону занижения KV — то есть рекомендовали окно больше
+	// физического; теперь feasible и решения считают одной константой.
+	const elems = 2 * 48 * 8 * 128
 	for _, tc := range []struct {
 		kvType string
 		want   int
 	}{
-		{"q8_0", wantKV / 2},
-		{"q4_0", wantKV / 4},
+		{"q8_0", elems * 34 / 32},
+		{"q4_0", elems * 18 / 32},
 	} {
 		got := feasibleKVFor(t, dir, "Inkling-2-Mini-UD-Q4_K_M", tc.kvType)
 		if got.KVPerToken != tc.want {
@@ -180,8 +184,12 @@ func TestR704_NoKeyLengthFallsBackToFormula(t *testing.T) {
 }
 
 // TestR704_EqualHeadDimNumbersUnchanged — модель, у которой key_length СОВПАДАЕТ с
-// NEmbd/NHeads (Qwen3.8-9B: 4096/16 = 256 = key_length), обязана давать ТЕ ЖЕ
-// числа, что и до правки: «поехало» здесь означало бы регресс.
+// NEmbd/NHeads (Qwen3.8-9B: 4096/16 = 256 = key_length), не должна «поехать» по
+// ШИРИНЕ: per-layer вклад считается от 256, а не от какой-то другой оценки.
+//
+// R707: само ЧИСЛО KV на токен меняется — и это правильно: у qwen35 KV держат
+// только attention-слои (каждый 4-й), то есть 8 из 33 блоков, а не все 33. Ширина
+// при этом остаётся 256 (= n_embd/n_heads), что здесь и проверяется.
 func TestR704_EqualHeadDimNumbersUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	writeFakeGGUF(t, dir, "qwen38-9b.gguf", map[string]interface{}{
@@ -195,20 +203,39 @@ func TestR704_EqualHeadDimNumbersUnchanged(t *testing.T) {
 		"qwen35.attention.value_length":   uint32(256),
 	})
 
-	for _, kvType := range []string{"f16", "q8_0", "q4_0"} {
-		info := feasibleKVFor(t, dir, "qwen38-9b", kvType)
-		// Формула до R704: 2 * 33 * 4 * (4096/16) * 2 с коэффициентом KV-типа.
-		old := 2 * 33 * 4 * (4096 / 16) * 2
-		switch kvType {
-		case "q4_0":
-			old /= 4
-		case "q8_0":
-			old /= 2
+	// Гибридное правило qwen35: 32 слоя (block_count − MTP), attention каждый 4-й.
+	const kvLayers = 8
+	const elems = 2 * kvLayers * 4 * 256
+	for _, tc := range []struct {
+		kvType string
+		want   int
+	}{
+		{"f16", elems * 2},
+		{"q8_0", elems * 34 / 32},
+		{"q4_0", elems * 18 / 32},
+	} {
+		info := feasibleKVFor(t, dir, "qwen38-9b", tc.kvType)
+		if info.KVPerToken != tc.want {
+			t.Errorf("%s: KVPerToken = %d, want %d (8 attention-слоёв × ширина 256)",
+				tc.kvType, info.KVPerToken, tc.want)
 		}
-		if info.KVPerToken != old {
-			t.Errorf("%s: KVPerToken = %d, want %d (key_length совпадает с n_embd/n_heads — числа не должны меняться)",
-				kvType, info.KVPerToken, old)
+		// Ширина — из key_length, а не какая-то другая: 4096/16 = 256 совпадает,
+		// поэтому проверяем именно её, а не «совпало с формулой» целиком.
+		if info.KVGlobalHeadDim != 256 || info.HeadDimK != 256 {
+			t.Errorf("%s: ширина = %d/%d, want 256/256 (key_length совпадает с n_embd/n_heads)",
+				tc.kvType, info.KVGlobalHeadDim, info.HeadDimK)
 		}
+		if info.KVGlobalLayers != kvLayers {
+			t.Errorf("%s: глобальных KV-слоёв = %d, want %d", tc.kvType, info.KVGlobalLayers, kvLayers)
+		}
+	}
+
+	// Плоская формула по всем 33 блокам дала бы 135 168 — тест обязан быть
+	// красным на состоянии до R707, иначе он не проверяет послойный расчёт.
+	flat := feasibleKVFor(t, dir, "qwen38-9b", "f16")
+	if flat.KVPerToken == (256+256)*33*4*2 {
+		t.Fatalf("KVPerToken = %d — считается по всем блокам, а не по attention-слоям",
+			flat.KVPerToken)
 	}
 }
 

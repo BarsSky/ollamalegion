@@ -371,7 +371,17 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 			// n_embd/n_heads). Пробрасывается в types.LlamaCppModel.HeadDimSource,
 			// чтобы R659/AutoTune видели, факт это или оценка.
 			HeadDimSource string `json:"head_dim_source,headDimSource,omitempty"`
-			NEmbd         int    `json:"n_embd,nEmbd,omitempty"`
+			// R707 (2026-11-25): раскладка KV по слоям из /api/models. Без неё
+			// R659 и AutoTune считают KV по ВСЕМ слоям (плоская формула), что для
+			// gemma-4/Qwen3.8 завышает его в 3-7 раз.
+			KVPlanSource   string `json:"kv_plan_source,kvPlanSource,omitempty"`
+			KVGlobalLayers int    `json:"kv_global_layers,kvGlobalLayers,omitempty"`
+			KVSWALayers    int    `json:"kv_swa_layers,kvSwaLayers,omitempty"`
+			KVSWAWindow    int    `json:"kv_swa_window,kvSwaWindow,omitempty"`
+			HeadDimSWA     int    `json:"head_dim_swa,headDimSwa,omitempty"`
+			HeadDimSWAV    int    `json:"head_dim_swa_v,headDimSwaV,omitempty"`
+			NKvHeadsSWA    int    `json:"n_kv_heads_swa,nKvHeadsSwa,omitempty"`
+			NEmbd          int    `json:"n_embd,nEmbd,omitempty"`
 			// R45: ContextSize was the smoking gun. cppworker returns
 			// "context_size" but the previous tag was "contextSize", so
 			// LoadedModels[].ContextLength was always 0, breaking
@@ -559,8 +569,17 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 			// R705: источник ширины ("gguf" | "computed" | "") — без него нельзя
 			// отличить измеренную <arch>.attention.key_length от прежней формулы.
 			HeadDimSource: m.HeadDimSource,
-			MaxContext:    m.GGUFContextLength,
-			LoadedAt:      m.LoadedAt,
+			// R707: раскладка KV по слоям — из неё R659/AutoTune считают окно,
+			// а не по «все слои × одна ширина».
+			KVPlanSource:   m.KVPlanSource,
+			KVGlobalLayers: m.KVGlobalLayers,
+			KVSWALayers:    m.KVSWALayers,
+			KVSWAWindow:    m.KVSWAWindow,
+			HeadDimSWA:     m.HeadDimSWA,
+			HeadDimSWAV:    m.HeadDimSWAV,
+			NKvHeadsSWA:    m.NKvHeadsSWA,
+			MaxContext:     m.GGUFContextLength,
+			LoadedAt:       m.LoadedAt,
 			// Round 34 (2026-08-12) Phase 2 + Round 53.2 (2026-08-24):
 			// runtime params из /api/models. Pre-R53.2 использовались
 			// preflight_nctx.go::paramsMatch() для trigger reload при флаговом

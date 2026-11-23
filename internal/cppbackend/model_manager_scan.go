@@ -519,6 +519,25 @@ func (m *ModelManager) GetModelMeta(filename string) (*GGUFModelMeta, error) {
 			if meta.SWAPattern == "" && hdr.SWAPattern != "" {
 				meta.SWAPattern = hdr.SWAPattern
 			}
+			// R707 (2026-11-25): послойная раскладка KV — вторая ширина V у
+			// оконного класса, число KV-голов по слоям, визиты loop-схемы.
+			// Без них gemma-4 считался шириной глобальных слоёв, а Inkling-2 —
+			// без разделения на окно. См. KVPlan в kv_layers.go.
+			if meta.SWAValueLength == 0 && hdr.SWAValueLength > 0 {
+				meta.SWAValueLength = hdr.SWAValueLength
+			}
+			if len(meta.KVHeadsPerLayer) == 0 && len(hdr.KVHeadsPerLayer) > 0 {
+				meta.KVHeadsPerLayer = hdr.KVHeadsPerLayer
+			}
+			if meta.LoopCount == 0 && hdr.LoopCount > 0 {
+				meta.LoopCount = hdr.LoopCount
+			}
+			if meta.LoopCoreStart == 0 && hdr.LoopCoreStart > 0 {
+				meta.LoopCoreStart = hdr.LoopCoreStart
+			}
+			if meta.LoopCoreEnd == 0 && hdr.LoopCoreEnd > 0 {
+				meta.LoopCoreEnd = hdr.LoopCoreEnd
+			}
 			m.mu.Unlock()
 		}
 		// Если ReadGGUFHeader упал — caller использует fallback на

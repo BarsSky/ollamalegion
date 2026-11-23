@@ -120,6 +120,156 @@ func (t KVType) Normalize() KVType {
 	}
 }
 
+// KVLayerClass — геометрия KV-кэша ОДНОГО класса слоёв.
+//
+// Классов у llama.cpp два, и KV у них устроен по-разному
+// (llama-hparams.cpp:305 is_swa, :336 has_kv):
+//
+//   - глобальный класс: кэш растёт с n_ctx, ширина головы K/V —
+//     <arch>.attention.key_length / value_length (llama-hparams.cpp:140-153);
+//   - оконный (SWA): кэш ограничен окном n_swa (llama-hparams.h:194), ширина —
+//     key_length_swa / value_length_swa.
+//
+// R707: классы появились потому, что «две ширины и два закона роста» нельзя
+// выразить одним числом слоёв. У gemma-4-E4B глобальных слоёв 4 (ширина 512), а
+// оконных 20 (ширина 256, окно 512) — общая формула либо завышает KV втрое, либо
+// занижает его на коротком контексте.
+type KVLayerClass struct {
+	Layers   int // сколько слоёв класса РЕАЛЬНО держат кэш
+	HeadDimK int // ширина головы K (<arch>.attention.key_length[_swa])
+	HeadDimV int // ширина головы V; 0 → равна HeadDimK (value_length опционален)
+	KVHeads  int // число KV-голов (GQA) у слоёв класса
+}
+
+// normalized — дозаполнить необязательные поля. V без значения считается равной
+// K: ровно так llama.cpp читает value_length (llama-model.cpp:1662-1663).
+func (c KVLayerClass) normalized() KVLayerClass {
+	if c.HeadDimV <= 0 {
+		c.HeadDimV = c.HeadDimK
+	}
+	return c
+}
+
+// BytesPerLayerPerToken — байт KV на один слой класса и один токен:
+//
+//	(head_dim_k + head_dim_v) × n_kv_heads × bytes_per_elem
+func (c KVLayerClass) BytesPerLayerPerToken(t KVType) Bytes {
+	c = c.normalized()
+	if c.HeadDimK <= 0 || c.HeadDimV <= 0 || c.KVHeads <= 0 {
+		return 0
+	}
+	return KVBytesPerLayerPerTokenKV(c.HeadDimK, c.HeadDimV, c.KVHeads, t)
+}
+
+// BytesPerToken — вклад всех слоёв класса в прирост KV на один токен.
+func (c KVLayerClass) BytesPerToken(t KVType) Bytes {
+	if c.Layers <= 0 {
+		return 0
+	}
+	return c.BytesPerLayerPerToken(t).Mul(int64(c.Layers))
+}
+
+// KVShape — раскладка KV-кэша по классам слоёв: ЕДИНСТВЕННАЯ формула роста.
+//
+// Её собирают оба производителя раскладки — memfit.ModelSpec (решения о памяти) и
+// cppbackend.KVPlan (загруженная модель и header-путь), — поэтому «в логе одно, в
+// решении другое» невозможно по построению:
+//
+//	global: Layers × n_kv_heads × (key_length + value_length) × bytes_per_elem на токен;
+//	SWA:    то же со своими ширинами, но не более SWAWindow токенов.
+//
+// «KV на токен» (BytesPerToken) — СУММА по классам: это прирост, пока контекст не
+// превысил окно. После окна растут только глобальные слои, поэтому потолок окна
+// считается НЕ делением бюджета на BytesPerToken, а MaxCtxForBudget.
+type KVShape struct {
+	Global    KVLayerClass
+	SWA       KVLayerClass
+	SWAWindow int // окно в токенах; 0 = окна нет
+}
+
+// BytesPerToken — сумма вкладов всех классов (прирост KV на токен до окна).
+func (s KVShape) BytesPerToken(t KVType) Bytes {
+	return s.Global.BytesPerToken(t) + s.SWA.BytesPerToken(t)
+}
+
+// BytesAtCtx — полный размер KV-кэша на ctx токенов.
+//
+// Оконные слои держат не более min(ctx, SWAWindow) токенов, поэтому их вклад
+// перестаёт расти после окна (llama-kv-cache.cpp: слои с окном хранят n_swa
+// ячеек на слот).
+func (s KVShape) BytesAtCtx(t KVType, ctx int) Bytes {
+	if ctx <= 0 {
+		return 0
+	}
+	global := s.Global.BytesPerLayerPerToken(t).Mul(int64(s.Global.Layers * ctx))
+	swaLayers := s.SWA.Layers
+	if swaLayers <= 0 {
+		return global
+	}
+	swaCtx := ctx
+	if s.SWAWindow > 0 && swaCtx > s.SWAWindow {
+		swaCtx = s.SWAWindow
+	}
+	return global + s.SWA.BytesPerLayerPerToken(t).Mul(int64(swaLayers*swaCtx))
+}
+
+// MaxCtxForBudget — наибольшее окно, которое влезает в budget байт.
+//
+// Формула (R707) — обратная к BytesAtCtx, с учётом того, что оконные слои
+// насыщаются на SWAWindow:
+//
+//	до окна:   ctx = budget / (global_на_токен + swa_на_токен)
+//	после окна: ctx = (budget − swa_на_токен × SWAWindow) / global_на_токен
+//
+// Верхняя граница ceiling (обучающий контекст) применяется последней.
+// Возвращает 0, если считать не из чего — «места нет» / «данных нет», а не
+// придуманное число.
+func (s KVShape) MaxCtxForBudget(t KVType, budget Bytes, ceiling int) int {
+	globalPerToken := s.Global.BytesPerLayerPerToken(t).Mul(int64(s.Global.Layers))
+	swaPerToken := s.SWA.BytesPerLayerPerToken(t).Mul(int64(s.SWA.Layers))
+	total := globalPerToken + swaPerToken
+	if budget <= 0 || total <= 0 {
+		return 0
+	}
+	ctx := int(budget / total)
+	if s.SWA.Layers > 0 && s.SWAWindow > 0 && ctx > s.SWAWindow {
+		fixed := swaPerToken.Mul(int64(s.SWAWindow))
+		if budget > fixed && globalPerToken > 0 {
+			ctx = int(budget.Sub(fixed) / globalPerToken)
+		}
+	}
+	if ctx < 0 {
+		ctx = 0
+	}
+	if ceiling > 0 && ctx > ceiling {
+		ctx = ceiling
+	}
+	return ctx
+}
+
+// KVShape — раскладка KV этого ModelSpec.
+//
+// Спека не несёт ширину V (в GGUF она опциональна и почти всегда равна K),
+// поэтому здесь HeadDimV = HeadDimK: для K ≠ V раскладку собирает вызывающий, у
+// которого есть оба ключа (cppbackend.KVPlan, поля KeyLength/ValueLength).
+func (m ModelSpec) KVShape() KVShape {
+	return KVShape{
+		Global: KVLayerClass{
+			Layers:   m.GlobalKVLayers(),
+			HeadDimK: m.EffectiveKVHeadDim(),
+			HeadDimV: m.EffectiveKVHeadDim(),
+			KVHeads:  m.NKvHeads,
+		},
+		SWA: KVLayerClass{
+			Layers:   m.SWAKVLayers(),
+			HeadDimK: m.EffectiveSWAHeadDim(),
+			HeadDimV: m.EffectiveSWAHeadDim(),
+			KVHeads:  m.NKvHeads,
+		},
+		SWAWindow: m.SWAWindow,
+	}
+}
+
 // KVBytesPerToken — ЕДИНСТВЕННАЯ формула KV-cache на весь проект.
 //
 //	bytes/token = 2 (K и V) × kv_layers × n_kv_heads × kv_head_dim × bytes_per_elem
@@ -132,19 +282,20 @@ func (t KVType) Normalize() KVType {
 // (218 112 против 69 632 Б/токен при f16) — и вместе с ним все потолки n_ctx.
 // Разбор правила и ссылки на llama.cpp: internal/cppbackend/kv_layers.go.
 //
+// R707: ширины берутся по КЛАССАМ слоёв (KVShape). Для моделей без окна это
+// ровно прежнее число; для gemma-4 оконные слои считаются шириной 256, а не 512.
+//
 // bytes_per_elem берётся из KVBytesPerElement — одной константы на весь стек
 // (её же использует legacy-оценка в cmd/cppworker/auto_offload.go). Раньше
 // константа дублировалась, и legacy считал q8_0 как ровно 2 байта вместо 34/32
 // (R83 §9.4 шаг 2, 2026-09-27).
 func KVBytesPerToken(m ModelSpec, t KVType) Bytes {
-	hd := m.EffectiveKVHeadDim()
-	layers := m.EffectiveKVLayers()
-	if hd <= 0 || layers <= 0 || m.NKvHeads <= 0 {
+	// Условия те же, что были до R707: ширина головы, число слоёв с кэшем и
+	// число KV-голов. Размер весов на KV не влияет — его проверяет Complete().
+	if m.EffectiveKVHeadDim() <= 0 || m.EffectiveKVLayers() <= 0 || m.NKvHeads <= 0 {
 		return 0
 	}
-	elements := int64(2) * int64(layers) * int64(m.NKvHeads) * int64(hd)
-	num, den := KVBytesPerElement(t)
-	return Bytes(elements * num / den)
+	return m.KVShape().BytesPerToken(t)
 }
 
 // KVBytesPerElement — байт на элемент KV-кэша с учётом типа (числитель и
@@ -167,14 +318,30 @@ func KVBytesPerElement(t KVType) (num, den int64) {
 	return 2, 1
 }
 
-// KVBytesPerLayerPerToken — байт KV на один слой и один токен.
-func KVBytesPerLayerPerToken(headDim, nKvHeads int, t KVType) Bytes {
-	if headDim <= 0 || nKvHeads <= 0 {
+// KVBytesPerLayerPerTokenKV — байт KV на один слой и один токен при РАЗНЫХ
+// ширинах K и V:
+//
+//	(head_dim_k + head_dim_v) × n_kv_heads × bytes_per_elem
+//
+// Разные ширины — не экзотика: у gemma-4 глобальные слои 512, оконные 256
+// (gemma4.attention.key_length / key_length_swa), а value_length — отдельный
+// ключ, который llama.cpp читает независимо (llama-model.cpp:1662-1663).
+func KVBytesPerLayerPerTokenKV(headDimK, headDimV, nKvHeads int, t KVType) Bytes {
+	if headDimK <= 0 || nKvHeads <= 0 {
 		return 0
 	}
-	elements := int64(2) * int64(nKvHeads) * int64(headDim)
+	if headDimV <= 0 {
+		headDimV = headDimK
+	}
+	elements := int64(nKvHeads) * int64(headDimK+headDimV)
 	num, den := KVBytesPerElement(t)
 	return Bytes(elements * num / den)
+}
+
+// KVBytesPerLayerPerToken — байт KV на один слой и один токен (K и V одной
+// ширины). Тонкая обёртка: второй формулы нет, см. KVBytesPerLayerPerTokenKV.
+func KVBytesPerLayerPerToken(headDim, nKvHeads int, t KVType) Bytes {
+	return KVBytesPerLayerPerTokenKV(headDim, headDim, nKvHeads, t)
 }
 
 // KVTotalBytes — полный размер KV-кэша модели на n_ctx токенов.
@@ -187,17 +354,5 @@ func KVTotalBytes(m ModelSpec, t KVType, ctx int) Bytes {
 	if ctx <= 0 || !m.Complete() {
 		return 0
 	}
-	global := KVBytesPerLayerPerToken(m.EffectiveKVHeadDim(), m.NKvHeads, t).
-		Mul(int64(m.GlobalKVLayers() * ctx))
-	swaLayers := m.SWAKVLayers()
-	if swaLayers == 0 {
-		return global
-	}
-	swaCtx := ctx
-	if m.SWAWindow > 0 && swaCtx > m.SWAWindow {
-		swaCtx = m.SWAWindow
-	}
-	swa := KVBytesPerLayerPerToken(m.EffectiveSWAHeadDim(), m.NKvHeads, t).
-		Mul(int64(swaLayers * swaCtx))
-	return global + swa
+	return m.KVShape().BytesAtCtx(t, ctx)
 }

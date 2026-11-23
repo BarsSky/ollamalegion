@@ -88,6 +88,23 @@ type ModelProfileInfo struct {
 	HeadDimV       int
 	SizeBytes      uint64
 	GgufMaxContext int // max n_ctx for this model
+	// R707 (2026-11-25): раскладка KV по слоям (из /api/models).
+	//
+	// Без неё KV считается как NLayers × NKvHeads × HeadDimK × n_ctx. Это верно
+	// только для моделей, где кэш живёт во всех слоях: у gemma-4-E4B его держат
+	// 24 слоя из 42 (4 глобальных + 20 оконных с окном 512), у Qwen3.8-9B —
+	// только attention-слои (8 из 33). Плоская формула завышала KV в 3-7 раз:
+	// R659 отказывал в загрузке на свободный узел, AutoTune советовал q4_0.
+	//
+	// KVPlanSource == "plan" → считать по классам (KVGlobalLayers/KVSWALayers);
+	// пусто или "flat" → прежняя плоская формула (старый cppworker).
+	KVPlanSource   string
+	KVGlobalLayers int
+	KVSWALayers    int
+	KVSWAWindow    int
+	HeadDimSWA     int
+	HeadDimSWAV    int
+	NKvHeadsSWA    int
 	// Current loaded state
 	CurrentContextLength int
 	CurrentKVCacheType   string

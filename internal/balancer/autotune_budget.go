@@ -119,34 +119,77 @@ func normalizeKVType(kvType string) string {
 //
 // Константы берутся из memfit.KVBytesPerElement — тот же источник, что у
 // C-моста и memfit, поэтому правка в одном месте меняет все.
+//
+// R707 (2026-11-25): формула теперь считает ПОСЛОЙНО (memfit.KVShape). Если
+// профиль несёт раскладку из /api/models (kv_plan_source=plan), оконные слои
+// ограничены окном, а shared_kv не считаются вовсе: для gemma-4-E4B на окне
+// 65536 это 302 MiB вместо 3.17 GiB (q4_0). Без раскладки (старый cppworker)
+// работает прежняя плоская формула «все слои × HeadDimK» — но уже с шириной V
+// из профиля (R705), а не «2 × K».
 // Возвращает 0, если данных/контекста нет (тогда KV не резервируем).
 func kvCacheBytesForContext(p *ModelProfileInfo, kvType string, nCtx int) uint64 {
-	if p == nil || nCtx <= 0 || p.NLayers <= 0 || p.NKvHeads <= 0 || p.HeadDimK <= 0 {
+	if p == nil || nCtx <= 0 {
 		return 0
 	}
-	typ := normalizeKVType(kvType)
-	if typ == "" {
+	shape, ok := kvShapeForProfileR707(p)
+	if !ok {
 		return 0
 	}
-	// 2 (K и V) × слоёв с KV × голов KV × head_dim = элементов на токен.
-	elements := mulSat(2, mulSat(uint64(p.NLayers), mulSat(uint64(p.NKvHeads), uint64(p.HeadDimK))))
-	num, den := memfitKVElemBytesR498(typ)
-	if num <= 0 || den <= 0 {
-		return 0
-	}
-	perToken := mulSat(elements, uint64(num)) / uint64(den)
-	return mulSat(perToken, uint64(nCtx))
+	return uint64(shape.BytesAtCtx(memfitKVTypeR707(kvType), nCtx))
 }
 
-// memfitKVElemBytesR498 — байты на элемент KV из memfit: f16 2/1, q8_0 34/32,
-// q4_0 18/32. Возвращает (num, den), чтобы не терять точность на делении.
-func memfitKVElemBytesR498(typ string) (int64, int64) {
-	switch typ {
+// kvShapeForProfileR707 — раскладка KV профиля в терминах единой формулы.
+//
+// Порядок:
+//  1. раскладка из /api/models ("plan") — классы слоёв с ширинами и окном;
+//  2. иначе плоская (все слои, ширина HeadDimK/HeadDimV) — прежнее поведение.
+//
+// ok=false — геометрии нет вовсе (NLayers/NKvHeads/HeadDimK пустые): KV не
+// считаем, вызывающий не должен выдумывать число.
+func kvShapeForProfileR707(p *ModelProfileInfo) (memfit.KVShape, bool) {
+	if p == nil || p.NKvHeads <= 0 {
+		return memfit.KVShape{}, false
+	}
+	if p.KVPlanSource == "plan" && p.KVGlobalLayers+p.KVSWALayers > 0 {
+		global := memfit.KVLayerClass{
+			Layers:   p.KVGlobalLayers,
+			HeadDimK: p.HeadDimK,
+			HeadDimV: p.HeadDimV,
+			KVHeads:  p.NKvHeads,
+		}
+		swaHeads := p.NKvHeadsSWA
+		if swaHeads <= 0 {
+			swaHeads = p.NKvHeads
+		}
+		swa := memfit.KVLayerClass{
+			Layers:   p.KVSWALayers,
+			HeadDimK: p.HeadDimSWA,
+			HeadDimV: p.HeadDimSWAV,
+			KVHeads:  swaHeads,
+		}
+		return memfit.KVShape{Global: global, SWA: swa, SWAWindow: p.KVSWAWindow}, true
+	}
+	if p.NLayers <= 0 || p.HeadDimK <= 0 {
+		return memfit.KVShape{}, false
+	}
+	return memfit.KVShape{
+		Global: memfit.KVLayerClass{
+			Layers:   p.NLayers,
+			HeadDimK: p.HeadDimK,
+			HeadDimV: p.HeadDimV,
+			KVHeads:  p.NKvHeads,
+		},
+	}, true
+}
+
+// memfitKVTypeR707 — тип KV-cache для memfit по строке профиля.
+func memfitKVTypeR707(kvType string) memfit.KVType {
+	switch normalizeKVType(kvType) {
 	case "q8_0":
-		return memfit.KVBytesPerElement(memfit.KVQ8)
+		return memfit.KVQ8
 	case "q4_0":
-		return memfit.KVBytesPerElement(memfit.KVQ4)
+		return memfit.KVQ4
 	default:
-		return memfit.KVBytesPerElement(memfit.KVF16)
+		return memfit.KVF16
 	}
 }

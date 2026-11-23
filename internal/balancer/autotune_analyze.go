@@ -157,6 +157,9 @@ func AnalyzeBackend(proxy *Proxy, backendID, backendType string, models []types.
 			// R54.2: per-model AutoTune switch (after inheritance).
 			AutoTuneEnabled: IsAutoTuneEnabled(proxy, m.Name),
 		}
+		// R707: раскладка KV (глобальные/оконные слои, ширины, окно) — без неё
+		// AutoTune считает KV по всем слоям и советует q4_0 там, где окно влезает.
+		applyKVPlanToProfileR707(prof, &m)
 		// R54.9: workload-aware analysis (if tracker available)
 		var analysis *AutoTuneAnalysis
 		if proxy != nil {

@@ -143,8 +143,14 @@ func TestComputeFeasible_Qwen36_35B(t *testing.T) {
 
 	// kvPerToken with headDimK estimation = NEmbd/NHeads = 2048/16 = 128:
 	//   fp16: 2 * 40 * 2 * 128 * 2 = 40960
-	//   q4_0: 40960 / 4 = 10240
-	expectedKVPerToken := 2 * 40 * 2 * 128 * 2 / 4
+	//   q4_0: элементов(2*40*2*128 = 20480) × 18/32 = 11520
+	//
+	// R707: коэффициент q4_0 приведён к ТОЧНОМУ значению llama.cpp (18 байт на 32
+	// элемента: 16 байт данных + 2 байта fp16-масштаба, c/bridge/kv_budget.h) —
+	// той же константе memfit.KVBytesPerElement, которой считают решения
+	// (ResourceLimits/R659). Прежнее «ровно четверть от f16» занижало KV на 12.5%,
+	// то есть рекомендовало окно больше физического.
+	expectedKVPerToken := 2 * 40 * 2 * 128 * 18 / 32
 	if info.KVPerToken != expectedKVPerToken {
 		t.Errorf("KVPerToken = %d, want %d (q4_0, headDim=128 estimated from NEmbd/NHeads)",
 			info.KVPerToken, expectedKVPerToken)
@@ -168,14 +174,18 @@ func TestComputeFeasible_Qwen36_35B(t *testing.T) {
 	}
 }
 
-// TestComputeFeasible_KVCache_q4_0_vs_f16 — проверяет, что q4_0 даёт 4x больше
-// контекста, чем f16 (KV cache compression ratio).
+// TestComputeFeasible_KVCache_q4_0_vs_f16 — проверяет, что q4_0 даёт в ~3.5 раза
+// больше контекста, чем f16 (KV cache compression ratio).
 //
 // Модель с фиксированными параметрами: 32 layers, 8 KV heads, head_dim=80 (2560/32).
-//   f16: kv = 2 * 32 * 8 * 80 * 2 = 81920 bytes/token → 1GB / 81920 = ~13107 ctx
-//   q4_0: kv = 81920 / 4 = 20480 bytes/token → 1GB / 20480 = ~52428 ctx
 //
-// Отношение q4_0 / f16 ≈ 4x.
+//	f16:  kv = 2 * 32 * 8 * 80 * 2 = 81920 bytes/token
+//	q4_0: kv = 2 * 32 * 8 * 80 × 18/32 = 23040 bytes/token
+//
+// R707: коэффициент q4_0 — ТОЧНЫЙ (18/32, memfit.KVBytesPerElement), поэтому
+// отношение f16/q4_0 = 32/18 ≈ 3.55, а не ровно 4: прежнее «/4» занижало KV на
+// 12.5 % и рекомендовало окно выше физического. Здесь проверяется именно
+// отношение — гистограмма окна ниже требует не менее 3×.
 //
 // GGUFMax = 1M — большой, чтобы не cap MaxCtx (иначе ratio = 1:1).
 func TestComputeFeasible_KVCache_q4_0_vs_f16(t *testing.T) {
@@ -217,7 +227,7 @@ func TestComputeFeasible_KVCache_q4_0_vs_f16(t *testing.T) {
 		t.Fatalf("ComputeFeasible q4_0: %v", err)
 	}
 
-	// Verify q4_0 gives 4x more ctx
+	// Verify q4_0 gives ~3.55x more ctx (точный коэффициент 18/32).
 	if infoF16.KVPerToken == 0 {
 		t.Fatal("infoF16.KVPerToken = 0")
 	}
@@ -225,8 +235,8 @@ func TestComputeFeasible_KVCache_q4_0_vs_f16(t *testing.T) {
 		t.Fatal("infoQ4.KVPerToken = 0")
 	}
 	ratio := infoF16.KVPerToken / infoQ4.KVPerToken
-	if ratio != 4 {
-		t.Errorf("KV ratio f16/q4_0 = %d, want 4", ratio)
+	if ratio != 3 {
+		t.Errorf("KV ratio f16/q4_0 = %d, want 3 (точный 18/32: 32/18 ≈ 3.55)", ratio)
 	}
 
 	// MaxRAMCtx (or MaxVRAMCtx, whichever is non-zero) should be ~4x larger for q4_0

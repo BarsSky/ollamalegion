@@ -78,6 +78,17 @@ type GGUFModelMeta struct {
 	SlidingWindow  int    `json:"slidingWindow,omitempty"`
 	SWAKeyLength   int    `json:"swaKeyLength,omitempty"`
 	SWAPattern     string `json:"swaPattern,omitempty"`
+
+	// R707 (2026-11-25): послойная раскладка KV. Прежние поля описывали КЛАСС
+	// глобальных слоёв; здесь — вторая ширина (V) оконного класса, число KV-голов
+	// по слоям и визиты loop-схемы. Без них gemma-4 нельзя посчитать точнее, чем
+	// «20 оконных слоёв шириной 512», а Inkling-2-Mini — вообще по слоям.
+	// Раскладка и формула — kv_layers.go (KVPlan), internal/memfit/kv.go.
+	SWAValueLength  int   `json:"swaValueLength,omitempty"`  // <arch>.attention.value_length_swa
+	KVHeadsPerLayer []int `json:"kvHeadsPerLayer,omitempty"` // массив <arch>.attention.head_count_kv
+	LoopCount       int   `json:"loopCount,omitempty"`       // <arch>.num_loops (loop-схема)
+	LoopCoreStart   int   `json:"loopCoreStart,omitempty"`   // <arch>.loop.core_start / .loop.start
+	LoopCoreEnd     int   `json:"loopCoreEnd,omitempty"`     // <arch>.loop.core_end / .loop.end
 }
 
 // ModelManager — управляет модельками

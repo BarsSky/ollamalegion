@@ -572,6 +572,11 @@ window.I18N_RU = {
   "monitor.alert.vramFull": "VRAM кластера заполнена на {pct}% ({used}/{total} ГБ).",
   "monitor.alert.parallelismUnused": "Бэкенд {backend}: воркер держит {slots} параллельных слотов, а балансер пропускает {effective} — потенциал раскрыт не полностью. Балансер сам ничего не меняет: если это нужно, выставьте maxConcurrentRequests={slots} для этого бэкенда или включите LB_CAPACITY_FROM_MODEL_SLOTS=true — решение за вами.",
   "monitor.alert.rebalance": "Принудительное перераспределение",
+  // R696 (2026-11-23): док предупреждений вынесен из потока (не отнимает высоту
+  // у области монитора). toggle — подпись кнопки-счётчика, merged — сколько
+  // одинаковых сообщений схлопнуто в один баннер (одно на бэкенд).
+  "monitor.alerts.toggle": "Свернуть или развернуть предупреждения",
+  "monitor.alerts.merged": "Одинаковых сообщений схлопнуто: {count}",
 
   "monitor.common.noData": "Нет данных",
   // R118 (2026-10-14): роль бэкенда в раскладке слоёв (селектор в строке узла).
@@ -2077,6 +2082,23 @@ window.I18N_RU = {
   "imageModels.hf_select_suggested": "Отметить по ролям",
   "imageModels.hf_clear_selection": "Снять отметки",
   "imageModels.hf_selected_count": "Выбрано файлов: {n}",
+  // ==== R696 (2026-11-23): липкая панель выбора и вердикт набора ====
+  // Живой дефект: в репозитории 16+ файлов список уходил за кромку окна, кнопка
+  // скачивания была в отдельной карточке ниже, и не было видно, что скачается
+  // ВСЁ отмеченное. Плюс вердикт «сможет ли imageworker это загрузить» нужен ДО
+  // скачивания: скачан был один файл, а он оказался text encoder'ом Qwen3-VL.
+  "imageModels.hf_selected_summary": "Выбрано: {n} файлов · {size}",
+  "imageModels.hf_nothing_selected": "Ничего не выбрано — скачается только отмеченное",
+  "imageModels.hf_download_selected": "Скачать выбранное",
+  "imageModels.hf_verify_compat": "Проверить совместимость",
+  "imageModels.hf_verify_running": "Проверяю заголовки выбранных файлов…",
+  "imageModels.hf_verify_failed": "Не удалось проверить набор: {error}",
+  "imageModels.hf_detected_role": "по заголовку: {role}",
+  "imageModels.compat_verdict_yes": "imageworker сможет загрузить: да",
+  "imageModels.compat_verdict_no": "imageworker НЕ сможет загрузить",
+  "imageModels.compat_verdict_missing": "не хватает: {roles}",
+  "imageModels.compat_force": "Загрузить всё равно",
+  "imageModels.compat_force_tip": "imageworker считает набор несовместимым: {reason}. Нажмите, чтобы попробовать всё равно.",
   "imageModels.hf_suggested": "предложено",
   "imageModels.hf_none_selected": "Отметьте хотя бы один файл модели",
   "imageModels.hf_bad_role": "Неизвестная роль: {role}",

@@ -2134,3 +2134,81 @@
     gap: var(--space-2);
     margin-top: var(--space-3);
 }
+
+/* ============================================================
+   R696 (2026-11-23): HF-карточка файлов — липкая панель выбора.
+   Живой дефект: в репозитории 16+ файлов список уходил за нижнюю
+   кромку окна, кнопка скачивания стояла в ОТДЕЛЬНОЙ карточке ниже, и
+   оператор не видел, что скачается всё отмеченное. Панель прилипает к
+   верху видимой части списка (внутри раскрытой карточки, R693), поэтому
+   счётчик «выбрано N файлов · X ГБ» и кнопка «Скачать выбранное» видны
+   без прокрутки. position: sticky срабатывает относительно окна — карточка
+   живёт в обычном потоке страницы, а не в скролл-контейнере.
+   ============================================================ */
+.imh-files-actions {
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: 8px 10px;
+    margin: 0 0 8px;
+    background: var(--bg-secondary, var(--bg-primary));
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+}
+
+.imh-files-actions-summary {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary, var(--text-muted));
+    white-space: normal;
+}
+
+.imh-files-actions-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.imh-files-verdict {
+    margin: 0 0 8px;
+    padding: 8px 10px;
+    border-left: 3px solid var(--border);
+    background: var(--bg-secondary, var(--bg-primary));
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    white-space: normal;
+}
+
+.imh-files-verdict .imh-verdict-reason {
+    margin-top: 4px;
+    color: var(--text-muted);
+}
+
+.imh-files-verdict .imh-verdict-missing {
+    margin-top: 4px;
+    color: var(--warning, #e0a030);
+}
+
+/* R696: sticky внутри карточки требует, чтобы у предка не было overflow:hidden
+ * (.card его ставит ради скруглений). Панель выбора должна оставаться видимой
+ * при прокрутке длинного списка файлов, поэтому для НЕЁ overflow разрешаем:
+ * скругление карточки рисуется фоном, а не обрезкой. */
+#imHfFilesCard {
+    overflow: visible;
+}
+
+/* R696: position: sticky НЕ работает внутри предка с overflow:hidden —
+ * .card ставит его ради скруглений, а карточка-обёртка вкладки HuggingFace
+ * (поиск + список результатов) как раз такая. Без этого правила липкая панель
+ * выбора «уезжала» вместе со списком (замер CDP: после прокрутки на 800 px
+ * кнопка оказывалась на top=-578 при окне 720). Скругление карточки не страдает:
+ * фон рисуется по border-radius, обрезка нужна только для дочерних теней. */
+#imTabHf > .card {
+    overflow: visible;
+}

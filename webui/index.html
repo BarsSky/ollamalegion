@@ -922,6 +922,26 @@
                     </div>
                     <div class="card-body">
                         <small style="display:block;margin-bottom:10px;color:var(--text-muted);font-size:var(--font-size-xs);" data-i18n="imageModels.hf_files_hint">Роли предложены по именам файлов на сервере: проверьте их перед загрузкой. Крупные text encoder'ы (t5xxl/llm) по умолчанию не отмечены — их нужно выбирать осознанно.</small>
+                        <!-- R696: ЛИПКАЯ ПАНЕЛЬ ВЫБОРА. Живой дефект: список из
+                             16+ файлов уходил за нижнюю кромку окна, кнопка
+                             скачивания была в отдельной карточке НИЖЕ списка, и
+                             оператор не видел, что скачается всё отмеченное.
+                             Панель прилипает к верху списка внутри раскрытой
+                             карточки и всегда показывает счётчик и объём
+                             выбранного; кнопка «Скачать выбранное» отправляет
+                             РОВНО отмеченные файлы (тот же startBundle), а
+                             «Проверить совместимость» — вердикт воркера по
+                             набору до скачивания (POST /api/hf/verify). -->
+                        <div class="imh-files-actions" id="imHfActionsBar">
+                            <span class="imh-files-actions-summary" id="imHfSelectionSummarySticky"></span>
+                            <span class="imh-files-actions-buttons">
+                                <button class="btn btn-secondary btn-sm" data-imh-action="verify" data-i18n="imageModels.hf_verify_compat">Проверить совместимость</button>
+                                <button class="btn btn-primary btn-sm" id="imHfDownloadSelected" data-imh-action="download" data-admin-only>
+                                    <i class="fas fa-download"></i> <span data-i18n="imageModels.hf_download_selected">Скачать выбранное</span>
+                                </button>
+                            </span>
+                        </div>
+                        <div class="imh-files-verdict" id="imHfVerifyVerdict" style="display:none;"></div>
                         <div id="imHfFilesBody" class="gguf-files-list"></div>
                     </div>
                 </div>

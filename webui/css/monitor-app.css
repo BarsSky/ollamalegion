@@ -180,10 +180,87 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
   border-radius: 8px;
   background: var(--bg-primary);
 }
-/* Alert banner - тема-управляемые полупрозрачные фоны (Session 17) */
-.alert-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 6px; margin: 6px 14px 0; font-size: var(--font-size-xs); }
-.alert-red { background: var(--danger-bg-soft); border: 1px solid var(--danger-bg-soft); color: var(--danger); }
-.alert-yellow { background: var(--warning-bg-soft); border: 1px solid var(--warning-bg-soft); color: var(--warning); }
+/* === R696 (2026-11-23): ПРЕДУПРЕЖДЕНИЯ — ВНЕ ПОТОКА ===
+   ЖИВАЯ ЖАЛОБА: «из-за сообщений, помеченных красным шрифтом, область, в
+   которой отображается монитор, начинает уменьшаться».
+   ПРИЧИНА: баннеры жили в потоке страницы (прямой ребёнок <main>), и каждый
+   из них отнимал высоту у .topo-viewport.
+   РЕШЕНИЕ: fixed-док поверх страницы. Его высота в layout не участвует вовсе;
+   при переполнении список скроллится ВНУТРИ дока, а не растёт. Тема-токены
+   (--danger/--danger-bg-soft/--warning/--warning-bg-soft/--glass-*) уже заданы
+   для всех тем в themes.css, своих цветов здесь не заводим: иначе одна из тем
+   (light) разъехалась бы с остальными. */
+.alert-dock {
+  position: fixed;
+  top: 62px;
+  right: 14px;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: min(440px, calc(100vw - 28px));
+  pointer-events: none;
+}
+.alert-dock[hidden] { display: none; }
+.alert-list {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-height: min(38vh, 340px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: 2px;
+}
+.alert-list[hidden] { display: none; }
+.alert-dock-toggle {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--text-primary);
+  box-shadow: var(--glass-shadow);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+.alert-dock-toggle:hover,
+.alert-dock-toggle:focus-visible { border-color: var(--accent); color: var(--text-primary); }
+.alert-dock-toggle[hidden] { display: none; }
+.alert-dock-count { min-width: 14px; text-align: center; font-family: var(--font-mono); }
+.alert-dock-chevron { transition: transform 0.2s; opacity: 0.8; }
+.alert-dock-collapsed .alert-dock-chevron { transform: rotate(180deg); }
+.alert-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+  border: 1px solid transparent;
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.alert-banner-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.alert-banner-icon { flex: 0 0 auto; }
+.alert-banner-count {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  opacity: 0.9;
+}
+.alert-red { background: var(--danger-bg-soft); border-color: var(--danger-bg-soft); color: var(--danger); }
+.alert-yellow { background: var(--warning-bg-soft); border-color: var(--warning-bg-soft); color: var(--warning); }
 .capacity-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; padding: 10px 14px; }
 .capacity-card { background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 12px; padding: 10px 12px; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); box-shadow: var(--glass-shadow); position: relative; }
 .capacity-card::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: var(--glass-highlight); pointer-events: none; border-radius: 12px 12px 0 0; }

@@ -65,6 +65,14 @@
   function _showRebalanceBanner(text, ok) {
     var c = document.getElementById('alertContainer');
     if (!c) return;
+    // R696: контейнер баннеров переехал в fixed-док и по умолчанию скрыт, когда
+    // тревог нет. Временное сообщение о перебалансировке обязано показать док,
+    // даже если постоянных предупреждений сейчас ноль; после удаления баннера
+    // просим док пересчитать видимость по последнему списку тревог.
+    if (window.MonitorAlerts) {
+      if (typeof window.MonitorAlerts.sync === 'function') window.MonitorAlerts.sync();
+      if (typeof window.MonitorAlerts.reveal === 'function') window.MonitorAlerts.reveal();
+    }
     var b = document.createElement('div');
     b.className = 'alert-banner';
     b.style.cssText = ok
@@ -73,7 +81,10 @@
     b.innerHTML = '<span>' + (ok ? '✅' : 'ℹ️') + '</span><span></span>';
     b.lastChild.textContent = text; // textContent — без HTML-инъекций из ответа
     c.insertBefore(b, c.firstChild);
-    setTimeout(function() { if (b.parentNode) b.remove(); }, 6000);
+    setTimeout(function() {
+      if (b.parentNode) b.remove();
+      if (window.MonitorAlerts && typeof window.MonitorAlerts.sync === 'function') window.MonitorAlerts.sync();
+    }, 6000);
   }
 
   window.forceRebalance = function() {

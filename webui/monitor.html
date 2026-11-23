@@ -125,7 +125,6 @@
       <div class="stat-item"><div id="statModelsLoaded" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.stats.models">Models</div></div>
     </div>
   </div>
-  <div id="alertContainer"></div>
   <div class="tables-area">
     <div class="panel open" id="panelCluster">
       <div class="panel-header" onclick="togglePanel('panelCluster')">
@@ -688,6 +687,28 @@
     </div>
   </div>
 </main>
+<!-- R696 (2026-11-23): ПРЕДУПРЕЖДЕНИЯ — ВНЕ ПОТОКА.
+     ЖИВАЯ ЖАЛОБА ОПЕРАТОРА: «из-за сообщений, помеченных красным шрифтом,
+     область, в которой отображается монитор, начинает уменьшаться».
+     ФАКТ. #alertContainer стоял ПРЯМЫМ ребёнком <main> между .topo-section и
+     .tables-area: <main> — flex-колонка, .topo-section — единственный
+     растягиваемый ребёнок, поэтому каждый баннер отнимал высоту у полотна
+     топологии (CDP-замер r695, 1280x900: .topo-viewport 245.5px при 0
+     сообщениях -> 205px при 1 -> 196.5px при 5 и 20 — дальше упирается в
+     min-height .topo-section). Теперь док вынесен из <main> и позиционируется
+     fixed: и число сообщений, и их длина больше не влияют на layout вообще.
+     Свёрнутый вид — кнопка-счётчик с aria-expanded (см. ui-renderer.js,
+     renderAlerts). -->
+<div id="alertDock" class="alert-dock" hidden>
+  <button type="button" id="alertDockToggle" class="alert-dock-toggle"
+          aria-expanded="true" aria-controls="alertContainer"
+          data-i18n-title="monitor.alerts.toggle">
+    <span id="alertDockIcon" class="alert-dock-icon" aria-hidden="true">❌</span>
+    <span id="alertDockCount" class="alert-dock-count">0</span>
+    <span class="alert-dock-chevron" aria-hidden="true">▾</span>
+  </button>
+  <div id="alertContainer" class="alert-list" role="status" aria-live="polite"></div>
+</div>
   <!-- R59.3 (2026-09-03): all scripts below are defer so they execute AFTER
        the defer scripts in <head> (window.WEBUI_CONFIG = {} and
        config.js?v=R425) populate window.WEBUI_CONFIG.API_TOKEN. Without

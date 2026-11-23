@@ -721,6 +721,174 @@
     });
   }
 
+  // =====================================================================
+  // R696 (2026-11-23): ПРЕДУПРЕЖДЕНИЯ — ВНЕ ПОТОКА И БЕЗ ДУБЛИКАТОВ.
+  //
+  // ЖИВАЯ ЖАЛОБА ОПЕРАТОРА: «из-за сообщений, помеченных красным шрифтом,
+  // область, в которой отображается монитор, начинает уменьшаться — это
+  // неудобно». Замер r695 (CDP, 1280x900): .topo-viewport 245.5px при 0
+  // сообщениях, 205px при 1, 196.5px при 5 и 20 — при том, что сами
+  // предупреждения оператору нужны. Причина: #alertContainer стоял в потоке
+  // между полотном топологии и панелями, и каждый баннер отнимал высоту у
+  // монитора. Вторая причина: список не схлопывал повторы — 20 застрявших
+  // запросов одной модели давали 20 одинаковых строк.
+  //
+  // Теперь (1) док #alertDock позиционирован fixed (css/monitor-app.css) и в
+  // layout не участвует вообще; (2) у каждой тревоги есть КЛЮЧ, одинаковые
+  // ключи сливаются в один баннер со счётчиком «×N» — одно сообщение на
+  // бэкенд, а не по одному на запрос; (3) переполнение скроллится внутри
+  // дока; (4) свернуть/развернуть может оператор, состояние переживает
+  // обновление данных (иначе следующий опрос разворачивал бы панель обратно).
+  // =====================================================================
+
+  // pushAlert — добавить тревогу или увеличить счётчик уже добавленной.
+  // Ключ обязателен: без него «одно сообщение на бэкенд» не гарантируется.
+  function pushAlert(list, alert, key) {
+    var k = key || alert.text;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].key === k) {
+        list[i].count++;
+        return list[i];
+      }
+    }
+    alert.key = k;
+    alert.count = 1;
+    list.push(alert);
+    return alert;
+  }
+
+  // Состояние дока — модульное, а не в DOM: перерисовка списка на каждом
+  // опросе не должна терять выбор оператора.
+  var alertsCollapsed = false;
+  var lastAlerts = [];
+
+  function alertDockEls() {
+    return {
+      dock: document.getElementById('alertDock'),
+      list: document.getElementById('alertContainer'),
+      toggle: document.getElementById('alertDockToggle'),
+      icon: document.getElementById('alertDockIcon'),
+      count: document.getElementById('alertDockCount')
+    };
+  }
+
+  // placeAlertDock — позиция дока и предел высоты списка по ФАКТИЧЕСКИМ
+  // прямоугольникам, а не по магическим числам.
+  //
+  // ЗАЧЕМ. Шапка монитора в iframe переносится: на 1280x900 она занимает 120px,
+  // а не 52. Фиксированные top:62px накрыли бы её кнопки (пауза, язык, справка)
+  // — оператор не смог бы нажать их, не свернув предупреждения. Поэтому док
+  // ставится сразу ПОД шапкой, а список ограничивается высотой полотна
+  // топологии: док не заходит ни на полосу статистики, ни на заголовки панелей
+  // (у них справа кнопка-шеврон). Никакой геометрии самого монитора это не
+  // меняет: док вне потока, его высота в layout не участвует.
+  function placeAlertDock() {
+    var el = alertDockEls();
+    if (!el.dock || !el.dock.style) return;
+    var top = 62;
+    var header = document.querySelector('header');
+    if (header && typeof header.getBoundingClientRect === 'function') {
+      var hr = header.getBoundingClientRect();
+      if (hr && hr.height > 0) top = Math.round(hr.bottom + 8);
+    }
+    el.dock.style.top = top + 'px';
+    var viewport = document.querySelector('.topo-viewport');
+    if (el.list && el.list.style && viewport && typeof viewport.getBoundingClientRect === 'function') {
+      var vr = viewport.getBoundingClientRect();
+      // 48px — кнопка-счётчик, зазор и поле списка. Меньше 96px делать нельзя:
+      // предупреждение должно оставаться читаемым.
+      var avail = Math.round(vr.bottom - top - 48);
+      if (avail > 0) el.list.style.maxHeight = Math.max(96, avail) + 'px';
+    }
+  }
+  if (window.addEventListener) {
+    window.addEventListener('resize', function() { placeAlertDock(); });
+  }
+
+  // syncAlertDock — привести кнопку-счётчик и видимость дока к списку тревог.
+  // Никакой геометрии монитора здесь не меняется: док вне потока.
+  function syncAlertDock(alerts) {
+    var el = alertDockEls();
+    if (!el.dock || !el.list) return;
+    var has = alerts && alerts.length > 0;
+    el.dock.hidden = !has;
+    el.list.hidden = has && alertsCollapsed;
+    if (el.toggle) {
+      el.toggle.hidden = !has;
+      el.toggle.setAttribute('aria-expanded', (has && alertsCollapsed) ? 'false' : 'true');
+      var label = T('monitor.alerts.toggle');
+      el.toggle.setAttribute('aria-label', label);
+      el.toggle.title = label;
+    }
+    if (has) placeAlertDock();
+    if (!has) return;
+    var red = false;
+    for (var i = 0; i < alerts.length; i++) {
+      if (alerts[i].level === 'red') { red = true; break; }
+    }
+    if (el.icon) el.icon.textContent = red ? '❌' : '⚠️';
+    if (el.count) el.count.textContent = String(alerts.length);
+  }
+
+  function renderAlerts(alerts) {
+    lastAlerts = alerts || [];
+    var list = document.getElementById('alertContainer');
+    if (list) {
+      var html = lastAlerts.map(function(a) {
+        var btn = '';
+        if (a.action === 'rebalance') {
+          btn = '<button onclick="forceRebalance()" style="margin-left:8px;padding:2px 8px;font-size:var(--font-size-xs);background:var(--danger);color:#fff;border:none;border-radius:4px;cursor:pointer">' + T('monitor.alert.rebalance') + '</button>';
+        } else if (a.action === 'windowAlign') {
+          btn = '<button onclick="alignWindowAction(' + Number(a.idx) + ')" style="margin-left:8px;padding:2px 8px;font-size:var(--font-size-xs);background:var(--warning);color:#fff;border:none;border-radius:4px;cursor:pointer">' + T('monitor.alert.windowAlignButton') + '</button>';
+        }
+        // Счётчик «×N» — сколько повторов схлопнуто в этот баннер (R696).
+        var cnt = (a.count > 1)
+          ? '<span class="alert-banner-count" title="' + MA.esc(T('monitor.alerts.merged', { count: a.count })) + '">×' + a.count + '</span>'
+          : '';
+        return '<div class="alert-banner alert-' + a.level + '" role="listitem">' +
+          '<span class="alert-banner-icon" aria-hidden="true">' + (a.level === 'red' ? '❌' : '⚠️') + '</span>' +
+          '<span class="alert-banner-text">' + MA.esc(a.text) + '</span>' + cnt + btn +
+          '</div>';
+      }).join('');
+      // Перерисовываем только при РЕАЛЬНОМ изменении: иначе каждые 2 с
+      // пересоздавались бы кнопки внутри баннеров (фокус терялся) и
+      // aria-live=polite переобъявлял бы весь список на каждом опросе.
+      if (list.innerHTML !== html) list.innerHTML = html;
+    }
+    syncAlertDock(lastAlerts);
+  }
+
+  // Публичный (для тестов и для временных баннеров init.js) интерфейс дока.
+  window.MonitorAlerts = {
+    toggle: function() {
+      var el = alertDockEls();
+      if (!el.dock || el.dock.hidden) return;
+      alertsCollapsed = !alertsCollapsed;
+      syncAlertDock(lastAlerts);
+    },
+    isCollapsed: function() { return alertsCollapsed; },
+    reveal: function() {
+      var el = alertDockEls();
+      if (!el.dock) return;
+      el.dock.hidden = false;
+      // Временное сообщение (перебалансировка) показываем даже в свёрнутом
+      // доке: иначе нажатие кнопки выглядело бы «ничего не произошло».
+      if (el.list) el.list.hidden = false;
+      if (el.toggle) el.toggle.hidden = false;
+    },
+    sync: function() { syncAlertDock(lastAlerts); },
+    count: function() { return lastAlerts.length; }
+  };
+  (function bindAlertDockToggle() {
+    var t = document.getElementById('alertDockToggle');
+    if (t && t.addEventListener) {
+      t.addEventListener('click', function(e) {
+        if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        window.MonitorAlerts.toggle();
+      });
+    }
+  })();
+
   function diagnose(data) {
     var alerts = [], bks = data.cluster.backends || [], q = data.queueDetails || {}, all = q.all || [];
     // R494: индексы кнопок «Выровнять» живут в этом списке и пересобираются на
@@ -741,16 +909,16 @@
           return (b.activeRequests || 0) / m < 0.5;
         });
     if (q.pending_count > 0 && freeBks.length > 0) {
-      alerts.push({
+      pushAlert(alerts, {
         level: 'red',
         action: 'rebalance',
         text: T('monitor.alert.pendingWithFree', { pending: q.pending_count, backends: freeBks.map(function(b) { return b.id; }).join(', ') })
-      });
+      }, 'pendingWithFree');
     }
     all.forEach(function(r) {
       if (r.status === 'pending' && r.enqueued) {
         var w = (Date.now() - new Date(r.enqueued).getTime()) / 1000;
-        if (w > 10) alerts.push({ level: 'yellow', text: T('monitor.alert.stuckInQueue', { model: r.model, sec: w.toFixed(0) }) });
+        if (w > 10) pushAlert(alerts, { level: 'yellow', text: T('monitor.alert.stuckInQueue', { model: r.model, sec: w.toFixed(0) }) }, 'stuckInQueue:' + r.model);
       }
     });
     // R493 (2026-11-12, жалоба оператора): «сессий две и два бэкенда занято,
@@ -779,10 +947,10 @@
         ? MA.altBackendsFor(bks, b, 0.5, s.model)
         : activeBks.filter(function(x) { return x.id !== b.id && backendLoadRatio(x) < 0.5; });
       if (alt.length > 0) {
-        alerts.push({
+        pushAlert(alerts, {
           level: 'yellow',
           text: T('monitor.alert.sessionOverloaded', { id: s.id.slice(0, 8), backend: b.id, load: (l * 100).toFixed(0), alt: alt.map(function(a) { return a.id; }).join(', ') })
-        });
+        }, 'sessionOverloaded:' + b.id);
       }
     });
     bks.forEach(function(b) {
@@ -793,7 +961,7 @@
       // случаях, где балансер пускает меньше (узел с n_parallel=1 и статикой 4
       // показывал 25% при полной занятости).
       var m = backendCapacityOf(b), l = backendLoadRatio(b);
-      if (l >= 1.0) alerts.push({ level: 'red', text: T('monitor.alert.backendFull', { backend: b.id, active: b.activeRequests || 0, max: m }) });
+      if (l >= 1.0) pushAlert(alerts, { level: 'red', text: T('monitor.alert.backendFull', { backend: b.id, active: b.activeRequests || 0, max: m }) }, 'backendFull:' + b.id);
     });
     // R494 (2026-11-12, по архиву стенда A10 ×2): «одна модель — разные окна».
     //
@@ -811,7 +979,9 @@
         MA.alignActions = MA.alignActions || [];
         MA.alignActions.push({ model: a.model, backendId: a.backendId, target: a.target });
         a.idx = MA.alignActions.length - 1;
-        alerts.push(a);
+        // Ключ включает модель и узел: у одного бэкенда не может быть двух
+        // баннеров «выровнять окно», но у разных узлов — может.
+        pushAlert(alerts, a, 'windowAlign:' + (a.model || '') + '@' + (a.backendId || ''));
       });
     }
     // R83-fix (2026-10-09): «потенциал параллельности не раскрыт».
@@ -830,33 +1000,26 @@
       var slots = b.runtimeModelSlots || 0;
       var eff = b.effectiveMaxConcurrentRequests || 0;
       if (slots > 1 && eff > 0 && eff < slots) {
-        alerts.push({
+        pushAlert(alerts, {
           level: 'yellow',
           text: T('monitor.alert.parallelismUnused', {
             backend: b.id,
             slots: slots,
             effective: eff
           })
-        });
+        }, 'parallelismUnused:' + b.id);
       }
     });
     var ms = data.cluster.queue ? data.cluster.queue.max_size : 100, cs = q.current_size || 0;
-    if (cs > ms * 0.8) alerts.push({ level: 'red', text: T('monitor.alert.queueFull', { pct: (cs / ms * 100).toFixed(0), size: cs, max: ms }) });
+    if (cs > ms * 0.8) pushAlert(alerts, { level: 'red', text: T('monitor.alert.queueFull', { pct: (cs / ms * 100).toFixed(0), size: cs, max: ms }) }, 'queueFull');
     var vramAlerts = aggVRAM(bks);
     var tv = vramAlerts.totalGB;
     var uv = vramAlerts.usedGB;
-    if (tv > 0 && uv / tv > 0.85) alerts.push({ level: 'red', text: T('monitor.alert.vramFull', { pct: (uv / tv * 100).toFixed(0), used: uv.toFixed(1), total: tv.toFixed(0) }) });
+    if (tv > 0 && uv / tv > 0.85) pushAlert(alerts, { level: 'red', text: T('monitor.alert.vramFull', { pct: (uv / tv * 100).toFixed(0), used: uv.toFixed(1), total: tv.toFixed(0) }) }, 'vramFull');
 
-    document.getElementById('alertContainer').innerHTML = alerts.map(function(a) {
-      var btn = '';
-      if (a.action === 'rebalance') {
-        btn = '<button onclick="forceRebalance()" style="margin-left:8px;padding:2px 8px;font-size:var(--font-size-xs);background:var(--danger);color:#fff;border:none;border-radius:4px;cursor:pointer">' + T('monitor.alert.rebalance') + '</button>';
-      } else if (a.action === 'windowAlign') {
-        btn = '<button onclick="alignWindowAction(' + Number(a.idx) + ')" style="margin-left:8px;padding:2px 8px;font-size:var(--font-size-xs);background:var(--warning);color:#fff;border:none;border-radius:4px;cursor:pointer">' + T('monitor.alert.windowAlignButton') + '</button>';
-      }
-      return '<div class="alert-banner alert-' + a.level + '"><span>' + (a.level === 'red' ? '❌' : '⚠️') + '</span><span>' + MA.esc(a.text) + '</span>' + btn +
-        '</div>';
-    }).join('');
+    // R696: список и док — единственная точка записи. Геометрия монитора от
+    // количества сообщений не зависит: #alertDock — fixed (см. monitor-app.css).
+    renderAlerts(alerts);
   }
 
   function renderClusterResources(bk) {

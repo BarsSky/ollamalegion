@@ -41,6 +41,14 @@
 
   function updateMonitorTexts() {
     var t = T;
+    // R696: подпись кнопки-счётчика дока предупреждений. data-i18n-title
+    // покрывает начальную загрузку, здесь — смена языка на лету.
+    var adt = document.getElementById('alertDockToggle');
+    if (adt) {
+      var adl = t('monitor.alerts.toggle');
+      adt.title = adl;
+      adt.setAttribute('aria-label', adl);
+    }
     document.querySelectorAll('.stat-label').forEach(function(el) {
       var mp = {
         Backends: t('monitor.stats.backends'), Active: t('monitor.stats.active'),

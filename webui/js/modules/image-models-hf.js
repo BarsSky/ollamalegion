@@ -149,6 +149,17 @@
         // familyNotice — сообщение «семейство подставлено по файлу» для шапки.
         familyNotice: '',
         tokenSaved: false,
+        // R696: вердикт воркера по ВЫБРАННОМУ набору (POST /api/hf/verify).
+        // verifyKey — отпечаток выбора (репозиторий + семейство + пути/роли),
+        // чтобы одинаковый набор не проверялся повторно при перерисовках.
+        verify: null,
+        verifyKey: '',
+        verifyBusy: false,
+        verifyError: '',
+        // verifySeq — ответ устаревшей проверки (выбор успел измениться) не
+        // должен перезаписать вердикт актуального набора.
+        verifySeq: 0,
+        verifyTimer: null,
         // прогресс bundle: снимок HFBundleProgress из /api/hf/progress?bundleId=
         bundle: null,
         poll: null,
@@ -668,6 +679,10 @@
         // паркуем обратно (свёрнуто).
         if (state.expandedRepo) attachFilesCard(state.expandedRepo);
         else parkFilesCard();
+        // R696: липкая панель и вердикт набора живут в карточке файлов, а она
+        // переезжает вместе с этим рендером — обновляем их здесь же.
+        renderSelectionSummary();
+        renderVerifyVerdict();
     }
 
     // =====================================================================
@@ -927,6 +942,22 @@
             var sel = state.selection[path] || { checked: false, role: suggestedRole(f) || 'diffusion' };
             var role = sel.role;
             var suggested = suggestedRole(f);
+            // Метка совместимости: результат пред-проверки, если он есть; иначе —
+            // «не проверено» + кнопка «Проверить» (для файлов весов).
+            var isWeight = /\.(gguf|safetensors|sft|ckpt)$/i.test(path);
+            var probe = state.probes[path];
+            // R696: роль по СОДЕРЖИМОМУ заголовка. Живой дефект: файл
+            // `Qwen-Image-2.1-Turbo-Uncensored-AD-Q4_K.gguf` назван как модель, а
+            // внутри — текстовый энкодер Qwen3-VL (general.architecture=qwen3vl);
+            // имя подсказывало роль diffusion, и движок падал с «get sd version
+            // from file failed». Показываем расхождение прямо у файла.
+            var detected = probe && probe.role && probe.role !== role ? String(probe.role) : '';
+            var detectedHint = detected
+                ? ' <span style="font-size:var(--font-size-xs);color:var(--warning, #e0a030);" title="' +
+                    escapeHtml(String(probe.reason || '')) + '">(' +
+                    escapeHtml(t('imageModels.hf_detected_role', 'по заголовку: {role}', { role: roleLabel(detected) })) +
+                    ')</span>'
+                : '';
             // Расхождение роли и подсказки сервера показываем как есть: это
             // сигнал «оператор выбрал другое», а не ошибка. Подпись в подсказке
             // — та же карта ROLE_LABEL_KEYS, что и у селекта (R695): серверный
@@ -935,10 +966,6 @@
             var roleHint = suggested && suggested !== role
                 ? ' <span style="font-size:var(--font-size-xs);color:var(--text-muted);">(' + escapeHtml(t('imageModels.hf_suggested', 'предложено')) + ': ' + escapeHtml(roleLabel(suggested)) + ')</span>'
                 : '';
-            // Метка совместимости: результат пред-проверки, если он есть; иначе —
-            // «не проверено» + кнопка «Проверить» (для файлов весов).
-            var isWeight = /\.(gguf|safetensors|sft|ckpt)$/i.test(path);
-            var probe = state.probes[path];
             var compat = '';
             if (probe) {
                 compat = compatBadgeHtml(probeBadge(probe), isWeight ? path : '');
@@ -955,13 +982,14 @@
                 '</label>' +
                 '<select class="form-control" data-imh-role="' + escapeHtml(path) + '" style="max-width:200px;font-size:var(--font-size-xs);">' +
                     roleOptions(role) +
-                '</select>' + roleHint +
+                '</select>' + roleHint + detectedHint +
                 compat +
                 '<span class="gguf-file-size">' + escapeHtml(formatBytes(fileSize(f))) + '</span>' +
             '</div>';
         }).join('');
         body.innerHTML = header;
         renderSelectionSummary();
+        renderVerifyVerdict();
     }
 
     function selectedCount() {
@@ -970,18 +998,196 @@
         }).length;
     }
 
-    function renderSelectionSummary() {
-        var node = el('imHfSelectionSummary');
-        if (!node) return;
-        var n = selectedCount();
+    /** selectedBytes — суммарный объём ОТМЕЧЕННЫХ файлов (замер по sizeBytes). */
+    function selectedBytes() {
         var total = 0;
+        var files = Array.isArray(state.files) ? state.files : [];
         Object.keys(state.selection || {}).forEach(function (p) {
             if (!state.selection[p] || !state.selection[p].checked) return;
-            var f = (state.files || []).filter(function (x) { return filePath(x) === p; })[0];
+            var f = files.filter(function (x) { return filePath(x) === p; })[0];
             total += fileSize(f);
         });
-        node.textContent = t('imageModels.hf_selected_count', 'Selected files: {n}', { n: n }) +
+        return total;
+    }
+
+    /**
+     * renderSelectionSummary — сводка выбора в ДВУХ местах: в шапке карточки
+     * (как было) и в липкой панели действий (R696).
+     *
+     * ЗАЧЕМ ПОВТОР. Живой дефект: при 16+ файлах список уходил за нижнюю кромку
+     * окна, а кнопка скачивания была в отдельной карточке НИЖЕ — оператор не
+     * видел, что скачается всё отмеченное. Панель прилипает к верху списка и
+     * показывает счётчик и объём без прокрутки; кнопка «Скачать выбранное»
+     * отключается при пустом выборе, чтобы «скачать ничего» было невозможно.
+     */
+    function renderSelectionSummary() {
+        var n = selectedCount();
+        var total = selectedBytes();
+        var label = t('imageModels.hf_selected_count', 'Выбрано файлов: {n}', { n: n }) +
             (n ? ' · ' + formatBytes(total) : '');
+        var node = el('imHfSelectionSummary');
+        if (node) node.textContent = label;
+        var sticky = el('imHfSelectionSummarySticky');
+        if (sticky) {
+            sticky.textContent = n
+                ? t('imageModels.hf_selected_summary', 'Выбрано: {n} файлов · {size}', { n: n, size: formatBytes(total) })
+                : t('imageModels.hf_nothing_selected', 'Ничего не выбрано — скачается только отмеченное');
+        }
+        var btn = el('imHfDownloadSelected');
+        if (btn) {
+            btn.disabled = n === 0;
+            var text = t('imageModels.hf_download_selected', 'Скачать выбранное');
+            btn.innerHTML = '<i class="fas fa-download"></i> ' + escapeHtml(text) +
+                ' (' + n + (total ? ' · ' + formatBytes(total) : '') + ')';
+        }
+    }
+
+    /**
+     * renderVerifyVerdict — вердикт «сможет ли imageworker загрузить набор» по
+     * выбранным файлам (R696), ДО скачивания.
+     *
+     * ПОЧЕМУ ВЫБОР, А НЕ РЕПОЗИТОРИЙ: пригодность набора = diffusion + VAE +
+     * text encoder. Живой дефект: репозиторий AtomicChat/Qwen-Image-2.1-Turbo-
+     * Uncensored-GGUF целиком состоит из квантов текстового энкодера Qwen3-VL —
+     * «паспорт» считал набор собранным, оператор скачал 5 ГБ и получил
+     * «get sd version from file failed».
+     */
+    function renderVerifyVerdict() {
+        var node = el('imHfVerifyVerdict');
+        if (!node) return;
+        var compat = state.verify;
+        if (state.verifyError) {
+            node.style.display = '';
+            node.style.borderLeftColor = 'var(--warning, #e0a030)';
+            node.innerHTML = '<i class="fas fa-triangle-exclamation" style="color:var(--warning, #e0a030);"></i> ' +
+                escapeHtml(t('imageModels.hf_verify_failed', 'Не удалось проверить набор: {error}', { error: state.verifyError }));
+            return;
+        }
+        if (state.verifyBusy) {
+            node.style.display = '';
+            node.style.borderLeftColor = 'var(--border)';
+            node.innerHTML = '<i class="fas fa-spinner fa-spin"></i> ' +
+                escapeHtml(t('imageModels.hf_verify_running', 'Проверяю заголовки выбранных файлов…'));
+            return;
+        }
+        if (!compat) { node.style.display = 'none'; node.innerHTML = ''; return; }
+        var ok = compat.runnable !== false;
+        var color = ok ? 'var(--success, #5cb85c)'
+            : (compat.verdict === 'unknown' ? 'var(--text-muted)' : 'var(--danger, #d9534f)');
+        var icon = ok ? 'fa-circle-check' : (compat.verdict === 'unknown' ? 'fa-circle-question' : 'fa-circle-xmark');
+        var head = ok
+            ? t('imageModels.compat_verdict_yes', 'imageworker сможет загрузить: да')
+            : t('imageModels.compat_verdict_no', 'imageworker НЕ сможет загрузить');
+        var html = '<div style="color:' + color + ';font-weight:600;"><i class="fas ' + icon + '"></i> ' +
+            escapeHtml(head) + (compat.reason ? ' — ' + escapeHtml(String(compat.reason)) : '') + '</div>';
+        var missing = (compat.missing && compat.missing.length)
+            ? t('imageModels.compat_verdict_missing', 'не хватает: {roles}', { roles: compat.missing.join(', ') })
+            : '';
+        if (missing) html += '<div class="imh-verdict-missing">' + escapeHtml(missing) + '</div>';
+        if (compat.engineMode && compat.engineMode !== 'unknown') {
+            html += '<div class="imh-verdict-reason">' +
+                escapeHtml(t('imageModels.plan_mode', 'Режим запуска')) + ': <code>' +
+                escapeHtml(compat.engineMode === 'model' ? '--model (all-in-one)' : '--diffusion-model + VAE/text encoder') +
+                '</code></div>';
+        }
+        if (compat.files && compat.files.length) {
+            var lines = compat.files.map(function (f) {
+                if (!f || !f.detectedRole) return '';
+                var mark = f.match === false ? '⚠️' : '✅';
+                return '<div>' + mark + ' ' + escapeHtml(String(f.filename || '')) + ' — ' +
+                    escapeHtml(t('imageModels.role_' + f.detectedRole, f.detectedRole)) + '</div>';
+            }).filter(Boolean);
+            if (lines.length) html += '<div class="imh-verdict-reason">' + lines.join('') + '</div>';
+        }
+        node.style.display = '';
+        node.style.borderLeftColor = color;
+        node.innerHTML = html;
+    }
+
+    /** selectionKey — отпечаток выбранного набора (кэш вердикта). */
+    function selectionKey() {
+        var paths = Object.keys(state.selection || {}).filter(function (p) {
+            return state.selection[p] && state.selection[p].checked;
+        }).sort();
+        return [state.selectedRepo || '', state.bundleFamily || '',
+            paths.map(function (p) { return p + ':' + ((state.selection[p] && state.selection[p].role) || ''); }).join(',')
+        ].join('|');
+    }
+
+    /** selectedFileSpecs — тело для POST /api/hf/verify по отмеченным файлам. */
+    function selectedFileSpecs() {
+        var out = [];
+        (state.files || []).forEach(function (f) {
+            var p = filePath(f);
+            var sel = state.selection[p];
+            if (!sel || !sel.checked) return;
+            out.push({
+                role: sel.role || suggestedRole(f) || 'diffusion',
+                repo: state.selectedRepo,
+                filename: p,
+                revision: String(f.revision || 'main')
+            });
+        });
+        return out;
+    }
+
+    /**
+     * scheduleVerify — проверка набора с задержкой: галочки оператор ставит
+     * пачкой, а каждый вызов ходит в HF за заголовками файлов (Range-запросы).
+     * 400 мс склеивают серию кликов в одну проверку.
+     */
+    function scheduleVerify() {
+        if (!state.selectedRepo) return;
+        if (state.verifyTimer) clearTimeout(state.verifyTimer);
+        state.verifyTimer = setTimeout(function () {
+            state.verifyTimer = null;
+            verifySelection(false);
+        }, 400);
+    }
+
+    /**
+     * verifySelection — вердикт по выбранному набору (POST /api/hf/verify).
+     *
+     * force=false — берём кэш, если отпечаток выбора не менялся.
+     * force=true  — кнопка «Проверить совместимость» (перепроверить).
+     */
+    async function verifySelection(force) {
+        if (!backendId() || !state.selectedRepo) { state.verify = null; renderVerifyVerdict(); return null; }
+        var files = selectedFileSpecs();
+        var key = selectionKey();
+        if (!files.length) {
+            state.verify = null;
+            state.verifyKey = '';
+            state.verifyError = '';
+            renderVerifyVerdict();
+            return null;
+        }
+        if (!force && state.verify && state.verifyKey === key) { renderVerifyVerdict(); return state.verify; }
+        var seq = ++state.verifySeq;
+        state.verifyBusy = true;
+        state.verifyError = '';
+        renderVerifyVerdict();
+        try {
+            var res = await request(backendUrl('hf/verify'), {
+                method: 'POST',
+                body: JSON.stringify({
+                    name: state.selectedRepo,
+                    family: state.bundleFamily || 'other',
+                    files: files
+                }),
+                timeoutMs: TIMEOUT_SEARCH_MS
+            });
+            if (seq !== state.verifySeq) return state.verify;
+            state.verify = (res && res.compat) || null;
+            state.verifyKey = key;
+        } catch (e) {
+            if (seq !== state.verifySeq) return state.verify;
+            state.verify = null;
+            state.verifyError = (e && e.message) || String(e);
+        }
+        state.verifyBusy = false;
+        renderVerifyVerdict();
+        return state.verify;
     }
 
     function renderBundleProgress() {
@@ -1328,6 +1534,8 @@
         // запрос к воркеру (он читает заголовок главного файла Range-запросом).
         loadPlan();
         renderFiles();
+        // R696: вердикт по набору ДО скачивания (по умолчанию отмеченные файлы).
+        scheduleVerify();
         // Пред-проверка главного файла: вердикт по репозиторию сразу, без кликов.
         autoProbeMainFile();
         return true;
@@ -1509,6 +1717,9 @@
             sizeBytes: cur.sizeBytes || 0
         };
         renderSelectionSummary();
+        // Счётчик обновился сразу (без сети); вердикт по набору — с задержкой,
+        // потому что это Range-запросы к HF (R696).
+        scheduleVerify();
     }
 
     /** Отметить по предложенным сервером ролям (кнопка «как предложено»). */
@@ -1516,6 +1727,7 @@
         state.selection = defaultSelection(state.files, null);
         renderFiles();
         renderSelectionSummary();
+        scheduleVerify();
         return selectedCount();
     }
 
@@ -1523,6 +1735,7 @@
         Object.keys(state.selection).forEach(function (p) { state.selection[p].checked = false; });
         renderFiles();
         renderSelectionSummary();
+        scheduleVerify();
         return 0;
     }
 
@@ -1748,6 +1961,8 @@
             if (act === 'suggested') { selectBySuggested(); return; }
             if (act === 'clear') { clearSelection(); return; }
             if (act === 'download') { startBundle(); return; }
+            // R696: вердикт по выбранному набору до скачивания.
+            if (act === 'verify') { verifySelection(true); return; }
             // R493 (2026-11-17): ветки 'refresh-downloads' больше нет — кнопка в
             // разметке удалена (одна кнопка обновления в шапке). Действие
             // зарегистрировано провайдером страницы image ниже в этом файле.
@@ -1901,6 +2116,10 @@
     function unmount() {
         if (!mounted) return false;
         mounted = false;
+        // R696: таймер отложенной проверки набора не должен дёргать сеть после
+        // выгрузки модуля.
+        if (state.verifyTimer) clearTimeout(state.verifyTimer);
+        state.verifyTimer = null;
         if (i18nHandler && window.removeEventListener) {
             window.removeEventListener('i18n:changed', i18nHandler);
         }
@@ -1959,7 +2178,13 @@
             stopPolling: stopPolling,
             saveHfToken: saveHfToken,
             probeFile: probeFile,
-            autoProbeMainFile: autoProbeMainFile
+            autoProbeMainFile: autoProbeMainFile,
+            // R696: вердикт по выбранному набору до скачивания и сводка выбора.
+            verifySelection: verifySelection,
+            scheduleVerify: scheduleVerify,
+            selectedBytes: selectedBytes,
+            renderSelectionSummary: renderSelectionSummary,
+            renderVerifyVerdict: renderVerifyVerdict
         },
         _state: state,
         pure: {
@@ -1991,7 +2216,10 @@
             // R86-follow-up: какие файлы проверять автоматически (главный + крупные
             // safetensors) — экспортируется, чтобы это правило было под тестом.
             autoProbeTargets: autoProbeTargets,
-            planHtml: planHtml
+            planHtml: planHtml,
+            // R696: отпечаток выбора — по нему кэшируется вердикт набора.
+            selectionKey: selectionKey,
+            selectedFileSpecs: selectedFileSpecs
         }
     };
 })();

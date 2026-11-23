@@ -632,6 +632,33 @@
         body.innerHTML = state.models.map(function (m) {
             var isLoaded = m.state === 'loaded';
             var isBusy = m.state === 'loading';
+            // R696: вердикт «сможет ли imageworker загрузить этот набор» приходит
+            // от воркера (compat) и показывается ДО нажатия «Загрузить». Живой
+            // дефект: оператор видел только «модель не загрузилась», а причина
+            // (скачан текстовый энкодер вместо diffusion) была в логе движка.
+            var compat = m.compat || null;
+            var compatHtml = '';
+            var force = !!(compat && compat.runnable === false);
+            var compatTip = '';
+            if (compat) {
+                var reason = String(compat.reason || '');
+                var ok = compat.runnable !== false;
+                var icon = ok ? 'fa-circle-check' : (compat.verdict === 'unknown' ? 'fa-circle-question' : 'fa-circle-xmark');
+                var color = ok ? 'var(--success, #5cb85c)'
+                    : (compat.verdict === 'unknown' ? 'var(--text-muted)' : 'var(--danger, #d9534f)');
+                var label = ok
+                    ? t('imageModels.compat_verdict_yes', 'сможет загрузить: да')
+                    : t('imageModels.compat_verdict_no', 'НЕ сможет загрузить');
+                var missing = (compat.missing && compat.missing.length)
+                    ? ' · ' + t('imageModels.compat_verdict_missing', 'не хватает: {roles}', { roles: compat.missing.join(', ') })
+                    : '';
+                compatTip = label + (reason ? ': ' + reason : '') + missing;
+                compatHtml = '<div class="img-model-compat" data-compat-verdict="' + escapeHtml(String(compat.verdict || '')) + '"' +
+                    ' style="margin-top:4px;font-size:var(--font-size-xs);color:' + color + ';white-space:normal;max-width:520px;"' +
+                    ' title="' + escapeHtml(compatTip) + '">' +
+                    '<i class="fas ' + icon + '"></i> ' + escapeHtml(label) +
+                    (reason ? ' — ' + escapeHtml(reason) : '') + escapeHtml(missing) + '</div>';
+            }
             var actions = '';
             if (isBusy) {
                 actions = '<span style="font-size:var(--font-size-xs);color:var(--text-muted);"><i class="fas fa-circle-notch fa-spin"></i> ' +
@@ -640,8 +667,11 @@
                 actions = '<button class="btn btn-secondary btn-sm" data-img-action="unload-model" data-model="' + escapeHtml(m.name) + '">' +
                     escapeHtml(t('gguf.unload_model', 'Unload')) + '</button>';
             } else {
-                actions = '<button class="btn btn-primary btn-sm" data-img-action="load-model" data-model="' + escapeHtml(m.name) + '">' +
-                    escapeHtml(t('common.load', 'Load')) + '</button>' +
+                actions = '<button class="btn btn-primary btn-sm" data-img-action="load-model" data-model="' + escapeHtml(m.name) + '"' +
+                    (force ? ' data-force="1" title="' + escapeHtml(t('imageModels.compat_force_tip',
+                        'imageworker считает набор несовместимым: {reason}. Нажмите, чтобы попробовать всё равно.',
+                        { reason: compatTip })) + '"' : '') + '>' +
+                    escapeHtml(force ? t('imageModels.compat_force', 'Загрузить всё равно') : t('common.load', 'Load')) + '</button>' +
                     // Удаление с диска — только у НЕзагруженной модели: сервер
                     // всё равно ответит 409 (движок держит веса открытыми), но
                     // кнопка, которая гарантированно даёт ошибку, — плохой UI.
@@ -657,7 +687,8 @@
                 ? m.roles.map(function (r) { return escapeHtml(t('imageModels.role_' + r, r)); }).join(', ')
                 : escapeHtml(t('imageModels.roles_unknown', 'нет данных'));
             return '<tr>' +
-                '<td><strong>' + escapeHtml(m.name) + '</strong>' + (m.disabled ? ' <span class="badge">disabled</span>' : '') + '</td>' +
+                '<td><strong>' + escapeHtml(m.name) + '</strong>' + (m.disabled ? ' <span class="badge">disabled</span>' : '') +
+                    compatHtml + '</td>' +
                 '<td>' + escapeHtml(t(stateLabelKey(m.state), m.state)) + '</td>' +
                 '<td>' + escapeHtml(formatBytes(m.size_bytes)) + '</td>' +
                 '<td>' + escapeHtml(m.family || '-') + '</td>' +
@@ -673,15 +704,18 @@
     // Load / Unload модели + прогресс
     // =====================================================================
 
-    async function onLoadModel(name) {
+    async function onLoadModel(name, force) {
         var backendId = state.selectedBackendId;
         if (!backendId || !name) return;
         try {
             // R88: у запуска загрузки капа нет (0): воркер отвечает 202 сразу, но
             // если запрос пойдёт с wait=true, кап обрезал бы саму загрузку.
+            // R696: force=true — оператор нажал «Загрузить всё равно» у набора,
+            // который воркер считает несовместимым (вердикт compat). Ошибку
+            // воркера показываем как есть: в ней теперь есть причина и подсказка.
             await requestBackend(backendId, PATH_MODEL_LOAD, {
                 method: 'POST',
-                body: JSON.stringify({ name: name }),
+                body: JSON.stringify(force ? { name: name, force: true } : { name: name }),
                 timeoutMs: 0
             });
             toast(t('image.load_started', 'Loading {name}...', { name: name }), 'info');
@@ -926,7 +960,10 @@
         if (!actionEl) return;
         var action = actionEl.getAttribute('data-img-action');
         if (action === 'load-model') {
-            onLoadModel(actionEl.getAttribute('data-model'));
+            // data-force=1 — «Загрузить всё равно»: вердикт compat несовместим,
+            // оператор осознанно пробует (R696).
+            onLoadModel(actionEl.getAttribute('data-model'),
+                actionEl.getAttribute('data-force') === '1');
         } else if (action === 'unload-model') {
             onUnloadModel(actionEl.getAttribute('data-model'));
         } else if (action === 'delete-model') {

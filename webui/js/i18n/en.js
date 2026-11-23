@@ -418,6 +418,11 @@ window.I18N_EN = {
   "monitor.alert.vramFull": "Cluster VRAM is {pct}% full ({used}/{total} GB).",
   "monitor.alert.parallelismUnused": "Backend {backend}: the worker holds {slots} parallel slots while the balancer admits {effective} — the parallelism potential is not fully used. The balancer changes nothing on its own: if you want it, set maxConcurrentRequests={slots} for this backend or enable LB_CAPACITY_FROM_MODEL_SLOTS=true — the decision is yours.",
   "monitor.alert.rebalance": "Force Rebalance",
+  // R696 (2026-11-23): the alert dock is out of flow (does not take height away
+  // from the monitor area). toggle — counter button label, merged — how many
+  // duplicate messages were merged into one banner (one per backend).
+  "monitor.alerts.toggle": "Collapse or expand alerts",
+  "monitor.alerts.merged": "Duplicate occurrences merged: {count}",
 
   "monitor.common.noData": "No data",
   // R118 (2026-10-14): backend role in layer sharding (selector in the node row).
@@ -2046,6 +2051,19 @@ window.I18N_EN = {
   "imageModels.hf_select_suggested": "Select by roles",
   "imageModels.hf_clear_selection": "Clear selection",
   "imageModels.hf_selected_count": "Selected files: {n}",
+  // ==== R696 (2026-11-23): sticky selection bar and bundle verdict ====
+  "imageModels.hf_selected_summary": "Selected: {n} files · {size}",
+  "imageModels.hf_nothing_selected": "Nothing selected — only ticked files are downloaded",
+  "imageModels.hf_download_selected": "Download selected",
+  "imageModels.hf_verify_compat": "Check compatibility",
+  "imageModels.hf_verify_running": "Checking headers of the selected files…",
+  "imageModels.hf_verify_failed": "Failed to check the bundle: {error}",
+  "imageModels.hf_detected_role": "header says: {role}",
+  "imageModels.compat_verdict_yes": "imageworker will be able to load: yes",
+  "imageModels.compat_verdict_no": "imageworker will NOT be able to load",
+  "imageModels.compat_verdict_missing": "missing: {roles}",
+  "imageModels.compat_force": "Load anyway",
+  "imageModels.compat_force_tip": "imageworker considers the bundle incompatible: {reason}. Click to try anyway.",
   "imageModels.hf_suggested": "suggested",
   "imageModels.hf_none_selected": "Select at least one model file",
   "imageModels.hf_bad_role": "Unknown role: {role}",

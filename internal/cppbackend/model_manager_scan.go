@@ -538,6 +538,13 @@ func (m *ModelManager) GetModelMeta(filename string) (*GGUFModelMeta, error) {
 			if meta.LoopCoreEnd == 0 && hdr.LoopCoreEnd > 0 {
 				meta.LoopCoreEnd = hdr.LoopCoreEnd
 			}
+			// R712 (2026-11-25): канонические loop.start/end/count — признак
+			// файла, уже переведённого в loop-схему. Ответ 409 (R704) обязан
+			// его видеть, иначе советует повторный ре-экспорт. См.
+			// GGUFHeaderInfo.HasLoopSchemaKeys.
+			if hdr.HasLoopSchemaKeys {
+				meta.HasLoopSchemaKeys = true
+			}
 			m.mu.Unlock()
 		}
 		// Если ReadGGUFHeader упал — caller использует fallback на

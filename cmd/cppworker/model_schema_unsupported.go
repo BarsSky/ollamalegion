@@ -25,6 +25,18 @@
 // block_count=24 или более новым загрузчиком. Поэтому у отказа свой код,
 // человеческий текст с числами, имя архитектуры, сборка llama.cpp и подсказка.
 //
+// R712 (2026-11-25): у причины есть ВТОРАЯ форма, и до этой правки ответ на неё
+// врал. Файл УЖЕ переведён в loop-схему (inkling2_loop, block_count=24 — это
+// физические блоки, ключи loop.start/end/count на месте), но в нём нет
+// обязательного blk.{6..17}.loop_msg_query.weight — граница конвертации R711.
+// R704 отвечал на это «physical_blocks: 6» и советовал «ре-экспорт GGUF как
+// inkling2_loop_loop с block_count=6», то есть предлагал сделать уже сделанное
+// и с неверным числом: 6 — это core_start из имени тензора, а не число блоков.
+// Теперь для loop-схемы физические блоки берутся из ЗАГОЛОВКА, а подсказка ведёт
+// к фолду запросов (scripts/gguf_loop_meta_patch.py --fuse-loop-queries) или к
+// полному ре-экспорту штатным конвертером (см. docs/features/inkling2-loop.md).
+// Код причины не меняется: публичный контракт R704 остаётся model_schema_unsupported.
+//
 // ФОРМА ОТВЕТА. Та же, что у R697 (model_unsupported.go): 409 + code/reason +
 // error/hint + raw_error, плюс факты этой причины (arch, block_count,
 // physical_blocks, tensor). Новых полей протокола ЗАПРОСОВ не появляется:
@@ -106,10 +118,15 @@ func modelSchemaUnsupportedTensorFromText(text string) string {
 // modelSchemaUnsupportedBlockFromTensor — номер блока из имени тензора:
 // "blk.24.attn_q.weight" → 24. 0 = имя не про блок (или разобрать не вышло).
 //
-// ЗАЧЕМ НОМЕР. Движок падает на ПЕРВОМ блоке за пределами того, что есть в
-// файле, поэтому номер = число физических блоков: у Inkling-2-Mini это 24 при
-// block_count=48 из заголовка. Именно эта пара чисел и объясняет оператору
-// «loop-развёрнутая схема».
+// ЗАЧЕМ НОМЕР. У ДО-патчевого файла движок падает на ПЕРВОМ блоке за пределами
+// того, что есть в файле, поэтому номер = число физических блоков: у
+// Inkling-2-Mini это 24 при block_count=48 из заголовка. Именно эта пара чисел и
+// объясняет оператору «loop-развёрнутая схема».
+//
+// R712: у файла, УЖЕ переведённого в loop-схему, это неверно — blk.6.
+// loop_msg_query.weight даёт 6 (core_start), а физических блоков 24 (block_count
+// из заголовка). Поэтому число отсюда больше не идёт в ответ напрямую: см.
+// modelSchemaPhysicalBlocksR712.
 func modelSchemaUnsupportedBlockFromTensor(tensor string) int {
 	m := modelSchemaUnsupportedBlockRE.FindStringSubmatch(strings.TrimSpace(tensor))
 	if len(m) < 2 {
@@ -122,7 +139,8 @@ func modelSchemaUnsupportedBlockFromTensor(tensor string) int {
 	return n
 }
 
-// modelSchemaFactsR704 — arch и block_count из ЗАГОЛОВКА файла.
+// modelSchemaHeaderFactsR712 — arch, block_count и признак loop-схемы из
+// ЗАГОЛОВКА файла.
 //
 // ИСТОЧНИК — кэш менеджера моделей (ScanModels/GetModelMeta читают header один
 // раз и помнят), а не имя файла: имя — намерение автора модели, заголовок —
@@ -130,34 +148,95 @@ func modelSchemaUnsupportedBlockFromTensor(tensor string) int {
 // архитектуру не печатает, поэтому её нужно взять из метаданных. Файл на месте
 // по определению причины (иначе провал был бы model_not_found), поэтому чтение
 // заголовка допустимо; сбой чтения не отменяет отказ — просто остаётся без
-// чисел (arch="", blockCount=0).
-func modelSchemaFactsR704(modelName string) (arch string, blockCount int) {
+// чисел (arch="", blockCount=0, hasLoopSchemaKeys=false).
+func modelSchemaHeaderFactsR712(modelName string) (arch string, blockCount int, hasLoopSchemaKeys bool) {
 	if backend == nil || modelName == "" {
-		return "", 0
+		return "", 0, false
 	}
 	mm := backend.ModelManager()
 	if mm == nil {
-		return "", 0
+		return "", 0, false
 	}
 	meta, err := mm.GetModelMetaResolved(modelName)
 	if err != nil || meta == nil {
-		return "", 0
+		return "", 0, false
 	}
-	return strings.TrimSpace(meta.Architecture), meta.NLayers
+	return strings.TrimSpace(meta.Architecture), meta.NLayers, meta.HasLoopSchemaKeys
+}
+
+// modelSchemaLoopSchemaR712 — файл уже находится в loop-схеме.
+//
+// ДВА ПРИЗНАКА, потому что одного мало:
+//   - general.architecture = inkling2_loop — то, что пишет конвертер/патч R711;
+//   - в заголовке есть КАНОНИЧЕСКИЕ ключи loop.start/loop.end/loop.count — даже
+//     если архитектуру ещё не переименовали (старая орфография num_loops +
+//     loop.core_start/loop.core_end есть и у до-патчевого файла, поэтому
+//     HasLoopSchemaKeys смотрит только канонические имена).
+//
+// ЗАЧЕМ. Именно на этом различии строится вся ветка R712: файлу, который уже в
+// loop-схеме, нельзя советовать «ре-экспорт в inkling2_loop_loop» (дефект), а
+// число физических блоков у него — block_count из заголовка, а не номер блока из
+// имени отсутствующего тензора.
+func modelSchemaLoopSchemaR712(arch string, hasLoopSchemaKeys bool) bool {
+	if hasLoopSchemaKeys {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(arch), "inkling2_loop")
+}
+
+// modelSchemaPrePatchArchR712 — архитектура ДО перевода в loop-схему (inkling2):
+// у таких файлов block_count в заголовке — визиты (48), а физические блоки (24)
+// видны только по имени отсутствующего тензора. Loop-подсказка «ре-экспорт как
+// <arch>_loop» уместна ТОЛЬКО здесь: для прочих архитектур loop-схемы не
+// существует, и прежняя формулировка приписывала её любому файлу с номером
+// блока в имени тензора (например «ре-экспорт как qwen3_loop»).
+func modelSchemaPrePatchArchR712(arch string) bool {
+	return strings.EqualFold(strings.TrimSpace(arch), "inkling2")
+}
+
+// modelSchemaPhysicalBlocksR712 — число физических блоков для поля ответа.
+//
+// ДЕФЕКТ, КОТОРЫЙ ЗАКРЫВАЕТСЯ. Раньше оно ВСЕГДА выводилось из имени
+// отсутствующего тензора (blk.<N> → N). Для до-патчевого файла это верно: движок
+// падает на первом блоке, которого нет, поэтому N = числу физических блоков
+// (blk.24 при block_count=48). Но для файла, УЖЕ переведённого в loop-схему, N —
+// это core_start (blk.6.loop_msg_query.weight), и подставлять его как «6
+// физических блоков» — то самое враньё из дефекта. У loop-схемы источник —
+// block_count из заголовка; если заголовок не прочитан, число не выдумывается
+// (0 = «неизвестно»), а не берётся из имени тензора.
+func modelSchemaPhysicalBlocksR712(loopSchema bool, blockCount int, tensor string) int {
+	if loopSchema {
+		if blockCount > 0 {
+			return blockCount
+		}
+		return 0
+	}
+	return modelSchemaUnsupportedBlockFromTensor(tensor)
+}
+
+// modelSchemaLoopQueryTensorR712 — отсутствующий тензор это именно свёрнутый
+// запрос loop-схемы (blk.<core>.loop_msg_query.weight). Пустое имя не отсекаем:
+// движок мог не напечатать тензор, но у loop-схемы это тот же класс отказа.
+func modelSchemaLoopQueryTensorR712(tensor string) bool {
+	if strings.TrimSpace(tensor) == "" {
+		return true
+	}
+	return strings.Contains(tensor, "loop_msg_query")
 }
 
 // modelSchemaDiagnosticsR704 — факты и подсказка для разбора.
 func modelSchemaDiagnosticsR704(modelName string, loadErr error) map[string]interface{} {
-	arch, blockCount := modelSchemaFactsR704(modelName)
+	arch, blockCount, hasLoopSchemaKeys := modelSchemaHeaderFactsR712(modelName)
 	tensor := ""
 	if loadErr != nil {
 		tensor = modelSchemaUnsupportedTensorFromText(loadErr.Error())
 	}
-	physical := modelSchemaUnsupportedBlockFromTensor(tensor)
+	loopSchema := modelSchemaLoopSchemaR712(arch, hasLoopSchemaKeys)
+	physical := modelSchemaPhysicalBlocksR712(loopSchema, blockCount, tensor)
 	build := modelUnsupportedBuildR697()
 	diag := map[string]interface{}{
 		"decision": modelSchemaUnsupportedCodeR704,
-		"hint":     modelSchemaUnsupportedHintR704(arch, physical, build),
+		"hint":     modelSchemaUnsupportedHintR704(arch, blockCount, physical, loopSchema, tensor, build),
 	}
 	if arch != "" {
 		diag["arch"] = arch
@@ -179,13 +258,20 @@ func modelSchemaDiagnosticsR704(modelName string, loadErr error) map[string]inte
 
 // modelSchemaUnsupportedMessageR704 — человеческая причина для клиента.
 //
-// «%s — фраза о схеме»: loop-развёрнутая (с числами) или общая, если номер
-// блока/block_count неизвестны. Второй %s — сборка llama.cpp, дальше тензор и
-// архитектура. Текст собран из каталога i18n (в отличие от R697 здесь две
-// формы фразы, поэтому склейка в Go).
-func modelSchemaUnsupportedMessageR704(arch string, blockCount, physical int, tensor, build string) string {
+// «%s — фраза о схеме»: три формы, и выбор между ними — это и есть R712:
+//   - файл уже в loop-схеме (block_count из заголовка = физические блоки);
+//   - до-патчевый loop-развёрнутый файл (24 физических при 48 визитах) — только
+//     для arch inkling2, у прочих архитектур loop-схемы не существует;
+//   - общая схема (чисел нет или они ничего не объясняют).
+//
+// Второй %s — сборка llama.cpp, дальше тензор и архитектура. Текст собран из
+// каталога i18n (в отличие от R697 здесь несколько форм фразы, поэтому склейка в Go).
+func modelSchemaUnsupportedMessageR704(arch string, blockCount, physical int, loopSchema bool, tensor, build string) string {
 	schema := i18n.T("cppworker.load_failure.model_schema_unsupported_generic")
-	if arch != "" && physical > 0 && blockCount > physical {
+	switch {
+	case loopSchema && blockCount > 0:
+		schema = i18n.T("cppworker.load_failure.model_schema_unsupported_loop_schema", blockCount)
+	case !loopSchema && modelSchemaPrePatchArchR712(arch) && physical > 0 && blockCount > physical:
 		schema = i18n.T("cppworker.load_failure.model_schema_unsupported_loop", physical, blockCount)
 	}
 	tensorLabel := tensor
@@ -204,13 +290,36 @@ func modelSchemaUnsupportedMessageR704(arch string, blockCount, physical int, te
 
 // modelSchemaUnsupportedHintR704 — что делать оператору.
 //
-// Для loop-развёрнутой схемы подсказка конкретная (ре-экспорт как <arch>_loop с
-// block_count=<физических блоков>): «обновите загрузчик» без направления
-// заставляет искать архитектуру самому. Для случая без чисел — общая форма со
-// сборкой.
-func modelSchemaUnsupportedHintR704(arch string, physical int, build string) string {
-	if arch != "" && physical > 0 {
-		return i18n.T("cppworker.load_failure.model_schema_unsupported_hint_loop", arch, physical)
+// R712: четыре формы, и главное — не советовать файлу, который УЖЕ в loop-схеме,
+// ещё раз «ре-экспорт в <arch>_loop» (прежний ответ давал inkling2_loop_loop с
+// block_count из номера тензора — см. дефект R709):
+//   - loop-схема без blk.<core>.loop_msg_query.weight — это граница конвертации:
+//     фолд запросов скриптом R711 или полный ре-экспорт штатным конвертером,
+//     который пишет тензор сам;
+//   - loop-схема без другого тензора — фолд не поможет, нужен полный ре-экспорт;
+//   - до-патчевый inkling2 (24 физических при 48 визитах) — ре-экспорт как
+//     inkling2_loop с block_count=24 или тот же скрипт; числа названы с
+//     источником (24 — из имени тензора, 48 — из заголовка);
+//   - без чисел — общая форма со сборкой.
+//
+// Для не-inkling2 архитектур loop-подсказки больше нет: прежняя формулировка
+// приписывала loop-схему любому файлу, у которого в имени отсутствующего тензора
+// есть номер блока («ре-экспорт как qwen3_loop»), — это тот же класс вранья.
+func modelSchemaUnsupportedHintR704(arch string, blockCount, physical int, loopSchema bool, tensor, build string) string {
+	if loopSchema && blockCount > 0 {
+		tensorLabel := tensor
+		if strings.TrimSpace(tensorLabel) == "" {
+			tensorLabel = i18n.T("cppworker.load_failure.tensor_unknown")
+		}
+		key := "cppworker.load_failure.model_schema_unsupported_hint_loop_schema_other"
+		if modelSchemaLoopQueryTensorR712(tensor) {
+			key = "cppworker.load_failure.model_schema_unsupported_hint_loop_schema"
+		}
+		return i18n.T(key, arch, blockCount, tensorLabel)
+	}
+	if !loopSchema && modelSchemaPrePatchArchR712(arch) && physical > 0 && blockCount > physical {
+		return i18n.T("cppworker.load_failure.model_schema_unsupported_hint_loop",
+			arch, physical, blockCount, arch, physical)
 	}
 	return i18n.T("cppworker.load_failure.model_schema_unsupported_hint",
 		modelUnsupportedBuildLabelR697(build))
@@ -223,15 +332,15 @@ func modelSchemaUnsupportedHintR704(arch string, physical int, build string) str
 // говорит это прямым текстом). 5xx заставил бы клиентов повторять запрос, а
 // оператора — искать поломку воркера. Тот же выбор у R697 и у imageworker (R696,
 // bundle_unsupported → 409).
-func writeModelSchemaUnsupportedResponseR704(w http.ResponseWriter, modelName string, loadErr error, arch string, blockCount, physical int, tensor string) {
+func writeModelSchemaUnsupportedResponseR704(w http.ResponseWriter, modelName string, loadErr error, arch string, blockCount, physical int, loopSchema bool, tensor string) {
 	build := modelUnsupportedBuildR697()
 	body := map[string]interface{}{
-		"error":       modelSchemaUnsupportedMessageR704(arch, blockCount, physical, tensor, build),
+		"error":       modelSchemaUnsupportedMessageR704(arch, blockCount, physical, loopSchema, tensor, build),
 		"code":        modelSchemaUnsupportedCodeR704,
 		"reason":      modelSchemaUnsupportedCodeR704,
 		"model":       modelName,
 		"decision":    modelSchemaUnsupportedCodeR704,
-		"hint":        modelSchemaUnsupportedHintR704(arch, physical, build),
+		"hint":        modelSchemaUnsupportedHintR704(arch, blockCount, physical, loopSchema, tensor, build),
 		"llama_build": build,
 	}
 	if arch != "" {
@@ -263,14 +372,16 @@ func respondModelSchemaUnsupportedR704(w http.ResponseWriter, modelName string, 
 		return false
 	}
 	tensor := modelSchemaUnsupportedTensorFromText(loadErr.Error())
-	physical := modelSchemaUnsupportedBlockFromTensor(tensor)
-	arch, blockCount := modelSchemaFactsR704(modelName)
+	arch, blockCount, hasLoopSchemaKeys := modelSchemaHeaderFactsR712(modelName)
+	loopSchema := modelSchemaLoopSchemaR712(arch, hasLoopSchemaKeys)
+	physical := modelSchemaPhysicalBlocksR712(loopSchema, blockCount, tensor)
 	build := modelUnsupportedBuildR697()
 	recordLoadFailureR697(modelName, loadErr)
 	logger.Get().Errorw("load refused: llama.cpp cannot load the model tensor schema",
 		"name", modelName, "arch", arch, "block_count", blockCount,
-		"physical_blocks", physical, "tensor", tensor, "llama_build", build)
-	writeModelSchemaUnsupportedResponseR704(w, modelName, loadErr, arch, blockCount, physical, tensor)
+		"physical_blocks", physical, "loop_schema", loopSchema,
+		"tensor", tensor, "llama_build", build)
+	writeModelSchemaUnsupportedResponseR704(w, modelName, loadErr, arch, blockCount, physical, loopSchema, tensor)
 	return true
 }
 

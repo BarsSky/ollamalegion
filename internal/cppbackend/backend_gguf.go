@@ -69,6 +69,20 @@ type GGUFHeaderInfo struct {
 	LoopCount       int   `json:"loopCount,omitempty"`       // *.num_loops
 	LoopCoreStart   int   `json:"loopCoreStart,omitempty"`   // *.loop.core_start / *.loop.start
 	LoopCoreEnd     int   `json:"loopCoreEnd,omitempty"`     // *.loop.core_end / *.loop.end
+
+	// R712 (2026-11-25): канонические ключи loop-схемы — *.loop.start /
+	// *.loop.end / *.loop.count (llama-arch.cpp: LLM_KV_LOOP_START/END/COUNT).
+	//
+	// Это признак файла, УЖЕ переведённого в loop-схему (его пишет
+	// scripts/gguf_loop_meta_patch.py --fuse-loop-queries). По числам схему не
+	// отличить: старая орфография (num_loops + loop.core_start/loop.core_end)
+	// есть и у до-патчевого Inkling-2. Нужен ответу 409
+	// model_schema_unsupported (R704): без него файлу, который уже в
+	// loop-схеме, советовали ЕЩЁ раз ре-экспортировать в inkling2_loop_loop, а
+	// число физических блоков брали из имени отсутствующего тензора
+	// (blk.6.loop_msg_query.weight → «6» вместо block_count=24 из заголовка).
+	// Живой дефект R709/R712, см. docs/features/inkling2-loop.md.
+	HasLoopSchemaKeys bool `json:"hasLoopSchemaKeys,omitempty"`
 }
 
 // ggufFieldSuffixes — суффиксы ключей метаданных для параметров модели.
@@ -108,6 +122,20 @@ var ggufFieldSuffixes = []string{
 	// чтобы раскладка не зависела от версии конвертера.
 	".loop.start",
 	".loop.end",
+}
+
+// isLoopSchemaKeyR712 — ключ канонической loop-схемы (*.loop.start /
+// *.loop.end / *.loop.count).
+//
+// Сравнение по СУФФИКСУ, а не по точному имени: префикс — архитектура, и до
+// переименования она называется inkling2, после — inkling2_loop (а в будущем
+// возможно ещё как-то). Старая орфография сюда НЕ попадает намеренно:
+// "inkling2.loop.core_end" не оканчивается на ".loop.end" — иначе до-патчевый
+// файл выглядел бы уже переведённым. См. GGUFHeaderInfo.HasLoopSchemaKeys.
+func isLoopSchemaKeyR712(key string) bool {
+	return strings.HasSuffix(key, ".loop.start") ||
+		strings.HasSuffix(key, ".loop.end") ||
+		strings.HasSuffix(key, ".loop.count")
 }
 
 // ggufModelArchs — известные архитектуры GGUF.
@@ -253,6 +281,14 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 			return nil, fmt.Errorf("read key[%d]: %w", i, err)
 		}
 		key := string(keyBuf)
+
+		// R712 (2026-11-25): признак уже применённого loop-патча — канонические
+		// ключи loop.start/end/count (см. HasLoopSchemaKeys). Ставится ДО разбора
+		// значения: loop.count этим парсером не читается, но факт его наличия
+		// важен ответу 409 (R704).
+		if isLoopSchemaKeyR712(key) {
+			info.HasLoopSchemaKeys = true
+		}
 
 		// Читаем тип значения (uint32)
 		var valType uint32

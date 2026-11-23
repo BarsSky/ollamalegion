@@ -89,6 +89,10 @@ type GGUFModelMeta struct {
 	LoopCount       int   `json:"loopCount,omitempty"`       // <arch>.num_loops (loop-схема)
 	LoopCoreStart   int   `json:"loopCoreStart,omitempty"`   // <arch>.loop.core_start / .loop.start
 	LoopCoreEnd     int   `json:"loopCoreEnd,omitempty"`     // <arch>.loop.core_end / .loop.end
+	// R712 (2026-11-25): в заголовке есть канонические loop.start/end/count —
+	// файл уже переведён в loop-схему (иначе советовали повторный ре-экспорт и
+	// неверное число физических блоков). См. GGUFHeaderInfo.HasLoopSchemaKeys.
+	HasLoopSchemaKeys bool `json:"hasLoopSchemaKeys,omitempty"`
 }
 
 // ModelManager — управляет модельками

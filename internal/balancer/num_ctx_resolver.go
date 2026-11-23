@@ -499,16 +499,31 @@ func (p *Proxy) loadedPerSeqNCtx(backendID, modelName string) int {
 	// значение: записи могут отличаться (например, поллер положил модель с
 	// context_per_seq, а priming после reload'а обновил ContextLength).
 	// Складывать «суммарное из одной записи» и «слоты из другой» нельзя.
+	//
+	// R696 (2026-11-23): окно НА СЛОТ читается ПЕРВЫМ, до требования
+	// ContextLength > 0.
+	//
+	// ЖИВОЙ ДЕФЕКТ. Запись о загрузке, которую кладёт
+	// warmupLlamaCppModel → updateLlamaCppRunningModelInMetrics, содержит ТОЛЬКО
+	// ContextPerSeq (окно на клиента) и не содержит ContextLength (суммарного):
+	// его в этом месте знать неоткуда. Старый порядок проверок отбрасывал такую
+	// запись целиком («ContextLength <= 0 → continue»), функция отвечала 0, а
+	// потребители (гейт R459/R480 «окно не меньше нужного») трактовали 0 как
+	// «модели здесь нет» и отказывали СВОБОДНОЙ копии той же модели. То есть
+	// копия, только что поднятая самим балансером, до следующего опроса поллера
+	// (≤30 с) не могла принять живую сессию, и заявка ждала занятую.
+	// Порядок «сначала per-seq, потом производные от суммарного» ничего не
+	// ослабляет: ContextPerSeq — самое точное значение, если оно есть.
 	for _, m := range lm.LoadedModels {
-		if m.ContextLength <= 0 {
-			continue
-		}
 		if modelName != "" && m.Name != modelName &&
 			!containsFold(m.Name, modelName) && !containsFold(modelName, m.Name) {
 			continue
 		}
 		if m.ContextPerSeq > 0 {
 			return m.ContextPerSeq
+		}
+		if m.ContextLength <= 0 {
+			continue
 		}
 		if m.MaxSlots > 1 {
 			return cppbackend.ContextPerSlot(m.ContextLength, m.MaxSlots)
@@ -665,9 +680,25 @@ func (p *Proxy) loadedWindowFromCache(backendID, modelName string) (int, loadedW
 			continue
 		}
 		found = true
-		if m.ContextLength > 0 {
-			if m.ContextLength > best {
-				best = m.ContextLength
+		// R696: окно на слот — ТОЖЕ окно.
+		//
+		// ЖИВОЙ ДЕФЕКТ (второй стенд, r681): запись о загрузке приходит с
+		// context_per_seq и БЕЗ суммарного context_size — именно так её пишет
+		// warmupLlamaCppModel → updateLlamaCppRunningModelInMetrics (суммарного
+		// окна в этом месте знать неоткуда, его считает воркер). Старый код
+		// смотрел только на ContextLength, поэтому такая запись считалась
+		// «окна нет», а строка ниже превращала это в loadedWindowAbsent —
+		// то есть «МОДЕЛИ НЕТ» для копии, где модель только что поднята:
+		// гейты R459/R480 отказывали свободной копии, R303 «перевешивал»
+		// привязку, а preflight на этом узле отказывал 503 «модель не
+		// загружена здесь, но жива на другом» после 180 с ожидания.
+		w := m.ContextLength
+		if m.ContextPerSeq > w {
+			w = m.ContextPerSeq
+		}
+		if w > 0 {
+			if w > best {
+				best = w
 			}
 			continue
 		}

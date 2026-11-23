@@ -124,6 +124,19 @@ type HFProbeResult struct {
 	Reason    string   `json:"reason,omitempty"`
 	CheckedB  int      `json:"checkedBytes,omitempty"`
 	Truncated bool     `json:"truncated,omitempty"`
+	// Role — роль файла в image-bundle по СОДЕРЖИМОМУ заголовка (R696):
+	// diffusion | vae | llm | clip_l | clip_g | t5xxl | clip_vision ("" = не определить).
+	//
+	// ЗАЧЕМ ОТДЕЛЬНО ОТ Family: имя файла врет регулярно (живой случай —
+	// `Qwen-Image-2.1-Turbo-Uncensored-AD-Q4_K.gguf` оказался text encoder'ом
+	// Qwen3-VL, а воркер подключил его как --diffusion-model и получил «get sd
+	// version from file failed»). Роль по заголовку — то, что UI и валидатор
+	// набора обязаны показывать ДО загрузки.
+	Role string `json:"role,omitempty"`
+	// FamilySource — откуда взято Family: "tensors" (движок узнает семейство по
+	// именам тензоров — факт) или "arch" (по general.architecture — подсказка,
+	// движок её не читает).
+	FamilySource string `json:"familySource,omitempty"`
 }
 
 // tensorSet — имена тензоров из заголовка: нормализованное имя → первая
@@ -221,7 +234,9 @@ func probeHeadInto(res *HFProbeResult, head []byte, filename string) *HFProbeRes
 		res.Tensors = hdr.TensorCount
 		res.Prefixes = hdr.Prefixes
 		res.Truncated = hdr.Truncated
-		res.Family, res.Version, res.DiT, res.Reason = classifyTensors(hdr.normalizedSet())
+		ts := hdr.normalizedSet()
+		res.Family, res.Version, res.DiT, res.Reason = classifyTensors(ts)
+		applySpecialRole(res, hdr.Arch, ts)
 	case "safetensors":
 		hdr, perr := parseSafetensorsHeader(head)
 		if perr != nil {
@@ -240,7 +255,9 @@ func probeHeadInto(res *HFProbeResult, head []byte, filename string) *HFProbeRes
 			res.Reason = i18n.T("cppbackend.hf_probe.reason_mlx_quantized", t)
 			return res
 		}
-		res.Family, res.Version, res.DiT, res.Reason = classifyTensors(hdr.normalizedSet())
+		ts := hdr.normalizedSet()
+		res.Family, res.Version, res.DiT, res.Reason = classifyTensors(ts)
+		applySpecialRole(res, hdr.Arch, ts)
 	default:
 		res.Verdict = HFProbeUnknown
 		res.Reason = i18n.T("cppbackend.hf_probe.reason_not_weights_file")

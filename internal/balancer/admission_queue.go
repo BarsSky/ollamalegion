@@ -936,7 +936,8 @@ func writeAdmissionUnavailable(
 		if rejections := proxy.backendRejectionsR460(model, ""); len(rejections) > 0 {
 			payload["backend_rejections"] = rejections
 			payload["backend_rejections_hint"] = "each entry explains why that backend could not take the request " +
-				"(disabled_by_operator / donor_or_group_worker / model_not_loaded / all_slots_busy / resource_limit)"
+				"(disabled_by_operator / donor_or_group_worker / model_not_loaded / model_loading / all_slots_busy / " +
+				"resource_limit / disk_low / ram_critical / window_too_small / vram_insufficient)"
 		}
 	}
 	writeJSON(w, http.StatusServiceUnavailable, payload)

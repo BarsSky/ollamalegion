@@ -245,6 +245,27 @@ func (p *Proxy) modelAbsentOnBackendR303(backendID, model string) bool {
 	return state == loadedWindowAbsent && n == 0
 }
 
+// sessionBindAllowedR696 — можно ли привязать сессию к этому узлу.
+//
+// ПРАВИЛО: привязка — это обещание «твой следующий ход пойдёт сюда и модель здесь
+// есть». Узел, на котором модели заведомо нет, обещание нарушает: следующий
+// запрос сессии уходит туда, preflight планирует загрузку с нуля и держит клиента
+// минутами (живой архив: selectBackendPreferWindow отдавал пустой ASTRA-I9, а R303
+// перевешивал привязку уже после записи в sessionMgr).
+//
+// modelNotNeeded — read/mgmt-эндпоинты: им модель не нужна, привязка как раньше.
+// «Неизвестно» (кэш молчит, опрос не прошёл) — привязку НЕ запрещаем: строить
+// запрет на недостоверных данных значило бы ломать stickiness на ровном месте.
+func (p *Proxy) sessionBindAllowedR696(backendID, model string, modelNotNeeded bool) (bool, string) {
+	if p == nil || backendID == "" || model == "" || modelNotNeeded {
+		return true, ""
+	}
+	if p.modelAbsentOnBackendR303(backendID, model) {
+		return false, "model_absent_on_backend"
+	}
+	return true, ""
+}
+
 // itoaCacheKeyR303 — ключ кэша опроса без strconv (отрицательных значений нет).
 func itoaCacheKeyR303(n int) string {
 	if n <= 0 {

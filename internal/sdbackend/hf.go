@@ -558,8 +558,23 @@ func (m *HFManager) waitForManifest(targetDir string) bool {
 // чтобы просто отсутствовать.
 func (m *HFManager) writeProfile(name, family, targetDir string, files []cppbackend.HFDownloadRequest) (*types.ImageModelProfile, error) {
 	profile := BuildImageModelProfile(name, family, targetDir, files, m.autoFit)
+	// R696: содержимое файлов сильнее догадки по имени/выбору в UI. Живой случай:
+	// оператор скачал один файл, который является текстовым энкодером Qwen3-VL, а
+	// семейство в UI осталось «other» — движок получал --model и падал с «get sd
+	// version from file failed». Здесь профиль доводится по заголовкам (семейство
+	// DiT, роли энкодеров), а если набор всё равно не загрузится — это скажет
+	// вердикт compat, а не ошибка движка через минуту.
+	if notes := correctProfileByContent(profile, targetDir); len(notes) > 0 {
+		profile.Notes = strings.TrimSpace(profile.Notes + " " + strings.Join(notes, " "))
+	}
+	// R696: неполный набор (нет VAE/энкодера) — состояние, а не ошибка: профиль
+	// пишется, модель видна в реестре, а чего не хватает — объясняет вердикт
+	// совместимости. Иначе «скачал только один файл» снова скрывало бы модель.
 	if err := types.ValidateImageModelProfile(profile); err != nil {
-		return nil, fmt.Errorf("validate generated profile: %w", err)
+		if !types.IsMissingRequiredRole(err) {
+			return nil, fmt.Errorf("validate generated profile: %w", err)
+		}
+		profile.Notes = strings.TrimSpace(profile.Notes + " Набор неполный: " + err.Error() + ".")
 	}
 	data, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {

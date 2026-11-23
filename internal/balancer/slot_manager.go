@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -283,22 +284,32 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 	// значением 85 (env `LB_MEMORY_MAX_USAGE`), и документ обещает те же 85 %
 	// (`docs/architecture/balancing-guide.ru.md:225`). Раньше при нуле в конфиге
 	// действовало 98 — «настройка 85 %» на таком стенде не ограничивала ничего.
-	ramMaxUsage := limits.Memory.MaxUsagePercent
-	if ramMaxUsage <= 0 {
-		ramMaxUsage = 85
-	}
-	if metrics.System.MemoryTotal > 0 {
-		memPercent := float64(metrics.System.MemoryUsed) * 100 / float64(metrics.System.MemoryTotal)
-		if memPercent > ramMaxUsage {
+	// R696: порог и арифметика RAM — в ramCriticalR696, чтобы список причин
+	// (why_queued) и сам отказ считали одним и тем же кодом.
+	if memPercent, threshold, critical := ramCriticalR696(metrics, limits.Memory.MaxUsagePercent); critical {
+		// R696: жёсткий отказ — событие, но повторяется на КАЖДОМ проходе
+		// каждого из 13 мест выбора; без подавления он вытесняет из кольца
+		// строки request trace (живой архив: 1565 WARN за 13 минут).
+		if softLogAllowedR488(backendID, "ram_critical", time.Now(), softLogEveryR488) {
 			logger.Get().Warnw("backend RAM usage critical, blocking", "backend", backendID,
-				"ram_percent", memPercent, "threshold", ramMaxUsage)
-			return false
+				"ram_percent", memPercent, "threshold", threshold, "reason", rejectRAMCriticalR460)
 		}
+		return false
 	}
 
-	if metrics.System.DiskTotal > 0 && metrics.System.DiskFree < limits.Disk.MinFreeMB {
-		logger.Get().Warnw("backend disk space critical, blocking", "backend", backendID,
-			"disk_free_mb", metrics.System.DiskFree, "min_required_mb", limits.Disk.MinFreeMB)
+	if freeMB, minMB, low := diskLowR696(metrics, limits.Disk.MinFreeMB); low {
+		// R696: тот же троттлинг. Живой архив второго стенда: 1565 строк
+		// `backend disk space critical, blocking backend=A10-126 disk_free_mb=9480
+		// min_required_mb=10240` за 13 минут — и ни одной строки о том, что из-за
+		// этого свободный узел с той же моделью исключён из ВСЕХ мест выбора,
+		// поэтому очередь не может переложить на него заявку.
+		// Порог НЕ меняется: мало места на диске — реальный факт, а не шум.
+		if softLogAllowedR488(backendID, "disk_low", time.Now(), softLogEveryR488) {
+			logger.Get().Warnw("backend disk space critical, blocking", "backend", backendID,
+				"disk_free_mb", freeMB, "min_required_mb", minMB,
+				"reason", rejectDiskLowR460,
+				"hint", "узел исключён из выбора, пока свободно меньше resources.disk.minFreeMB")
+		}
 		return false
 	}
 
@@ -313,6 +324,68 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 	// checkResourceLimits отвечает только за аппаратные/ресурсные лимиты.
 
 	return true
+}
+
+// hardResourceBlockByIDR696 — ЖЁСТКИЙ ресурсный отказ узла вместе с его числами.
+//
+// ЗАЧЕМ. checkResourceLimitsLocked (13 мест выбора) отказывал молча для списка
+// причин R460: в теле 503 и в why_queued такой узел назывался общим
+// `resource_limit (не проходит по лимитам ресурсов (VRAM/RAM))`. Живой архив
+// второго стенда: свободный A10-126 с ТОЙ ЖЕ моделью был исключён именно
+// дисковым лимитом (9480 МБ < 10240), но ни лог, ни ответ этого не называли —
+// оператор видел «свободен, но в очередь» и не мог понять причину.
+//
+// ПРАВИЛО: причина называется числами того же лимита, что и в
+// checkResourceLimitsLocked (одни и те же функции сравнения — diskLowR696 /
+// ramCriticalR696), и НИЧЕГО не обходится: узел по-прежнему не выбирается.
+func (p *Proxy) hardResourceBlockByIDR696(backendID string) (code, detail string) {
+	if p == nil || p.metricsMgr == nil || backendID == "" {
+		return "", ""
+	}
+	metrics, ok := p.metricsMgr.SnapshotBackendMetrics(backendID)
+	if !ok || metrics == nil {
+		return "", ""
+	}
+	limits := p.config.Resources
+	if freeMB, minMB, low := diskLowR696(metrics, limits.Disk.MinFreeMB); low {
+		return rejectDiskLowR460, fmt.Sprintf(
+			"мало места на диске: свободно %d МБ < minFreeMB %d МБ (порог resources.disk.minFreeMB)",
+			freeMB, minMB)
+	}
+	if percent, threshold, critical := ramCriticalR696(metrics, limits.Memory.MaxUsagePercent); critical {
+		return rejectRAMCriticalR460, fmt.Sprintf(
+			"RAM занята %.0f%% > порога %.0f%%", percent, threshold)
+	}
+	return "", ""
+}
+
+// diskLowR696 — мало ли места на диске узла (одна арифметика на все потребители).
+func diskLowR696(metrics *types.BackendMetrics, minFreeMB uint64) (freeMB, minMB uint64, low bool) {
+	if metrics == nil {
+		return 0, 0, false
+	}
+	// Мерило неизвестно (DiskTotal == 0) — не отказываем: выдумывать «диска нет»
+	// нельзя, иначе узел без метрик диска выпадал бы из выбора навсегда.
+	if metrics.System.DiskTotal <= 0 {
+		return 0, minFreeMB, false
+	}
+	free := metrics.System.DiskFree
+	return free, minFreeMB, free < minFreeMB
+}
+
+// ramCriticalR696 — критическая занятость RAM узла (своп/OOM).
+//
+// R551: фолбэк `<= 0` — дефолт из конфига (85), а не прежние 98.
+func ramCriticalR696(metrics *types.BackendMetrics, maxPercent float64) (percent, threshold float64, critical bool) {
+	if metrics == nil || metrics.System.MemoryTotal <= 0 {
+		return 0, 0, false
+	}
+	limit := maxPercent
+	if limit <= 0 {
+		limit = 85
+	}
+	p := float64(metrics.System.MemoryUsed) * 100 / float64(metrics.System.MemoryTotal)
+	return p, limit, p > limit
 }
 
 // resourceLimitsHardBlockEnabled — R118 (2026-10-14): возвращать ли прежнее

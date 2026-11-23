@@ -23,6 +23,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"ollama-loadbalancer/internal/i18n"
 )
 
 // HFPlanRole — одна роль в наборе: нужна ли, найден ли файл, чем закрывается.
@@ -55,6 +57,12 @@ type HFRepoPlan struct {
 	EngineMode string `json:"engineMode"`
 	// MainFile — главный файл-кандидат (самый крупный diffusion), "" если нет.
 	MainFile string `json:"mainFile,omitempty"`
+	// MainRole — роль главного файла по СОДЕРЖИМОМУ заголовка (R696):
+	// diffusion | llm | vae | t5xxl | clip_l | clip_g ("" = не определить).
+	// Живой случай: репозиторий AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF
+	// целиком состоит из квантов текстового энкодера Qwen3-VL — по имени файлы
+	// выглядели diffusion-моделью, и паспорт считал набор собранным.
+	MainRole string `json:"mainRole,omitempty"`
 	// Roles — комплектность набора.
 	Roles []HFPlanRole `json:"roles"`
 	// Missing — роли, которых не хватает (человеческие имена).
@@ -131,6 +139,7 @@ func (d *HuggingFaceDownloader) probeInto(ctx context.Context, modelID, filename
 	if res == nil {
 		return nil, nil
 	}
+	plan.MainRole = res.Role
 	switch res.Verdict {
 	case HFProbeUnsupported:
 		plan.Verdict = "unsupported"
@@ -146,7 +155,39 @@ func (d *HuggingFaceDownloader) probeInto(ctx context.Context, modelID, filename
 			plan.EngineMode = "model"
 		}
 	}
+	// R696: главный файл РАСПОЗНАН как не-diffusion (текстовый энкодер / VAE).
+	// Это вердикт «imageworker не сможет загрузить репозиторий как модель»,
+	// который обязан быть виден ДО скачивания гигабайтов.
+	if res.Role != "" && res.Role != ProbeRoleDiffusion {
+		plan.Verdict = "unsupported"
+		plan.EngineMode = "unknown"
+		plan.Summary = i18n.T("sdworker.compat.plan_main_is_encoder",
+			plan.MainFile, planRoleLabel(res.Role), res.Arch)
+		if plan.Summary == "" {
+			plan.Summary = res.Reason
+		}
+		return res, nil
+	}
 	return res, nil
+}
+
+// planRoleLabel — человеческая подпись роли для текста паспорта.
+func planRoleLabel(role string) string {
+	switch role {
+	case ProbeRoleVae:
+		return "VAE"
+	case ProbeRoleLLM:
+		return "text encoder (LLM)"
+	case ProbeRoleClipL:
+		return "CLIP-L"
+	case ProbeRoleClipG:
+		return "CLIP-G"
+	case ProbeRoleT5xxl:
+		return "T5-XXL"
+	case ProbeRoleClipVision:
+		return "CLIP-vision"
+	}
+	return role
 }
 
 // mainDiffusionCandidate — самый крупный файл, который может быть diffusion.
@@ -265,6 +306,15 @@ func planSteps(plan *HFRepoPlan) []string {
 	if plan.MainFile == "" {
 		return []string{
 			"Найдите репозиторий с GGUF-весами модели (роль diffusion) — в этом файлов с весами нет.",
+		}
+	}
+	if plan.Verdict == "unsupported" && plan.MainRole != "" && plan.MainRole != ProbeRoleDiffusion {
+		return []string{
+			i18n.T("sdworker.compat.plan_main_is_encoder",
+				plan.MainFile, planRoleLabel(plan.MainRole), ""),
+			i18n.T("sdworker.compat.plan_need_diffusion_hint"),
+			"Этот файл можно скачать отдельно и указать ролью " + plan.MainRole +
+				" в наборе с diffusion-весами (например из leejet/* или QuantStack/*-GGUF).",
 		}
 	}
 	steps := []string{

@@ -73,6 +73,14 @@ const (
 	rejectWindowFitUnknownR460 = "window_fit_unknown"
 	rejectWindowDoesNotFitR460 = "window_does_not_fit"
 	rejectModelLoadingR460     = "model_loading"
+	// R696: у ЖЁСТКОГО ресурсного отказа появились имена. Раньше «диск полон» и
+	// «RAM в критической зоне» попадали в общий `resource_limit` с текстом
+	// «не проходит по лимитам ресурсов (VRAM/RAM)» — и оператор не видел, что
+	// свободный узел с ТОЙ ЖЕ моделью исключён именно диском (живой архив:
+	// `disk_free_mb=9480 min_required_mb=10240` при 1565 WARN без подавления).
+	// Порог при этом не меняется: отказ остаётся отказом, но становится названным.
+	rejectDiskLowR460     = "disk_low"
+	rejectRAMCriticalR460 = "ram_critical"
 )
 
 // backendRejectionMoveR480 — контекст переезда сессии для списка причин.
@@ -218,6 +226,13 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move .
 		if reason == "" && !p.checkResourceLimitsLocked(id) {
 			reason = rejectResourceLimitR460
 			detail = "не проходит по лимитам ресурсов (VRAM/RAM)"
+			// R696: жёсткий отказ называется своими числами и своим кодом.
+			// Порог и проверка — те же, что в checkResourceLimitsLocked
+			// (hardResourceBlockByIDR696 → diskLowR696 / ramCriticalR696).
+			if code, why := p.hardResourceBlockByIDR696(id); code != "" {
+				reason = code
+				detail = why
+			}
 		}
 		if reason == "" {
 			state.mu.Lock()

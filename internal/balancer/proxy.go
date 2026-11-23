@@ -1135,7 +1135,26 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if targetBackend != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
 			sessionID = p.getSessionIDWithModel(r, clientName, model)
-			p.sessionMgr.SetWithProtocol(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
+			// R696: привязка создаётся ТОЛЬКО на узел, где модель есть.
+			//
+			// ЖИВОЙ ДЕФЕКТ (архив второго стенда, r681): selectBackendPreferWindow
+			// отдавал простаивающий ASTRA-I9, где нужной модели НЕТ, и привязка
+			// сессии создавалась ДО того, как это выяснялось. Дальше за тот же ход
+			// срабатывал аварийный обход R303 и перевешивал привязку (3 раза за
+			// 13 минут), а если живой копии не находилось — следующий запрос той же
+			// сессии возвращался на узел без модели и ждал загрузку. Проверка
+			// «модель на узле есть» обязана стоять ДО записи в sessionMgr: это
+			// условие корректности привязки, а не её оптимизация.
+			//
+			// Стоимость: modelAbsentOnBackendR303 отвечает из кэша метрик, а живой
+			// опрос делает только когда кэш молчит (и кэширует результат).
+			if ok, why := p.sessionBindAllowedR696(targetBackend, model, skipWarmup); ok {
+				p.sessionMgr.SetWithProtocol(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
+			} else if logger.Get() != nil {
+				logger.Get().Infow("R696: привязка сессии не создана — на выбранном узле модели нет",
+					"session", sessionID, "backend", targetBackend, "model", model,
+					"reason", why, "next_step", "следующий выбор/обход R303 решит заново")
+			}
 		}
 	}
 
@@ -1157,8 +1176,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if alt, altPerSeq, ok := p.findLiveLoadedCopyR303(model, parsed.NumCtx,
 			map[string]bool{targetBackend: true}); ok {
 			logger.Get().Warnw("R303: сессия залипла на узле без модели — переезжаем туда, где она загружена",
-				"model", model, "from", targetBackend, "to", alt,
-				"alt_loaded_per_seq", altPerSeq, "requested_n_ctx", parsed.NumCtx)
+				"session", sessionID, "model", model, "from", targetBackend, "to", alt,
+				"reason", "sticky_backend_model_absent",
+				"alt_loaded_per_seq", altPerSeq, "requested_n_ctx", parsed.NumCtx,
+				"covers_request", parsed.NumCtx <= 0 || altPerSeq >= parsed.NumCtx)
 			targetBackend = alt
 			// Привязку сессии перевешиваем на новый узел: иначе следующий запрос
 			// той же сессии снова вернётся на узел без модели (пинг-понг 503).
@@ -1397,6 +1418,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
 			default:
 				// Клиент отменил запрос, пока ждал слот: отвечать уже некому.
+				//
+				// R696: но запись в «Прокси-логах» обязана быть ПРАВДИВОЙ. Раньше
+				// statusCode оставался дефолтным 200, и живой архив второго стенда
+				// показывал `status=200 bytes=0 first_byte_ms=-1`: оборванное
+				// клиентом ожидание в очереди выглядело как пустой УСПЕШНЫЙ ответ
+				// (при этом клиент действительно видел пустоту и уходил).
+				// 499 «клиент закрыл запрос» ничего не отправляет — писателя уже
+				// нет, — но делает отмену видимой в логе и в статистике.
+				if !sr.wroteHeader {
+					sr.statusCode = statusClientClosedR696
+					logger.Get().Infow("R696: заявка отменена клиентом до ответа — статус записан как 499",
+						"model", model, "session", sessionKey, "request_id", rid)
+				}
 				logger.Get().Infow(i18n.T("balancer.proxy.unified_request_canceled_info"),
 					"model", model, "session", sessionKey, "error", waitErr)
 			}

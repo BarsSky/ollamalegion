@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -56,6 +57,11 @@ type ModelInfo struct {
 	Defaults       types.ImageGenDefaults `json:"defaults"`
 	Files          []types.ImageModelFile `json:"files,omitempty"`
 	Notes          string                 `json:"notes,omitempty"`
+	// Compat — вердикт «сможет ли imageworker загрузить этот набор» (R696):
+	// роли по заголовкам файлов, режим движка, недостающие роли и причина.
+	// Считается при Load реестра, отдаётся в GET /api/image/models и показывается
+	// в WebUI до нажатия «Загрузить», а не только в логе движка.
+	Compat *BundleCompat `json:"compat,omitempty"`
 }
 
 // Registry — известные модели. Иммутабелен после Load (профили не меняются
@@ -73,6 +79,9 @@ type Registry struct {
 	modelsDir string
 	// snapshot — текущий снимок (map иммортабельный: после Store не мутируется).
 	snapshot atomic.Pointer[map[string]types.ImageModelProfile]
+	// compat — вердикты совместимости наборов (R696), считаются при Load: чтение
+	// заголовков файлов на каждый GET списка моделей было бы лишним I/O.
+	compat atomic.Pointer[map[string]*BundleCompat]
 	// loadMu сериализует Load: два параллельных сканирования не должны
 	// наперегонки подменять снимок (последний победил бы с неполными данными).
 	loadMu sync.Mutex
@@ -163,7 +172,23 @@ func NewRegistry(dir string) *Registry {
 	r := &Registry{modelsDir: dir}
 	empty := map[string]types.ImageModelProfile{}
 	r.snapshot.Store(&empty)
+	emptyCompat := map[string]*BundleCompat{}
+	r.compat.Store(&emptyCompat)
 	return r
+}
+
+// Compat — вердикт совместимости набора по имени модели (nil = модели нет).
+//
+// Читает снимок, посчитанный при Load: HTTP-слой и загрузчик модели не должны
+// повторно разбирать заголовки файлов (это 512 КБ чтения на файл).
+func (r *Registry) Compat(name string) *BundleCompat {
+	if r == nil {
+		return nil
+	}
+	if m := r.compat.Load(); m != nil {
+		return (*m)[name]
+	}
+	return nil
 }
 
 // profilesMap — текущий снимок профилей (никогда не nil).
@@ -193,10 +218,12 @@ func (r *Registry) Load() error {
 	defer r.loadMu.Unlock()
 
 	current := map[string]types.ImageModelProfile{}
+	compats := map[string]*BundleCompat{}
 	var warnings []string
 
 	defer func() {
 		r.snapshot.Store(&current)
+		r.compat.Store(&compats)
 		r.warningsMu.Lock()
 		r.warnings = warnings
 		r.warningsMu.Unlock()
@@ -235,9 +262,20 @@ func (r *Registry) Load() error {
 				Files:  []types.ImageModelFile{},
 				Notes:  "invalid profile: " + err.Error(),
 			}
+			compats[name] = &BundleCompat{
+				Name:       name,
+				Verdict:    CompatUnsupported,
+				EngineMode: CompatEngineUnknown,
+				Family:     "other",
+				Reason:     "профиль модели некорректен: " + err.Error(),
+				CheckedAt:  time.Now().UTC(),
+			}
 			continue
 		}
 		current[name] = *profile
+		// R696: вердикт «сможет ли imageworker загрузить» считается здесь, вместе
+		// с профилем: и список моделей, и загрузчик читают один и тот же снимок.
+		compats[name] = BuildBundleCompat(profile, dir)
 	}
 	return nil
 }
@@ -276,64 +314,284 @@ func (r *Registry) loadProfile(name, dir string) (*types.ImageModelProfile, erro
 			profile.Files[i].LocalPath = filepath.Join(dir, profile.Files[i].Filename)
 		}
 	}
+	// R696: неполный набор — ЭТО СОСТОЯНИЕ, а не «сломанный профиль». Раньше
+	// ValidateImageModelProfile на DiT-семействе без VAE возвращала ошибку, и
+	// каталог выпадал из реестра (invalid profile): оператор не видел ни модели,
+	// ни причины. Живой случай — скачан только text encoder Qwen-Image 2.1.
+	// Теперь профиль регистрируется, а нехватку ролей объясняет вердикт compat.
 	if err := types.ValidateImageModelProfile(&profile); err != nil {
-		return nil, err
+		if !types.IsMissingRequiredRole(err) {
+			return nil, err
+		}
+		profile.Notes = strings.TrimSpace(profile.Notes + " Набор неполный: " + err.Error() + ".")
+	}
+	// R696: содержимое файлов сильнее догадки по имени. Правки — ТОЛЬКО там, где
+	// заголовок говорит однозначно, и никогда не поверх явного выбора оператора
+	// (family≠other не трогаем, роль vae/llm у оператора не переставляем).
+	if notes := correctProfileByContent(&profile, dir); len(notes) > 0 {
+		profile.Notes = strings.TrimSpace(profile.Notes + " " + strings.Join(notes, " "))
 	}
 	return &profile, nil
 }
 
 // SynthesizeProfile — профиль из файлов каталога, когда profile.json нет.
 //
-// ЧЕСТНО О ГРАНИЦАХ: синтез различает только «один файл-чекпойнт» (all-in-one)
-// и «DiT-набор» по эвристике имён (diffusion/vae/clip/t5/llm). Это заведомо
-// менее точно, чем profile.json, поэтому такая модель помечается Notes и
-// family=other — движок сам решит по содержимому, а точный плейсмент задаст
-// оператор через profile.json.
+// R696: профиль собирается по СОДЕРЖИМОМУ файлов, а не только по именам.
+// Живой дефект, который это лечит: оператор скачал с HF единственный
+// `Qwen-Image-2.1-Turbo-Uncensored-AD-Q4_K.gguf` — это текстовый энкодер
+// Qwen3-VL (general.architecture="qwen3vl"), но по имени файл выглядел
+// diffusion-моделью. Синтез назначал роль diffusion и family=other, движок
+// запускался как all-in-one и падал с «get sd version from file failed».
+// Теперь роль берётся из заголовка (llm/vae/t5/clip), семейство — из якорей
+// тензоров (qwen_image/flux/sd3/sd15/...), а недоказанные случаи так и
+// помечаются (family=other + Notes), чтобы вердикт compat был честным.
+//
+// ГРАНИЦЫ: safetensors/gguf разбираются по заголовку; .ckpt/.pt читаются как
+// есть (их формат мы не разбираем) — для них остаётся эвристика имён.
 func SynthesizeProfile(name, dir string) (*types.ImageModelProfile, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
+	type weightFile struct {
+		rel   string // путь внутри bundle (для эвристики роли: каталоги vae/, text_encoders/)
+		abs   string
+		size  int64
+		role  string
+		fam   string
+		ver   string
+		dit   bool
+		arch  bool // семейство выведено только из general.architecture
+		probe bool // заголовок прочитан
 	}
-	files := make([]types.ImageModelFile, 0, 4)
-	var total int64
-	for _, e := range entries {
-		if e.IsDir() || e.Name() == ProfileFileName {
-			continue
+	entries := make([]weightFile, 0, 4)
+	walkErr := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil //nolint:nilerr // недоступный файл — не повод терять весь bundle
 		}
-		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if d.IsDir() {
+			// Глубже двух уровней вложенности DiT-репозитории не раскладывают
+			// (vae/, text_encoders/, split_files/vae/), а случайные каталоги
+			// внутри bundle'а (например, images/) сканировать незачем.
+			if rel, rerr := filepath.Rel(dir, p); rerr == nil && strings.Count(filepath.ToSlash(rel), "/") > 2 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == ProfileFileName {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(d.Name()))
 		if ext != ".gguf" && ext != ".safetensors" && ext != ".ckpt" && ext != ".pt" {
-			continue
+			return nil
 		}
-		role := roleFromFilename(e.Name())
+		rel, _ := filepath.Rel(dir, p)
+		rel = filepath.ToSlash(rel)
+		info, ierr := d.Info()
 		var size int64
-		if info, err := e.Info(); err == nil {
+		if ierr == nil {
 			size = info.Size()
-			total += size
 		}
-		files = append(files, types.ImageModelFile{
-			Role:      role,
-			Repo:      "local",
-			Filename:  e.Name(),
-			LocalPath: filepath.Join(dir, e.Name()),
-			SizeBytes: size,
-		})
+		wf := weightFile{rel: rel, abs: p, size: size, role: roleFromFilename(rel)}
+		if res, perr := probeLocalCached(p); perr == nil && res != nil {
+			wf.probe = true
+			wf.ver = res.Version
+			wf.dit = res.DiT
+			wf.fam = res.Family
+			wf.arch = res.FamilySource == cppbackend.ProbeFamilyFromArch
+			// Содержимое сильнее имени — но только для НЕ-diffusion ролей:
+			// «внутренние» CLIP/VAE all-in-one чекпойнта движок видит как часть
+			// модели, и роль такой файл не меняет.
+			if res.Role != "" && res.Role != types.ImageFileRoleDiffusion {
+				wf.role = res.Role
+			} else if res.Role == types.ImageFileRoleDiffusion && res.Version != "" {
+				wf.role = types.ImageFileRoleDiffusion
+			}
+		}
+		entries = append(entries, wf)
+		return nil
+	})
+	if walkErr != nil {
+		return nil, walkErr
 	}
-	if len(files) == 0 {
+	if len(entries) == 0 {
 		return nil, fmt.Errorf("no model files (*.gguf/*.safetensors/*.ckpt) and no %s", ProfileFileName)
 	}
-	// Один diffusion-файл → all-in-one чекпойнт (SD1.x/2.x/SDXL).
-	if len(files) == 1 {
-		files[0].Role = types.ImageFileRoleDiffusion
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
+
+	// Одна роль = один файл (ValidateImageModelProfile запрещает дубликаты):
+	// лишние кванты того же компонента остаются на диске, но в профиль не
+	// попадают — иначе движок получил бы два --llm/два --vae.
+	kept := make([]weightFile, 0, len(entries))
+	skipped := make([]string, 0, 2)
+	seen := map[string]bool{}
+	for _, wf := range entries {
+		if wf.role != types.ImageFileRoleLora && seen[wf.role] {
+			skipped = append(skipped, wf.rel+" ("+wf.role+")")
+			continue
+		}
+		seen[wf.role] = true
+		kept = append(kept, wf)
 	}
-	defaults := types.DefaultImageGenDefaults("other")
+	if len(kept) == 0 {
+		return nil, fmt.Errorf("no usable model files in %s", dir)
+	}
+
+	// Семейство: якоря тензоров diffusion-файла. Если кандидатов несколько и они
+	// противоречат друг другу — оставляем other (движок пусть судит сам), это
+	// увидит вердикт compat.
+	family, familyVer := "", ""
+	conflict := false
+	for _, wf := range kept {
+		if wf.role != types.ImageFileRoleDiffusion || wf.fam == "" || wf.fam == "other" {
+			continue
+		}
+		if family == "" {
+			family, familyVer = wf.fam, wf.ver
+		} else if family != wf.fam {
+			conflict = true
+		}
+	}
+	if conflict {
+		family, familyVer = "", ""
+	}
+
+	// В наборе нет ни одного diffusion-файла (например скачан только текстовый
+	// энкодер): профиль всё равно должен пройти валидацию (иначе реестр потеряет
+	// файлы и UI не объяснит причину), поэтому diffusion-роль занимает самый
+	// крупный файл, а вердикт compat честно скажет, что это не diffusion-модель.
+	if !seen[types.ImageFileRoleDiffusion] {
+		biggest := 0
+		for i := range kept {
+			if kept[i].size > kept[biggest].size {
+				biggest = i
+			}
+		}
+		kept[biggest].role = types.ImageFileRoleDiffusion
+		seen[types.ImageFileRoleDiffusion] = true
+	}
+
+	files := make([]types.ImageModelFile, 0, len(kept))
+	for _, wf := range kept {
+		files = append(files, types.ImageModelFile{
+			Role:      wf.role,
+			Repo:      "local",
+			Filename:  wf.rel,
+			LocalPath: wf.abs,
+			SizeBytes: wf.size,
+		})
+	}
+	if family == "" {
+		family = "other"
+	}
+	notes := []string{
+		"профиль синтезирован по содержимому каталога: " + ProfileFileName + " отсутствует,",
+		"роли и семейство определены по заголовкам файлов (GGUF/safetensors).",
+	}
+	if family == "other" && familyVer == "" {
+		notes = append(notes, "Семейство по заголовку не определяется: если это DiT-модель "+
+			"(FLUX/SD3/Qwen-Image), выберите семейство в профиле — иначе движок получит --model.")
+	}
+	if len(skipped) > 0 {
+		notes = append(notes, "В профиль не попали кванты-дубликаты (движок использует один файл на роль): "+
+			strings.Join(skipped, ", ")+".")
+	}
 	return &types.ImageModelProfile{
 		Name:     name,
-		Family:   "other",
+		Family:   family,
 		Files:    files,
-		Defaults: defaults,
-		Notes: "профиль синтезирован по содержимому каталога: " + ProfileFileName +
-			" отсутствует, family=other, плейсмент по умолчанию (движок выберет сам)",
+		Defaults: types.DefaultImageGenDefaults(family),
+		Notes:    strings.Join(notes, " "),
 	}, nil
+}
+
+// correctProfileByContent — правки профиля по содержимому файлов.
+//
+// ПРАВИЛА (консервативные, чтобы не перебить выбор оператора):
+//   - family "other"/"" → семейство по заголовку diffusion-файла (иначе движок
+//     получит --model и ответит «get sd version from file failed»);
+//   - файл с ролью diffusion, чей заголовок — текстовый энкодер/VAE, становится
+//     этой ролью, НО только если в наборе есть другой diffusion-кандидат (иначе
+//     профиль перестал бы проходить валидацию, а вердикт compat и так объяснит
+//     причину).
+//
+// Возвращает заметки для Notes (пусто = ничего не меняли).
+func correctProfileByContent(p *types.ImageModelProfile, dir string) []string {
+	if p == nil || len(p.Files) == 0 {
+		return nil
+	}
+	var notes []string
+	probes := make([]*cppbackend.HFProbeResult, len(p.Files))
+	diffusionIdx := make([]int, 0, 2)
+	for i := range p.Files {
+		path := p.Files[i].LocalPath
+		if path == "" {
+			path = filepath.Join(dir, p.Files[i].Filename)
+		}
+		if isWeightFileName(p.Files[i].Filename) {
+			if res, err := probeLocalCached(path); err == nil {
+				probes[i] = res
+			}
+		}
+		if p.Files[i].Role == types.ImageFileRoleDiffusion {
+			diffusionIdx = append(diffusionIdx, i)
+		}
+	}
+
+	// 1) Семейство: только если оператор его не выбрал («other» = не знаем).
+	if p.Family == "" || p.Family == "other" {
+		for i := range p.Files {
+			res := probes[i]
+			if res == nil || p.Files[i].Role != types.ImageFileRoleDiffusion {
+				continue
+			}
+			if res.Role == types.ImageFileRoleDiffusion && res.Family != "" && res.Family != "other" &&
+				types.IsValidImageFamily(res.Family) {
+				p.Family = res.Family
+				p.Defaults = types.DefaultImageGenDefaults(res.Family)
+				if res.FamilySource == cppbackend.ProbeFamilyFromArch {
+					notes = append(notes, fmt.Sprintf(
+						"Семейство %q выведено из general.architecture — это подсказка, проверьте её.", res.Family))
+				} else {
+					notes = append(notes, fmt.Sprintf(
+						"Семейство %q определено по заголовку файла %q.", res.Family, p.Files[i].Filename))
+				}
+				break
+			}
+		}
+	}
+
+	// 2) Роли: файл «diffusion», но заголовок — энкодер/VAE, и есть другой
+	//    diffusion-кандидат (иначе роль оставляем, чтобы профиль остался валидным).
+	//    ВАЖНО: роли не должны задвоиться (контракт: одна роль — один файл),
+	//    поэтому занимаем роль только если она ещё свободна.
+	if len(diffusionIdx) > 1 {
+		roleTaken := make(map[string]bool, len(p.Files))
+		for _, f := range p.Files {
+			roleTaken[f.Role] = true
+		}
+		for _, i := range diffusionIdx {
+			res := probes[i]
+			if res == nil || res.Role == "" || res.Role == types.ImageFileRoleDiffusion {
+				continue
+			}
+			if !isValidNonDiffusionRole(res.Role) || roleTaken[res.Role] {
+				continue
+			}
+			notes = append(notes, fmt.Sprintf(
+				"Файл %q переведён из роли diffusion в %q: по заголовку это %s, а не diffusion-модель.",
+				p.Files[i].Filename, res.Role, CompatRoleLabel(res.Role)))
+			p.Files[i].Role = res.Role
+			roleTaken[res.Role] = true
+		}
+	}
+	return notes
+}
+
+// isValidNonDiffusionRole — роль, которую мы готовы взять из заголовка файла.
+func isValidNonDiffusionRole(role string) bool {
+	switch role {
+	case types.ImageFileRoleVae, types.ImageFileRoleLLM, types.ImageFileRoleClipL,
+		types.ImageFileRoleClipG, types.ImageFileRoleT5xxl, types.ImageFileRoleClipVision:
+		return true
+	}
+	return false
 }
 
 // SuggestRole — предложенная роль файла по его ИМЕНИ (экспорт эвристики
@@ -480,6 +738,7 @@ func (r *Registry) Info(p types.ImageModelProfile, state, lastErr string, loaded
 		Defaults:       p.Defaults,
 		Files:          p.Files,
 		Notes:          p.Notes,
+		Compat:         r.Compat(p.Name),
 	}
 	if !loadedAt.IsZero() {
 		info.LoadedAt = loadedAt.UTC().Format(time.RFC3339)

@@ -197,15 +197,23 @@ func writeModelUnsupportedResponseR697(w http.ResponseWriter, modelName string, 
 // по тексту, поэтому /api/models (поле load_failure → agent → балансер → WebUI)
 // отдавал причину без имени архитектуры и без сборки. Для model_unsupported эти два
 // факта и есть ответ, поэтому они кладутся в diagnostics.
+//
+// R704 (2026-11-24): тот же вход обслуживает и model_schema_unsupported — там к
+// фактам добавляются block_count/физические блоки и имя пропавшего тензора
+// (model_schema_unsupported.go). Один вход, а не два: пути загрузки зовут его после
+// провала, и раздвоение легко разошлось бы с классификатором.
 func recordLoadFailureR697(modelName string, loadErr error) {
 	if loadErr == nil {
 		return
 	}
 	reason := classifyLoadFailureReason(loadErr, loadErr.Error())
 	var diag map[string]interface{}
-	if reason == LoadFailureModelUnsupported {
+	switch reason {
+	case LoadFailureModelUnsupported:
 		arch := modelUnsupportedArchFromText(loadErr.Error())
 		diag = modelUnsupportedDiagnosticsR697(arch, modelUnsupportedBuildR697())
+	case LoadFailureModelSchemaUnsupported:
+		diag = modelSchemaDiagnosticsR704(modelName, loadErr)
 	}
 	loadFailures.recordDetailed(modelName, reason, loadErr, diag)
 }
@@ -231,8 +239,16 @@ func respondModelUnsupportedR697(w http.ResponseWriter, modelName string, loadEr
 
 // loadFailureHintR697 — подсказка из записи реестра для поверхностей, которые показывают
 // причину словами (progress, /api/models). Пустая строка = подсказки нет.
+//
+// R704: подсказку несут обе «содержательные» причины (model_unsupported и
+// model_schema_unsupported) — у остальных её просто нет.
 func loadFailureHintR697(reason string, diag map[string]interface{}) string {
-	if reason != LoadFailureModelUnsupported || diag == nil {
+	if diag == nil {
+		return ""
+	}
+	switch reason {
+	case LoadFailureModelUnsupported, LoadFailureModelSchemaUnsupported:
+	default:
 		return ""
 	}
 	if hint, ok := diag["hint"].(string); ok {

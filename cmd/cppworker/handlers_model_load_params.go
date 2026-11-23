@@ -509,7 +509,8 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 			logger.Get().Errorw("failed to load model (load-with-params sync)", "name", modelName, "error", loadErr)
 			// R697 (2026-11-24): тот же отказ по архитектуре, что и на legacy-пути
 			// (см. model_unsupported.go) — 409 с причиной вместо общего 500.
-			if respondModelUnsupportedR697(w, modelName, loadErr) {
+			// R704 (2026-11-24): и отказ по схеме файла (model_schema_unsupported).
+			if respondLoadRefusalR704(w, modelName, loadErr) {
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "load failed: "+loadErr.Error())

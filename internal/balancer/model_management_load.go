@@ -17,6 +17,24 @@ import (
 	"time"
 )
 
+// isTerminalLoadRefusal — код причины провала означает «повтор не поможет»:
+// воркер отказал по СОДЕРЖИМОМУ файла и ответил 409.
+//
+// R697: model_unsupported (сборка не знает архитектуру).
+// R704: model_schema_unsupported (архитектуру знает, схему файла — нет).
+//
+// Зачем одна функция: это правило выбирает HTTP-статус для клиента. Пока оно
+// было литералом в одном месте, новый вид терминального отказа (R704) прошёл бы
+// как 500 «повтори» — то есть клиент (Cline/OpenAI-SDK/WebUI) ушёл бы в цикл, а
+// оператор искал бы поломку воркера вместо ре-экспорта файла.
+func isTerminalLoadRefusal(reason string) bool {
+	switch reason {
+	case "model_unsupported", "model_schema_unsupported":
+		return true
+	}
+	return false
+}
+
 // pollLoadCompletionUntilLoaded — после HTTP timeout на /api/models/load
 // проверяет cppworker (state="loaded" в /api/models) периодически до завершения
 // загрузки или до истечения maxWait. Возвращает success если модель загружена,
@@ -120,8 +138,12 @@ func (mm *ModelManager) pollLoadCompletionUntilLoaded(
 			// R697: неподдерживаемая архитектура — терминальный отказ воркера, а не
 			// наш сбой. StatusCode воркера переносим в результат, чтобы HTTP-слой
 			// отдал 409 (modelOpStatusCode), а не 500 «повтори».
+			//
+			// R704: то же для «схема файла не поддержана» (loop-развёрнутый GGUF):
+			// воркер отвечает 409, потому что повтор не поможет, — балансер обязан
+			// не превращать это в 500 и не гонять клиента по кругу.
 			workerStatus := 0
-			if reason == "model_unsupported" {
+			if isTerminalLoadRefusal(reason) {
 				workerStatus = http.StatusConflict
 			}
 			return &ModelOpResult{

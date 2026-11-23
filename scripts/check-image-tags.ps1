@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   R83 (2026-09-25): проверка согласованности тегов образов в продовом compose.
 
@@ -10,12 +10,24 @@
     2. для каждой найденной переменной есть строка `VAR=...` в deployments/.env
        (иначе compose возьмёт default, и выпуск «не доедет»);
     3. если есть deployments/release-manifest.json — фактически подставляемый
-       тег совпадает с тегом из манифеста для каждого компонента.
+       тег совпадает с тегом из манифеста для каждого компонента;
+    4. R704: llama-штампы воркера: CPPWORKER_LLAMA_BUILD/_DATE из .env ↔
+       llamaCommit/llamaDate манифеста (по короткому SHA) и ↔ метки OCI образа
+       cppworker (ru.ollamalegion.llama.commit/.llama.date), а rpcProto
+       манифеста ↔ метка ru.ollamalegion.rpc.proto (или RPC_PROTO=… из
+       org.opencontainers.image.description). С docker-демоном — полная сверка,
+       без него — офлайн-часть (.env ↔ манифест) и явный ПРОПУСК.
 
   ЗАЧЕМ. До R83 теги жили в трёх разных местах и обновлялись тремя разными
   способами, поэтому «пересобрали один компонент, три остались на старых
   версиях» было штатной ситуацией. Пункт 3 ловит именно её: подняли webui, но
   забыли balancer → манифест и .env расходятся → проверка падает.
+
+  Пункт 4 закрывает тот же класс для llama.cpp. Живой случай (второй стенд):
+  CPPWORKER_LLAMA_BUILD=0eadefebd, а образ собран из 5bacb7c868 — рассинхрон
+  видел только рантайм (/api/info → llama_build_mismatch=true), а проверка
+  оставалась зелёной, потому что смотрела лишь строки `image:` и идентичность
+  образов. Теперь расхождение видно ДО раскатки.
 
   R675 (2026-11-21): дефолтный compose — docker-compose.stack.yml.
 
@@ -426,6 +438,196 @@ if ($cudaArchEnv) {
 } else {
     Write-Host ""
     Write-Host "CUDA_ARCH в deployments/$usedEnvName не задан — сверка архива с образом пропущена" -ForegroundColor DarkGray
+}
+
+# --- R704: llama-штампы .env ↔ манифест ↔ образ -----------------------------
+#
+# ЗАЧЕМ. Ни `.env` CPPWORKER_LLAMA_BUILD/_DATE, ни манифестные llamaCommit/
+# llamaDate/rpcProto не сверялись ни с чем: рассинхрон ловил только рантайм —
+# воркер сравнивает переменную окружения с запечённым в бинарь коммитом и отдаёт
+# llama_build_mismatch=true в /api/info (cmd/cppworker/llama_build_guard.go).
+# ЖИВОЙ СЛУЧАЙ (второй стенд, .env.example:384-395): CPPWORKER_LLAMA_BUILD=
+# 0eadefebd при образе, собранном из 5bacb7c868 — гейт R114/R115 видел «сборки
+# разные» на одном и том же узле, а проверка выпуска оставалась зелёной.
+#
+# ЧТО ПРОВЕРЯЕТСЯ:
+#   1) офлайн: .env CPPWORKER_LLAMA_BUILD ↔ манифест llamaCommit записи
+#      cppworker, CPPWORKER_LLAMA_BUILD_DATE ↔ llamaDate. Сравнение SHA — по
+#      короткому виду: одно значение может быть префиксом другого (7..40 hex);
+#   2) с локальным docker-демоном: те же значения ↔ МЕТКИ ОБРАЗА
+#      (ru.ollamalegion.llama.commit / .llama.date — их пишет
+#      scripts/lib-release-manifest.ps1, то есть это факт из образа, а не
+#      пересказ .env), rpcProto манифеста ↔ ru.ollamalegion.rpc.proto (или
+#      RPC_PROTO=… в org.opencontainers.image.description у старых образов).
+#      Это ловит случай «.env и манифест одинаково отстали от собранного
+#      образа», который офлайн-сверка пропустит.
+#
+# Если docker недоступен, образа нет локально или он собран до R486 (метки нет) —
+# явный ПРОПУСК с причиной: «неизвестно» не выдаём за «совпало».
+
+# Test-ShortShaMatch — совпадают ли два коммита в коротком виде.
+#
+# Сравнение по префиксу, потому что значения приходят из разных мест: .env —
+# `git rev-parse --short HEAD` (7..12 hex), манифест/метка — тоже короткий, но
+# мог быть записан другой длиной. Не-SHA и пустое значение совпадением не считаем.
+function Test-ShortShaMatch([string]$left, [string]$right) {
+    $l = ([string]$left -replace '\s', '').ToLowerInvariant()
+    $r = ([string]$right -replace '\s', '').ToLowerInvariant()
+    if (-not $l -or -not $r) { return $false }
+    if ($l -notmatch '^[0-9a-f]{7,40}$' -or $r -notmatch '^[0-9a-f]{7,40}$') { return $false }
+    if ($l -eq $r) { return $true }
+    if ($l.Length -gt $r.Length) { return $l.StartsWith($r) }
+    return $r.StartsWith($l)
+}
+
+$llamaEnvBuild = ''
+$llamaEnvDate = ''
+$llamaEnvBuildPresent = $envMap.ContainsKey('CPPWORKER_LLAMA_BUILD')
+$llamaEnvDatePresent = $envMap.ContainsKey('CPPWORKER_LLAMA_BUILD_DATE')
+# Инлайн-комментарий после значения (`...=abc123  # старый`) отрезаем: иначе
+# строка попадёт в сверку и даст ложный «рассинхрон».
+if ($llamaEnvBuildPresent) { $llamaEnvBuild = ([string]$envMap['CPPWORKER_LLAMA_BUILD'] -replace '\s+#.*$', '').Trim() }
+if ($llamaEnvDatePresent) { $llamaEnvDate = ([string]$envMap['CPPWORKER_LLAMA_BUILD_DATE'] -replace '\s+#.*$', '').Trim() }
+
+Write-Host ""
+Write-Host "llama-штампы: $usedEnvName ↔ $ManifestFile ↔ образ cppworker" -ForegroundColor Cyan
+
+# Отсутствие переменной — отдельная проблема, а не ПРОПУСК: compose передаёт её
+# воркеру как CPPWORKER_LLAMA_BUILD (docker-compose.stack.yml:773), и без неё узел
+# не сообщает версию llama.cpp — гейт узлов группы раскладки сравнивать нечего.
+if (-not $llamaEnvBuildPresent) {
+    $problems.Add("в deployments/$usedEnvName нет CPPWORKER_LLAMA_BUILD — воркер поднимется без версии llama.cpp (узел сообщит пустую сборку), и рассинхрон с образом не поймает ни эта проверка, ни гейт узлов. Добавьте 'CPPWORKER_LLAMA_BUILD=<git -C c/llama.cpp rev-parse --short HEAD собранного образа>'.")
+}
+if (-not $llamaEnvDatePresent) {
+    $problems.Add("в deployments/$usedEnvName нет CPPWORKER_LLAMA_BUILD_DATE — балансер не сможет сравнить сборку узла с релизом llama.cpp по дате (git -C c/llama.cpp log -1 --format=%cs).")
+}
+
+$mfCppRef = ''
+$mfLlamaCommit = ''
+$mfLlamaDate = ''
+$mfRpcProto = ''
+$mfCppReady = $false
+if (Test-Path $manifestPath) {
+    # Запись cppworker ищем по service, затем по имени образа (старые манифесты
+    # писали только alias/image).
+    $mfCpp = @($manifest.images | Where-Object { [string]$_.service -eq 'cppworker' }) | Select-Object -First 1
+    if (-not $mfCpp) {
+        $mfCpp = @($manifest.images | Where-Object { [string]$_.image -like '*cppworker*' }) | Select-Object -First 1
+    }
+    if ($mfCpp) {
+        $mfCppReady = $true
+        $mfCppRef = [string]$mfCpp.image
+        $mfLlamaCommit = ([string]$mfCpp.llamaCommit).Trim()
+        $mfLlamaDate = ([string]$mfCpp.llamaDate).Trim()
+        $mfRpcProto = ([string]$mfCpp.rpcProto).Trim()
+    } else {
+        Write-Host "  ПРОПУСК  в $ManifestFile нет записи cppworker — сверка llama-штампов невозможна (появится после сборки воркера)" -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "  ПРОПУСК  манифеста $ManifestFile нет — сверка llama-штампов с манифестом пропущена" -ForegroundColor DarkGray
+}
+
+# --- 1) офлайн: .env ↔ манифест --------------------------------------------
+if ($mfCppReady) {
+    if ($llamaEnvBuild) {
+        if (-not (Test-ShortShaMatch $llamaEnvBuild $mfLlamaCommit)) {
+            $problems.Add("CPPWORKER_LLAMA_BUILD: deployments/$usedEnvName = '$llamaEnvBuild', а $ManifestFile фиксирует llamaCommit = '$mfLlamaCommit' для $mfCppRef — коммиты llama.cpp разные. Это ровно живой рассинхрон llama_build_mismatch (второй стенд: env 0eadefebd против бинаря). Правьте ОДНО из двух: CPPWORKER_LLAMA_BUILD в .env — по собранному образу (git -C c/llama.cpp rev-parse --short HEAD), либо манифест — перевыпуском (scripts/release-all.ps1). Иначе узел сообщает балансеру не ту сборку, и гейт узлов группы раскладки (R114/R115) сравнивает разные коммиты.")
+        } else {
+            Write-Host "  OK  CPPWORKER_LLAMA_BUILD=$llamaEnvBuild совпадает с манифестом (llamaCommit=$mfLlamaCommit)" -ForegroundColor DarkGray
+        }
+    } elseif ($llamaEnvBuildPresent) {
+        Write-Host "  ПРОПУСК  CPPWORKER_LLAMA_BUILD в $usedEnvName пуст — сравнивать нечего" -ForegroundColor DarkGray
+    }
+    if ($llamaEnvDate) {
+        if ($llamaEnvDate -ne $mfLlamaDate) {
+            $problems.Add("CPPWORKER_LLAMA_BUILD_DATE: deployments/$usedEnvName = '$llamaEnvDate', а $ManifestFile фиксирует llamaDate = '$mfLlamaDate' для $mfCppRef — дата коммита llama.cpp не совпадает с собранным образом. Правьте .env (git -C c/llama.cpp log -1 --format=%cs) или перевыпустите манифест: по дате балансер сравнивает сборку узла с релизом llama.cpp.")
+        } else {
+            Write-Host "  OK  CPPWORKER_LLAMA_BUILD_DATE=$llamaEnvDate совпадает с манифестом (llamaDate=$mfLlamaDate)" -ForegroundColor DarkGray
+        }
+    } elseif ($llamaEnvDatePresent) {
+        Write-Host "  ПРОПУСК  CPPWORKER_LLAMA_BUILD_DATE в $usedEnvName пуст — сравнивать нечего" -ForegroundColor DarkGray
+    }
+    if (-not $mfRpcProto) {
+        Write-Host "  ПРОПУСК  в $ManifestFile нет rpcProto у записи cppworker — сверка протокола RPC невозможна" -ForegroundColor DarkGray
+    }
+}
+
+# --- 2) онлайн: факт из ОБРАЗА (метки OCI) ----------------------------------
+$cppRepo = $effective.Keys | Where-Object { $_ -like '*cppworker' } | Select-Object -First 1
+if (-not $cppRepo) {
+    Write-Host "  ПРОПУСК  образа cppworker нет в $ComposeFile — сверка меток образа невозможна" -ForegroundColor DarkGray
+} else {
+    $cppRef = "${cppRepo}:$($effective[$cppRepo])"
+    # Метки читаем через `{{json .Config.Labels}}` — той же формой, что блок
+    # CUDA_ARCH выше и scripts/lib-release-manifest.ps1 (в Windows PowerShell
+    # шаблон `{{index .Config.Labels "org…"}}` приходит в docker искажённым).
+    $labels = $null
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $rawLabels = (& docker image inspect $cppRef --format '{{json .Config.Labels}}' 2>$null | Out-String)
+    } catch {
+        $rawLabels = ''
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if (-not [string]::IsNullOrWhiteSpace($rawLabels)) {
+        try { $labels = $rawLabels | ConvertFrom-Json } catch { $labels = $null }
+    }
+
+    if ($null -eq $labels) {
+        Write-Host "  ПРОПУСК  образа $cppRef нет в локальном демоне — сверка меток образа невозможна (офлайн-часть выше выполнена)" -ForegroundColor DarkGray
+    } else {
+        $labelCommit = ''
+        $labelDate = ''
+        $labelRpc = ''
+        if ($labels.PSObject.Properties['ru.ollamalegion.llama.commit']) {
+            $labelCommit = ([string]$labels.'ru.ollamalegion.llama.commit').Trim()
+        }
+        if ($labels.PSObject.Properties['ru.ollamalegion.llama.date']) {
+            $labelDate = ([string]$labels.'ru.ollamalegion.llama.date').Trim()
+        }
+        if ($labels.PSObject.Properties['ru.ollamalegion.rpc.proto']) {
+            $labelRpc = ([string]$labels.'ru.ollamalegion.rpc.proto').Trim()
+        }
+        if (-not $labelRpc -and $labels.PSObject.Properties['org.opencontainers.image.description']) {
+            # Резервная форма для образов, где протокол написан в описании
+            # (Dockerfile не кладёт отдельную метку): `RPC_PROTO=10.0.2`.
+            $desc = [string]$labels.'org.opencontainers.image.description'
+            $rm = [regex]::Match($desc, 'RPC_PROTO=([0-9][0-9.]*)')
+            if ($rm.Success) { $labelRpc = $rm.Groups[1].Value.Trim() }
+        }
+
+        if (-not $labelCommit) {
+            Write-Host "  ПРОПУСК  у образа $cppRef нет метки ru.ollamalegion.llama.commit (собран до R486) — сверка с фактом образа невозможна" -ForegroundColor DarkGray
+        } else {
+            # .env ↔ образ: самый прямой признак живого llama_build_mismatch.
+            if ($llamaEnvBuild -and -not (Test-ShortShaMatch $llamaEnvBuild $labelCommit)) {
+                $problems.Add("CPPWORKER_LLAMA_BUILD: deployments/$usedEnvName = '$llamaEnvBuild', а образ ${cppRef} собран из llama.cpp '$labelCommit' (метка ru.ollamalegion.llama.commit) — это и есть живой llama_build_mismatch: воркер отдаст /api/info → llama_build_mismatch=true, и гейт узлов R114/R115 увидит «сборки разные» на одном узле. Правьте CPPWORKER_LLAMA_BUILD в .env по собранному образу (git -C c/llama.cpp rev-parse --short HEAD) либо пересоберите/перевыпустите образ.")
+            } elseif ($llamaEnvBuild) {
+                Write-Host "  OK  CPPWORKER_LLAMA_BUILD=$llamaEnvBuild совпадает с образом ($labelCommit)" -ForegroundColor DarkGray
+            }
+            if ($mfCppReady -and $mfLlamaCommit -and -not (Test-ShortShaMatch $mfLlamaCommit $labelCommit)) {
+                $problems.Add("$ManifestFile фиксирует llamaCommit = '$mfLlamaCommit', а образ ${cppRef} собран из llama.cpp '$labelCommit' — манифест описывает другой образ. Перевыпустите манифест (scripts/release-all.ps1 перечитывает метки образа) после сборки.")
+            }
+            if ($llamaEnvDate -and $labelDate -and $llamaEnvDate -ne $labelDate) {
+                $problems.Add("CPPWORKER_LLAMA_BUILD_DATE: deployments/$usedEnvName = '$llamaEnvDate', а образ ${cppRef} собран из коммита llama.cpp от '$labelDate' (метка ru.ollamalegion.llama.date). Правьте .env или пересоберите образ: по дате балансер сравнивает сборку узла с релизом llama.cpp.")
+            }
+        }
+
+        # rpcProto: манифест ↔ образ. Протокол RPC чувствителен к коммиту
+        # llama.cpp (R114/R115): мастер и донор раскладки обязаны быть из одного
+        # протокола, иначе RPC-сессия рвётся или слой считается несовместимым.
+        if ($mfCppReady -and $mfRpcProto) {
+            if (-not $labelRpc) {
+                Write-Host "  ПРОПУСК  у образа $cppRef нет RPC-протокола в метках — сверка rpcProto невозможна" -ForegroundColor DarkGray
+            } elseif ($labelRpc -ne $mfRpcProto) {
+                $problems.Add("rpcProto: $ManifestFile фиксирует '$mfRpcProto', а образ ${cppRef} собран с RPC-протоколом '$labelRpc' (ru.ollamalegion.rpc.proto) — протокол RPC чувствителен к коммиту llama.cpp: мастер и донор группы раскладки с разными протоколами отказывают или падают. Правьте одно: манифест (перевыпуск после сборки) или образ (собрать из коммита, чей rpcProto указан).")
+            } else {
+                Write-Host "  OK  rpcProto=$mfRpcProto совпадает с образом" -ForegroundColor DarkGray
+            }
+        }
+    }
 }
 
 # --- итог ------------------------------------------------------------------

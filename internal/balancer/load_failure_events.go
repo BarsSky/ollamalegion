@@ -17,6 +17,8 @@
 package balancer
 
 import (
+	"strconv"
+	"strings"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -235,6 +237,7 @@ func loadFailureEventMessage(lf *types.LoadFailureInfo) string {
 	if model == "" {
 		model = "модель"
 	}
+	diag := lf.Diagnostics
 	switch lf.Reason {
 	case "model_not_found":
 		return "Модель не найдена: " + model +
@@ -268,6 +271,32 @@ func loadFailureEventMessage(lf *types.LoadFailureInfo) string {
 			msg += " Что делать: " + hint
 		}
 		return msg
+	// R704 (2026-11-24): архитектуру сборка знает, а схему файла — нет
+	// (loop-развёрнутый GGUF: 24 физических блока при block_count=48). Прежний
+	// текст был бы «файл модели не принят (формат/архитектура)» — то есть снова
+	// отправлял бы оператора проверять файл, хотя файл на месте и исправен.
+	// Числа (block_count, физические блоки) и рецепт (ре-экспорт в <arch>_loop)
+	// приходят в Diagnostics от cppworker (model_schema_unsupported.go).
+	case "model_schema_unsupported":
+		msg := "Схема файла модели " + model + " не поддерживается загрузчиком llama.cpp"
+		facts := make([]string, 0, 3)
+		if arch, ok := lf.Diagnostics["arch"].(string); ok && arch != "" {
+			facts = append(facts, arch)
+		}
+		if bc := diagnosticsCount(diag, "block_count"); bc != "" {
+			facts = append(facts, "block_count="+bc)
+		}
+		if pb := diagnosticsCount(diag, "physical_blocks"); pb != "" {
+			facts = append(facts, "физических блоков="+pb)
+		}
+		if len(facts) > 0 {
+			msg += " (" + strings.Join(facts, ", ") + ")"
+		}
+		msg += ": файл на месте, дело в схеме тензоров, повторы не помогут."
+		if hint, ok := diag["hint"].(string); ok && hint != "" {
+			msg += " Что делать: " + hint
+		}
+		return msg
 	case "backend_not_ready":
 		return "Бэкенд не готов к загрузке " + model + " (менеджер моделей не инициализирован)."
 	case "load_timeout":
@@ -276,4 +305,34 @@ func loadFailureEventMessage(lf *types.LoadFailureInfo) string {
 		return "Алиас " + model + " указывает на отсутствующий файл."
 	}
 	return "Модель " + model + " не загрузилась: " + lf.Error
+}
+
+// diagnosticsCount — положительное целое из Diagnostics в виде строки.
+//
+// ЗАЧЕМ ОТДЕЛЬНО. Diagnostics идут cppworker → agent → балансер как JSON, поэтому
+// в map лежит float64, а не int: приведение `.(int)` молча дало бы ноль, и
+// уведомление потеряло бы числа (block_count=48, физических блоков=24) — ровно то,
+// из-за чего R704 и появился. Пустая строка = числа нет (не выдумываем ноль).
+func diagnosticsCount(diag map[string]interface{}, key string) string {
+	if diag == nil {
+		return ""
+	}
+	switch v := diag[key].(type) {
+	case float64:
+		if v <= 0 {
+			return ""
+		}
+		return strconv.Itoa(int(v))
+	case int:
+		if v <= 0 {
+			return ""
+		}
+		return strconv.Itoa(v)
+	case int64:
+		if v <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(v, 10)
+	}
+	return ""
 }

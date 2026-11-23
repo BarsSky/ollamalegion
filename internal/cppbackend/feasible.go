@@ -77,29 +77,58 @@ func (b *Backend) ComputeFeasible(modelName string) (*FeasibleInfo, error) {
 	//   Qwen3.6-35B-A3B:  2048 / 16 = 128 ✓
 	//   Llama-3-8B:        4096 / 32 = 128 ✓
 	//   Mistral-7B:        4096 / 32 = 128 ✓
-	// Fallback chain: C-bridge HeadDimK > NEmbd/NHeads > 128 (safe default).
 	//
-	// R700 (2026-11-23) — ЗАМЕР, НЕ ПРАВКА. Здесь остаётся оценка NEmbd/NHeads,
-	// хотя в GGUF есть точный <arch>.attention.key_length (поле h.KeyLength).
-	// Для Inkling-2-Mini это 2304/24 = 96 вместо 128 (KV на токен 36864 Б вместо
-	// 49152 Б), для gemma-4-E4B — 320 вместо 512. То есть KV ЗАНИЖАЕТСЯ, и
-	// рекомендованное окно завышается — но это свойство оценки ДО обновления
-	// пина, к b12642 отношения не имеет. Правка «сначала key_length» меняет
-	// числа у ВСЕХ моделей стенда (gemma-4: −37.5% окна), поэтому она вынесена
-	// из этой задачи и записана в отчёт как отдельный риск, а не сделана молча.
-	headDimK := h.HeadDimK
-	if headDimK == 0 && h.NEmbd > 0 && h.NHeads > 0 {
+	// R704 (2026-11-24) — ОЦЕНКА ЗАМЕНЕНА МЕТАДАННЫМИ.
+	//
+	// ЖИВОЙ ФАКТ. В заголовке GGUF есть ТОЧНЫЙ размер головы K/V —
+	// <arch>.attention.key_length / value_length (llama.cpp читает именно их,
+	// src/llama-hparams.cpp). Формула n_embd/n_heads с ними не совпадает, и KV
+	// занижался, а рекомендованное окно — завышалось:
+	//   Inkling-2-Mini: 2304/24 = 96 при key_length = 128 → KV на 25 % меньше
+	//                   (36 864 против 49 152 Б/токен при q4_0);
+	//   gemma-4-E4B:    2560/8  = 320 при key_length = 512 → KV на 37.5 %
+	//                   меньше (проверено по тензорам: blk.4.attn_q = 8×512);
+	//   Qwen3-4B:       2560/32 = 80 при key_length = 128 → KV на 60 % меньше
+	//                   (blk.0.attn_q = [2560, 4096] = 32×128).
+	//
+	// Поля приходят из того же парсера, где уже читаются head_count/head_count_kv
+	// (backend_gguf.go: ggufFieldSuffixes/ggufSetField, поля KeyLength/ValueLength;
+	// загрузчик пути "loaded_info" кладёт туда измеренные C-мостом HeadDimK/V).
+	//
+	// K и V могут быть РАЗНОЙ ширины (gemma-4: глобальные слои 512, SWA — 256;
+	// <arch>.attention.key_length_swa), поэтому байты на токен считаются как
+	// (keyLength + valueLength), а не как «2 × одна ширина». Если value_length нет —
+	// V считается равной K, как и раньше.
+	//
+	// Fallback chain сохранён: KeyLength > HeadDimK (C-мост) > NEmbd/NHeads > 128.
+	headDimK := h.KeyLength
+	if headDimK <= 0 {
+		headDimK = h.HeadDimK
+	}
+	if headDimK <= 0 && h.NEmbd > 0 && h.NHeads > 0 {
 		headDimK = h.NEmbd / h.NHeads
 	}
 	if headDimK <= 0 {
 		headDimK = 128 // safe upper bound (over-estimate → recommend less ctx, but safe)
 	}
+	headDimV := h.ValueLength
+	if headDimV <= 0 {
+		headDimV = headDimK
+	}
+	if headDimV <= 0 {
+		headDimV = 128
+	}
 
-	// KV per token: 2 (K + V) * NLayers * NKvHeads * HeadDimK * 2 bytes (fp16 baseline)
+	// KV per token: (K + V) * NLayers * NKvHeads * 2 bytes (fp16 baseline)
 	//   q4_0: / 4   (4-bit vs 16-bit)
 	//   q8_0: / 2   (8-bit vs 16-bit)
 	//   f16:  * 1   (baseline)
-	kvPerToken := 2 * h.NLayers * h.NKvHeads * headDimK * 2
+	//
+	// При key_length == value_length == headDimK это ровно прежняя формула
+	// 2 * NLayers * NKvHeads * headDimK * 2 — для моделей, где метаданные
+	// совпадают с оценкой (Qwen3.8-9B: 4096/16 = 256 = key_length), числа не
+	// меняются (тест «для модели с совпадающим head_dim числа не изменились»).
+	kvPerToken := (headDimK + headDimV) * h.NLayers * h.NKvHeads * 2
 	switch kvType {
 	case "q4_0":
 		kvPerToken = kvPerToken / 4
@@ -157,10 +186,17 @@ func (b *Backend) resolveGGUFAndKVType(modelName string) (*GGUFHeaderInfo, strin
 	// Path 1: loaded model — данные уже в памяти (no GGUF re-read)
 	if mi, err := b.GetModel(modelName); err == nil && mi != nil {
 		h := &GGUFHeaderInfo{
-			Architecture:  mi.Architecture,
-			NLayers:       mi.NLayers,
-			NHeads:        mi.NHeads,
-			NKvHeads:      mi.NKvHeads,
+			Architecture: mi.Architecture,
+			NLayers:      mi.NLayers,
+			NHeads:       mi.NHeads,
+			NKvHeads:     mi.NKvHeads,
+			// R704: у загруженной модели ширина головы K/V ИЗМЕРЕНА C-мостом
+			// (HeadDimK/HeadDimV после llama.cpp); это те же поля, что парсер
+			// заполняет из <arch>.attention.key_length/value_length, поэтому
+			// кладём их в KeyLength/ValueLength — ComputeFeasible читает один
+			// набор полей на всех путях (см. комментарий про head_dim там).
+			KeyLength:     mi.HeadDimK,
+			ValueLength:   mi.HeadDimV,
 			HeadDimK:      mi.HeadDimK,
 			HeadDimV:      mi.HeadDimV,
 			NEmbd:         mi.NEmbd,

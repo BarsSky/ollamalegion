@@ -42,6 +42,19 @@ const (
 	// ответ несёт причину, имя архитектуры и сборку llama.cpp (см.
 	// model_unsupported.go).
 	LoadFailureModelUnsupported = "model_unsupported"
+	// LoadFailureModelSchemaUnsupported — архитектуру сборка ЗНАЕТ, но схема
+	// тензоров не та: движок не нашёл ожидаемого тензора (R704, 2026-11-24).
+	//
+	// Отдельный код, потому что прежняя классификация отправляла такой текст в
+	// model_not_found: в строке llama.cpp `check_tensor_dims: tensor
+	// 'blk.24.attn_q.weight' not found` есть «not found», и машинный код врал —
+	// файл на месте, архитектура распознана (иначе движок не дошёл бы до
+	// тензоров). Живой случай — Inkling-2-Mini-UD-Q4_K_M.gguf на пине b12642:
+	// файл loop-развёрнут (24 физических блока при block_count=48, ключ
+	// num_loops), текущий загрузчик такую схему не читает. Лечится ре-экспортом
+	// GGUF, а не поиском файла — поэтому и код отдельный. См.
+	// model_schema_unsupported.go.
+	LoadFailureModelSchemaUnsupported = "model_schema_unsupported"
 	// LoadFailureBackendNotReady — бэкенд/менеджер моделей не инициализирован.
 	LoadFailureBackendNotReady = "backend_not_ready"
 	// LoadFailureTimeout — загрузка не уложилась в отведённое время.
@@ -84,6 +97,25 @@ func classifyLoadFailureReason(err error, errText string) LoadFailureReason {
 	// «формат/архитектура», и оператор идёт проверять целостность файла.
 	if isModelUnsupportedText(text) {
 		return LoadFailureModelUnsupported
+	}
+
+	// R704: ВТОРОЙ текстовой проверкой — «архитектура распознана, а схемы такой
+	// нет».
+	//
+	// ЖИВОЙ ФАКТ (стенд, пин b12642, Inkling-2-Mini-UD-Q4_K_M.gguf):
+	// `llama_model_load: error loading model: check_tensor_dims: tensor
+	// 'blk.24.attn_q.weight' not found`. До этой проверки текст уходил в
+	// model_not_found (ветка ниже ловит общее «not found»), и оператор шёл
+	// проверять наличие файла, которого не теряли: файл лежит, arch прочитан,
+	// движок ищет блоки, которых в файле нет (loop-развёрнутая схема).
+	//
+	// ПОЧЕМУ ИМЕННО ЗДЕСЬ. Проверка обязана стоять ПОСЛЕ вердикта про
+	// архитектуру (иначе «unknown model architecture» размажется в «схема») и
+	// ДО веток model_not_found/gguf_incompatible: в тексте есть «not found» и
+	// «failed to load model», то есть обе ветки ниже его уже присвоили бы себе.
+	// OOM и границы конфига сюда не попадают: в них нет имени тензора.
+	if isModelSchemaUnsupportedText(text) {
+		return LoadFailureModelSchemaUnsupported
 	}
 
 	switch {
@@ -130,7 +162,7 @@ func isLoadFailureReason(reason string) bool {
 		LoadFailureInsufficientResources, LoadFailureGGUFIncompatible,
 		LoadFailureBackendNotReady, LoadFailureTimeout,
 		LoadFailureAliasBroken, LoadFailureUnknown,
-		LoadFailureModelUnsupported:
+		LoadFailureModelUnsupported, LoadFailureModelSchemaUnsupported:
 		return true
 	}
 	return false
@@ -146,8 +178,11 @@ func loadFailureSeverity(reason LoadFailureReason) string {
 		return "error"
 	// R697: не «файл сломан», а «сборка не знает эту архитектуру» — оператору
 	// действовать (обновить сабмодуль/образ), поэтому error, а не warning.
+	//
+	// R704: то же для «схема файла не поддержана» — действовать нужно
+	// (ре-экспорт GGUF или новый загрузчик), повтор загрузки не поможет.
 	case LoadFailureModelNotFound, LoadFailureGGUFIncompatible, LoadFailureAliasBroken,
-		LoadFailureModelUnsupported:
+		LoadFailureModelUnsupported, LoadFailureModelSchemaUnsupported:
 		return "error"
 	case LoadFailureTimeout, LoadFailureBackendNotReady:
 		return "warning"

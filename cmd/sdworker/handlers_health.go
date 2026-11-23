@@ -42,27 +42,16 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleInfo — GET /info (диагностика: конфиг + ревизия контракта).
+//
+// R715 (D3): тело собирает infoSnapshotR715 — тот же сборщик кладёт info.json в
+// диагностический архив. Два независимых дампа со временем расходились бы
+// полями, и архив перестал бы совпадать с тем, что оператор видит в /info.
 func (a *App) handleInfo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "use GET")
 		return
 	}
-	cfg := a.svc.Config
-	writeJSON(w, http.StatusOK, map[string]any{
-		"version":                  version.Get().String(),
-		"pinned_sd_server_revision": sdbackend.PinnedRevision(),
-		"port":                     cfg.Port,
-		"sd_server_bin":            cfg.SDServerBin,
-		"sd_server_port":           cfg.ServerPort,
-		"models_dir":               cfg.ModelsDir,
-		"images_dir":               a.svc.Store.Dir(),
-		"idle_unload_minutes":      cfg.IdleUnloadMinutes,
-		"max_concurrent":           cfg.MaxConcurrent,
-		"generation_timeout_sec":   cfg.GenerationTimeoutSec,
-		"startup_timeout_sec":      cfg.StartupTimeoutSec,
-		"base_url":                 cfg.BaseURL,
-		"vram":                     sdbackend.QueryVRAM(r.Context()),
-	})
+	writeJSON(w, http.StatusOK, a.infoSnapshotR715(r.Context()))
 }
 
 // handleMetrics — GET /metrics (Prometheus text format).

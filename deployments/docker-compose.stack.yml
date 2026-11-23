@@ -198,6 +198,18 @@ services:
       #   agent     -> BALANCER_TOKEN
       #   webui     -> API_TOKEN
       - LB_API_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
+      # R715 (D3, часть 2): версия WebUI в диагностической сводке (summary.json →
+      # services.webui). Балансер НЕ ходит в webui по сети (правило диагностики:
+      # сеть только к бэкендам кластера), поэтому тег передаётся тем же
+      # значением, из которого собирается сам webui (deployments/.env).
+      #
+      # Источник = НАМЕРЕНИЕ оператора. Точный ФАКТ (что запечено в образ) даёт
+      # WEBUI_IDENTITY_FILE: положите копию /app/identity.json из контейнера
+      # webui (`docker cp ol-stack-webui:/app/identity.json ./webui-identity.json`)
+      # и смонтируйте её в балансер — services.webui возьмёт данные оттуда.
+      - WEBUI_TAG=${WEBUI_TAG:-}
+      - WEBUI_VERSION=${WEBUI_VERSION:-}
+      # WEBUI_IDENTITY_FILE=${WEBUI_IDENTITY_FILE:-}
       # Backend capacity = the ACTUAL number of model slots (cppworker reports
       # max_slots in /api/models), so the balancer admits as many parallel requests
       # as the loaded model has slots instead of serialising them.
@@ -386,10 +398,15 @@ services:
       # Ставить 10–20 на время живой проверки «воркер подвис и не отвечает».
       - LB_STREAM_FIRST_FRAME_ABORT_SEC=${LB_STREAM_FIRST_FRAME_ABORT_SEC:-0}
       # R390: сколько строк держать в буфере логов для панели и для выгрузки
-      # (`GET /api/v1/logs/export?format=txt`). 0/мусор = дефолт 2000, максимум
-      # 20000. Без этой проводки оператор задавал значение в .env, а балансер
-      # его не видел (ловил стюард R274).
-      - LB_LOG_BUFFER_ENTRIES=${LB_LOG_BUFFER_ENTRIES:-2000}
+      # (`GET /api/v1/logs/export?format=txt`). 0/мусор = дефолт 5000 (R715;
+      # было 2000 — окно 13 минут при 1565 одинаковых WARN на 2000 записей),
+      # максимум 20000. Без этой проводки оператор задавал значение в .env, а
+      # балансер его не видел (ловил стюард R274).
+      #
+      # R715: в буфер попадают РАЗНЫЕ события — повторы схлопываются в одну
+      # запись с repeated/last_time, поэтому 5000 записей покрывают больше
+      # времени, чем прежние 5000 строк, и памяти уходит меньше.
+      - LB_LOG_BUFFER_ENTRIES=${LB_LOG_BUFFER_ENTRIES:-5000}
       # R476: строка `request trace` на каждый запрос (request_id, статус,
       # длительность, бэкенд). По этому id ход находится в сводке воркера.
       # off | summary | full; пустое/неизвестное = summary.

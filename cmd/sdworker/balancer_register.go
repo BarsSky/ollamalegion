@@ -40,6 +40,7 @@ import (
 	"go.uber.org/zap"
 
 	"ollama-loadbalancer/internal/sdbackend"
+	"ollama-loadbalancer/pkg/version"
 )
 
 // errRegistrationConflict — балансер ответил 409: ID занят записью, которую он
@@ -60,6 +61,19 @@ type registerPayload struct {
 	MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
 	MaxModels         int      `json:"maxModels"`
 	Labels            []string `json:"labels"`
+
+	// R715 (D3, часть 2): релизная идентичность образа — как у cppworker (R486).
+	//
+	// ЗАЧЕМ. Без этих полей в summary.json (секция services) у image-воркера не
+	// было версии: балансер знал только host/port, и по архиву нельзя было
+	// сказать, какой образ крутится на узле. Значения приходят ЗАПЕЧЁННЫМИ
+	// (pkg/version: -ldflags > /app/identity.json > env), а не из намерения
+	// оператора в .env.
+	WorkerVersion        string `json:"workerVersion,omitempty"`
+	WorkerCommit         string `json:"workerCommit,omitempty"`
+	WorkerBuildDate      string `json:"workerBuildDate,omitempty"`
+	WorkerRPCProto       string `json:"workerRpcProto,omitempty"`
+	WorkerIdentitySource string `json:"workerIdentitySource,omitempty"`
 }
 
 // balancerRegistration — состояние авторегистрации.
@@ -164,6 +178,19 @@ func (r *balancerRegistration) register(ctx context.Context, log *zap.SugaredLog
 		MaxConcurrentReqs: r.concurrent,
 		MaxModels:         1, // одна модель на процесс sd-server (hot-swap нет)
 		Labels:            []string{"sdworker", "auto-registered", "image"},
+	}
+	// R715 (D3): версия/коммит образа — в регистрацию, чтобы она была видна в
+	// summary.json → services.imageworker[] (и в /api/v1/backends).
+	about := version.Get()
+	payload.WorkerVersion = about.Version
+	payload.WorkerCommit = about.Commit
+	payload.WorkerBuildDate = about.BuildDate
+	payload.WorkerRPCProto = about.RPCProto
+	switch {
+	case version.BakedIdentityR486() != nil:
+		payload.WorkerIdentitySource = "baked_identity"
+	case about.Commit != "" || about.Version != "":
+		payload.WorkerIdentitySource = "ldflags"
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

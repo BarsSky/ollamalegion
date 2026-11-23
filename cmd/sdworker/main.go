@@ -80,6 +80,11 @@ func main() {
 	logger.Init(logLevel)
 	log := logger.Get()
 
+	// R715 (D3): кольцевой буфер логов процесса для диагностического архива
+	// (GET /api/v1/sdworker/debug/bundle). До этого image-воркер писал только в
+	// stdout, и его логи в архив стенда не попадали никак.
+	initDebugLogBufferR715()
+
 	cfg, err := loadConfig()
 	if err != nil {
 		log.Fatalw("invalid configuration", "error", err)

@@ -29,6 +29,16 @@ func (a *App) setupRouter() http.Handler {
 	mux.HandleFunc("/metrics", a.handleMetrics)
 	mux.HandleFunc("/info", a.handleInfo)
 	mux.HandleFunc("/api/image/info", a.handleInfo)
+	// R715 (D3): диагностический архив image-воркера — аналог
+	// /api/v1/cppworker/debug/bundle. Балансер забирает его в свой архив стенда
+	// (internal/api/diag_bundle.go), поэтому у image-воркера в архиве наконец
+	// есть логи, модели, версия и состояние загрузок, а не только note.txt.
+	//
+	// Два пути: канонический (симметричный cppworker) и короткий алиас
+	// /api/debug/bundle — его называют в заявках на разбор и в документации,
+	// и 404 на «человеческом» пути выглядел бы как «архив не сделали».
+	mux.HandleFunc("/api/v1/sdworker/debug/bundle", a.handleDebugBundle)
+	mux.HandleFunc("/api/debug/bundle", a.handleDebugBundle)
 
 	// --- OpenAI-совместимая поверхность ---
 	mux.HandleFunc("/v1/images/generations", a.handleOpenAIImagesGenerations)

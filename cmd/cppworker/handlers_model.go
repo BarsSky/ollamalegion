@@ -497,6 +497,12 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			logger.Get().Errorw("failed to load model (sync)", "name", modelName, "error", loadErr)
+			// R697 (2026-11-24): «движок не знает архитектуру» — отдельный ответ 409
+			// с именем архитектуры, сборкой llama.cpp и подсказкой, а не общий 500
+			// «load failed: …from <путь>». См. model_unsupported.go.
+			if respondModelUnsupportedR697(w, modelName, loadErr) {
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "load failed: "+loadErr.Error())
 			return
 		}

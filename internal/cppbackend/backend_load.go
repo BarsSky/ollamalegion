@@ -598,7 +598,12 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		if b.metrics != nil {
 			b.metrics.RecordRequest(name, 0, 0, false)
 		}
-		return fmt.Errorf("load model %s: %w", name, err)
+		// R697 (2026-11-24): мост на провал загрузки отвечает только «failed to load
+		// model from <путь>» — настоящая причина (unknown model architecture и т.п.)
+		// остаётся в перехваченном логе llama.cpp. Приклеиваем вердикт ЗДЕСЬ, один
+		// раз, чтобы его увидели все потребители: ответ /api/models/load, реестр
+		// провалов (load_failures) и уведомление оператору. См. load_error_tail.go.
+		return LoadErrorWithTail(fmt.Errorf("load model %s: %w", name, err))
 	}
 
 	// R248/B3 (2026-10-27): mmproj passthrough — проектор грузится ПОСЛЕ

@@ -356,7 +356,9 @@ func runAsyncLoad(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 		// R66d: запоминаем причину — иначе провалившаяся async-загрузка
 		// неотличима от «ещё грузится» (см. load_failures.go), и клиент
 		// получает бесконечное «подожди 90 секунд».
-		loadFailures.record(modelName, loadErr)
+		// R697 (2026-11-24): причина пишется вместе с диагностикой (архитектура +
+		// сборка llama.cpp) — из неё балансер строит текст уведомления оператору.
+		recordLoadFailureR697(modelName, loadErr)
 		// Backend already cleaned up b.models[name] in LoadModelWithOpts error path
 		// (line ~646 in backend.go). The instance is removed.
 	} else {
@@ -503,7 +505,8 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 		logger.Get().Errorw("runAsyncReload: load with new params failed",
 			"name", modelName, "error", loadErr)
 		// R66d: помним причину провала reload (см. load_failures.go).
-		loadFailures.record(modelName, loadErr)
+		// R697: с диагностикой — reload мог упереться в неподдерживаемую архитектуру.
+		recordLoadFailureR697(modelName, loadErr)
 		// Rollback: try to reload with old params.
 		oldOpts := cppbackend.LoadModelOpts{
 			GPULayers:     current.GPULayers,

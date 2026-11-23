@@ -112,17 +112,25 @@ func (mm *ModelManager) pollLoadCompletionUntilLoaded(
 
 		// 2. /api/models/load/progress — там state="failed" + error (R66d).
 		// Это основной сигнал: cppworker теперь помнит причину провала.
-		state, errText, fromProgress := mm.fetchLoadProgress(pollClient, host, port, backendID, modelName)
+		state, errText, reason, fromProgress := mm.fetchLoadProgressWithReason(pollClient, host, port, backendID, modelName)
 		if state == "failed" {
 			logger.Get().Errorw("executeLlamaCppLoad: load reported failed by cppworker, stop polling",
-				"backend", backendID, "model", modelName, "error", errText,
+				"backend", backendID, "model", modelName, "error", errText, "reason", reason,
 				"elapsed_ms", int(time.Since(deadline.Add(-maxWait)).Milliseconds()))
+			// R697: неподдерживаемая архитектура — терминальный отказ воркера, а не
+			// наш сбой. StatusCode воркера переносим в результат, чтобы HTTP-слой
+			// отдал 409 (modelOpStatusCode), а не 500 «повтори».
+			workerStatus := 0
+			if reason == "model_unsupported" {
+				workerStatus = http.StatusConflict
+			}
 			return &ModelOpResult{
-				Success:   false,
-				Operation: "load",
-				ModelName: modelName,
-				BackendID: backendID,
-				Error:     fmt.Sprintf("auto-load failed: %s", errText),
+				Success:      false,
+				Operation:    "load",
+				ModelName:    modelName,
+				BackendID:    backendID,
+				WorkerStatus: workerStatus,
+				Error:        fmt.Sprintf("auto-load failed: %s", errText),
 			}
 		}
 
@@ -193,36 +201,51 @@ func (mm *ModelManager) pollLoadCompletionUntilLoaded(
 func (mm *ModelManager) fetchLoadProgress(
 	client *http.Client, host string, port int, backendID, modelName string,
 ) (state string, errText string, known bool) {
+	state, errText, _, known = mm.fetchLoadProgressWithReason(client, host, port, backendID, modelName)
+	return state, errText, known
+}
+
+// fetchLoadProgressWithReason — то же, плюс машиночитаемый код причины (R697).
+//
+// ЗАЧЕМ КОД. Провал «архитектура не поддерживается сборкой llama.cpp» нельзя считать
+// транзиентным: 500 на него значит «повтори, станет лучше», и клиенты (Cline,
+// OpenWebUI) повторяют, а оператор видит поломку вместо ограничения движка. По коду
+// async-путь загрузки отдаёт терминальный 409 — ровно как это уже делает sync-путь
+// самого cppworker (cmd/cppworker/model_unsupported.go).
+func (mm *ModelManager) fetchLoadProgressWithReason(
+	client *http.Client, host string, port int, backendID, modelName string,
+) (state string, errText string, reason string, known bool) {
 	url := fmt.Sprintf("http://%s:%d/api/models/load/progress?model=%s", host, port, urlQueryEscape(modelName))
 	resp, err := client.Get(url)
 	if err != nil {
 		logger.Get().Debugw("pollLoadCompletion: load/progress poll failed",
 			"backend", backendID, "model", modelName, "error", err)
-		return "", "", false
+		return "", "", "", false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		// «model not found and not loading» — cppworker не знает про модель.
-		return "", "", false
+		return "", "", "", false
 	}
 	body, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	var pr struct {
-		State string `json:"state"`
-		Error string `json:"error"`
+		State  string `json:"state"`
+		Error  string `json:"error"`
+		Reason string `json:"reason"`
 	}
 	if json.Unmarshal(body, &pr) != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	switch pr.State {
 	case "failed":
-		return "failed", pr.Error, true
+		return "failed", pr.Error, pr.Reason, true
 	case "loading", "loaded":
-		return pr.State, pr.Error, true
+		return pr.State, pr.Error, pr.Reason, true
 	default:
-		return "", pr.Error, false
+		return "", pr.Error, pr.Reason, false
 	}
 }
 

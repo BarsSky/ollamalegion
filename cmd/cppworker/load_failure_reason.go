@@ -32,6 +32,16 @@ const (
 	LoadFailureInsufficientResources = "insufficient_resources"
 	// LoadFailureGGUFIncompatible — файл есть, но llama.cpp его не принял.
 	LoadFailureGGUFIncompatible = "gguf_incompatible"
+	// LoadFailureModelUnsupported — llama.cpp не знает АРХИТЕКТУРУ модели
+	// (R697, 2026-11-24).
+	//
+	// Отдельный код, потому что это не «битый файл»: заголовок GGUF читается,
+	// general.architecture называет архитектуру, которой нет в таблице сборки
+	// (c/llama.cpp: src/llama-arch.cpp, LLM_ARCH_NAMES). Оператору бесполезно
+	// «проверить файл» — нужно обновить сабмодуль и образ воркера, поэтому
+	// ответ несёт причину, имя архитектуры и сборку llama.cpp (см.
+	// model_unsupported.go).
+	LoadFailureModelUnsupported = "model_unsupported"
 	// LoadFailureBackendNotReady — бэкенд/менеджер моделей не инициализирован.
 	LoadFailureBackendNotReady = "backend_not_ready"
 	// LoadFailureTimeout — загрузка не уложилась в отведённое время.
@@ -61,6 +71,19 @@ func classifyLoadFailureReason(err error, errText string) LoadFailureReason {
 	var irErr *InsufficientResourcesError
 	if errors.As(err, &irErr) {
 		return LoadFailureInsufficientResources
+	}
+
+	// R697: ПЕРВОЙ текстовой проверкой — вердикт движка про архитектуру.
+	//
+	// ЖИВОЙ ФАКТ: llama.cpp на таком файле печатает
+	// `llama_model_load: error loading model: unknown model architecture: 'inkling2'`,
+	// а мост отдаёт «failed to load model from <путь>» (см.
+	// internal/cppbackend/load_error_tail.go — причина теперь приклеивается к
+	// ошибке). Проверка обязана стоять ДО общей ветки gguf/unsupported: иначе
+	// осмысленный «архитектура не поддерживается сборкой» размазывается в
+	// «формат/архитектура», и оператор идёт проверять целостность файла.
+	if isModelUnsupportedText(text) {
+		return LoadFailureModelUnsupported
 	}
 
 	switch {
@@ -106,7 +129,8 @@ func isLoadFailureReason(reason string) bool {
 	case LoadFailureModelNotFound, LoadFailureConfigOutOfBounds,
 		LoadFailureInsufficientResources, LoadFailureGGUFIncompatible,
 		LoadFailureBackendNotReady, LoadFailureTimeout,
-		LoadFailureAliasBroken, LoadFailureUnknown:
+		LoadFailureAliasBroken, LoadFailureUnknown,
+		LoadFailureModelUnsupported:
 		return true
 	}
 	return false
@@ -120,7 +144,10 @@ func loadFailureSeverity(reason LoadFailureReason) string {
 	switch reason {
 	case LoadFailureConfigOutOfBounds, LoadFailureInsufficientResources:
 		return "error"
-	case LoadFailureModelNotFound, LoadFailureGGUFIncompatible, LoadFailureAliasBroken:
+	// R697: не «файл сломан», а «сборка не знает эту архитектуру» — оператору
+	// действовать (обновить сабмодуль/образ), поэтому error, а не warning.
+	case LoadFailureModelNotFound, LoadFailureGGUFIncompatible, LoadFailureAliasBroken,
+		LoadFailureModelUnsupported:
 		return "error"
 	case LoadFailureTimeout, LoadFailureBackendNotReady:
 		return "warning"

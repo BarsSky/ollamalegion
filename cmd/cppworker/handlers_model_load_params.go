@@ -507,6 +507,11 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			logger.Get().Errorw("failed to load model (load-with-params sync)", "name", modelName, "error", loadErr)
+			// R697 (2026-11-24): тот же отказ по архитектуре, что и на legacy-пути
+			// (см. model_unsupported.go) — 409 с причиной вместо общего 500.
+			if respondModelUnsupportedR697(w, modelName, loadErr) {
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "load failed: "+loadErr.Error())
 			return
 		}
@@ -578,13 +583,10 @@ func handleLoadProgress(w http.ResponseWriter, r *http.Request) {
 		}
 		// R66d: добавляем провалившиеся загрузки. Без этого «failed» был
 		// неотличим от «ничего не происходит» (см. load_failures.go).
+		// R697: вместе с кодом причины и подсказкой — поллер (WebUI) показывает
+		// их как есть, разбирать текст ошибки ему больше не нужно.
 		for failedName, fe := range loadFailures.list() {
-			out = append(out, map[string]interface{}{
-				"name":     failedName,
-				"state":    "failed",
-				"error":    fe.Err,
-				"failedAt": fe.At.UTC().Format(time.RFC3339Nano),
-			})
+			out = append(out, failedLoadProgressR697(failedName, fe))
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"models": out, "count": len(out)})
 		return
@@ -613,12 +615,7 @@ func handleLoadProgress(w http.ResponseWriter, r *http.Request) {
 		// 404 «model not found and not loading», из-за чего балансер продолжал
 		// поллинг до maxWait и кормил клиента «подожди 90 секунд»).
 		if fe, ok := loadFailures.get(name); ok {
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"name":     name,
-				"state":    "failed",
-				"error":    fe.Err,
-				"failedAt": fe.At.UTC().Format(time.RFC3339Nano),
-			})
+			writeJSON(w, http.StatusOK, failedLoadProgressR697(name, fe))
 			return
 		}
 		writeError(w, http.StatusNotFound, "model not found and not loading: "+name)

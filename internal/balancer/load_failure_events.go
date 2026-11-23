@@ -247,6 +247,27 @@ func loadFailureEventMessage(lf *types.LoadFailureInfo) string {
 			": уменьшите n_ctx или используйте меньшую модель."
 	case "gguf_incompatible":
 		return "Файл модели " + model + " не принят llama.cpp (формат/архитектура)."
+	// R697 (2026-11-24): «сборка не знает архитектуру» — отдельная формулировка с
+	// именем архитектуры и сборкой, а не «файл не принят».
+	//
+	// ЖИВОЙ СЛУЧАЙ: модель Inkling-2-Mini (general.architecture="inkling2") на
+	// воркере gpu-r660; llama.cpp отвечал unknown model architecture, но оператор
+	// видел только «файл модели не принят (формат/архитектура)» — то есть шёл
+	// проверять файл, хотя лечится обновлением сабмодуля и пересборкой образа.
+	// Текст строится здесь (а не в WebUI), поэтому bell-меню показывает его как есть.
+	case "model_unsupported":
+		msg := "Архитектура модели " + model + " не поддерживается сборкой llama.cpp"
+		if arch, ok := lf.Diagnostics["arch"].(string); ok && arch != "" {
+			msg += " (" + arch + ")"
+		}
+		if build, ok := lf.Diagnostics["llama_build"].(string); ok && build != "" {
+			msg += " " + build
+		}
+		msg += ": файл новее движка, повторы не помогут."
+		if hint, ok := lf.Diagnostics["hint"].(string); ok && hint != "" {
+			msg += " Что делать: " + hint
+		}
+		return msg
 	case "backend_not_ready":
 		return "Бэкенд не готов к загрузке " + model + " (менеджер моделей не инициализирован)."
 	case "load_timeout":

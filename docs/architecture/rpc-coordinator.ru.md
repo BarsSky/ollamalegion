@@ -265,7 +265,7 @@ Circuit breaker state можно посмотреть через `/api/v1/rpc/wo
 
 | Слой | Артефакт |
 |---|---|
-| Переменные | `CPPWORKER_RPC_SERVERS` (`host:port,host:port`), `CPPWORKER_RPC_ENABLE`, `CPPWORKER_MAIN_GPU`, `CPPWORKER_LLAMA_BUILD` — разбор и валидация: `cmd/cppworker/rpc_env_r101.go` |
+| Переменные | `CPPWORKER_RPC_SERVERS` (`host:port,host:port`), `CPPWORKER_RPC_ENABLE`, `CPPWORKER_MAIN_GPU`, `CPPWORKER_LLAMA_BUILD` — разбор и валидация: `cmd/cppworker/rpc_env.go` |
 | Конфиг | `cppbackend.Config.RPCServers / RPCEnabled / LlamaBuild` |
 | Мост | `bridge.ModelConfig.RPCServers` заполняется в `LoadModelWithOpts` (`applyRPCServersR105`) |
 | Версия сборки | `CPPWORKER_LLAMA_BUILD` → регистрация → `types.Backend.BuildInfo` → проверка совместимости сторон RPC в `POST /api/v1/placement/validate` (`version_mismatch`); R486: ФАКТ берётся из запечённого в образ коммита (`/app/identity.json`, `llama_commit`), env — только переопределение оператора |
@@ -273,7 +273,7 @@ Circuit breaker state можно посмотреть через `/api/v1/rpc/wo
 | Балансер | логический бэкенд (группа), `strategy: sharded`, маршрутизация на мастера, фит по СУММЕ узлов — всё готово и покрыто тестами |
 
 Версия протокола RPC теперь сравнивается, а не только коммит (R486). Гейт
-допуска узла R115 (`internal/cppbackend/rpc_version_gate_r115.go`) сверяет пару
+допуска узла R115 (`internal/cppbackend/rpc_version_gate.go`) сверяет пару
 «коммит + `RPC_PROTO_*`»: обе стороны сообщают версию, запечённую в образ из
 `ggml-rpc.h` (у мастера — свой процесс, у узла — `GET
 /api/v1/cppworker/config` → `config.rpcProto`). Расхождение даёт причину

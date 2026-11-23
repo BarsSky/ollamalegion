@@ -14,7 +14,7 @@
 
 > **СТАТУС 2026-11-12: ОБА ИСКАЖЕНИЯ ИСПРАВЛЕНЫ (R493-12a).** Ниже — как было и
 > почему. Формулы после правки и проверки — в §1.4; код:
-> `internal/balancer/stats_windows_r493.go`, тесты
+> `internal/balancer/stats_time_window.go`, тесты
 > `stats_windows_r493_test.go`, `stats_characterization_r493_test.go`,
 > `stats_windows_wiring_r493_test.go`.
 
@@ -139,7 +139,7 @@ tokens_per_second    = 48.66       ← появился (правка кадра
 запрос и ждёт ответа. Знает её только воркер. Поэтому:
 
 * cppworker измеряет `ensureModelLoadedWithNCtx` и кладёт `load_duration` в
-  done-кадр (`cmd/cppworker/load_duration_r493.go`; ячейка живёт в контексте
+  done-кадр (`cmd/cppworker/load_duration.go`; ячейка живёт в контексте
   запроса — сигнатуры обработчиков не менялись);
 * балансер в `applyStatsWindowsNativeR493` складывает СВОЁ ожидание в
   очереди/preflight с `load_duration` воркера, и уже сумму пишет в кадр;
@@ -377,8 +377,8 @@ R83 гейт n_ctx: тип KV-cache из плана загрузки            
 /api/chat stream response summary                            (нет счётчиков токенов)
 ```
 
-Причина: `cmd/cppworker/debug_bundle_r476.go` писал только `LogEntry.Message`.
-Балансерная половина была починена раньше (`internal/api/diag_bundle_r476.go`),
+Причина: `cmd/cppworker/debug_bundle.go` писал только `LogEntry.Message`.
+Балансерная половина была починена раньше (`internal/api/diag_bundle.go`),
 воркерная осталась — тот же класс дефекта «правка в одном месте». Закрыто 12g:
 общий форматтер `pkg/logger/fields_text.go`. Живая проверка на локальном стенде:
 балансерный дамп — 22 строки с полями из 27, воркерный — **135 из 138** (до

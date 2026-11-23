@@ -343,7 +343,7 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | «primary мешает» | `primary is deprecated and ignored (R401)` | `primary_model_policy.go` |
 | «воркер завис: active_queries=1, GPU простаивает» | `inference: all slots busy, request will wait` (R413) → есть ли `inference: slot acquired after waiting`; отсутствие `stream response summary` при завершённых HTTP-запросах | `internal/cppbackend/slot_manager.go` (`Acquire`, `releaseInternal`), `backend.go` (`GenerateStreamWithAbort`) |
 | «AutoTune reload: 401 invalid or missing API token» | `autotune reload failed … unload failed: cppworker error (HTTP 401)`; в `unload` нет `X-API-Token` | `internal/balancer/autotune.go` (`executeLlamaCppUnload`), `worker_admin_token_r307.go` |
-| «в ответе виден `<channel\|>` / `</think>`» | `streamed_content_bytes`, сырой хвост дельты; на tools-пути искать `toolsStreamMarkerScanR414` | `cmd/cppworker/tools_stream_markers_r414.go`, `handlers_chat.go` |
+| «в ответе виден `<channel\|>` / `</think>`» | `streamed_content_bytes`, сырой хвост дельты; на tools-пути искать `toolsStreamMarkerScanR414` | `cmd/cppworker/tools_stream_markers.go`, `handlers_chat.go` |
 | «Cline компактит при малом usage» / «ответ обрезан на 4096» | `budget_exhausted`, `n_predict` в summary; сравнить с `max_output_tokens` запроса | `handlers_generate.go` (`buildGenerationParams`), `reasoning_content.go` (`ResolveNPredict`) |
 | «модель перезагружается после каждого ответа» | `autotune: triggering async reload … kv_cache q8_0 → q4_0` (и обратно); `loaded_at` меняется | `autotune_kv_guard_r416.go`, `autotune.go` (`triggerAutoTuneReload`, план-билдер) |
 | «content = пояснение, но tool_calls валидны» | `terminalContentR417`/`nonStreamContentR417`; content-пояснение рядом с вызовом | `tools_terminal_reason_r394.go`, `handlers_chat.go` |
@@ -367,18 +367,18 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | Генерация (native) | `cmd/cppworker/handlers_chat.go` | `handleChat`, `writeChatStreamResponse*` |
 | Генерация (OpenAI) | `cmd/cppworker/handlers_openai.go` | `handleV1ChatCompletions`, `writeOpenAIChatStream`, `emitOpenAIUsageChunkSafe` |
 | Генерация (`/api/generate`) | `cmd/cppworker/handlers_generate.go` | `handleGenerate`, стрим-ветка |
-| Терминальные причины | `cmd/cppworker/tools_terminal_reason_r394.go` | `toolsBudgetExhaustedR394`, `toolsTerminalReasonR394` |
+| Терминальные причины | `cmd/cppworker/tools_terminal_reason.go` | `toolsBudgetExhaustedR394`, `toolsTerminalReasonR394` |
 | Слоты воркера | `internal/cppbackend/slot_manager.go`, `backend.go` | `Acquire`, `releaseInternal`, `GenerateStreamWithAbort` |
-| Маркеры в потоке | `cmd/cppworker/tools_stream_markers_r414.go` | `toolsStreamMarkerScanR414`, `toolsStreamMarkerPrefixHoldbackR414` |
+| Маркеры в потоке | `cmd/cppworker/tools_stream_markers.go` | `toolsStreamMarkerScanR414`, `toolsStreamMarkerPrefixHoldbackR414` |
 | Политика n_predict | `cmd/cppworker/reasoning_content.go` | `ResolveNPredict`, `DefaultNPredictReasoning`, `ReasoningArchPrefixes` |
 | AutoTune: нижняя граница окна | `internal/balancer/autotune.go` | `autoTuneMinContextR425`, `PlanApplyAutoTuneWithMinContext` |
-| Профили моделей (замок) | `internal/balancer/model_profiles_guard_r423.go`, `internal/api/model_profiles_r423.go` | `profilesSnapshotR423`, `ReplaceModelProfiles`, `UpdateModelProfile`, `SwapConfigContentR423` |
-| AutoTune: гарды KV/слоёв/окна | `internal/balancer/autotune_kv_guard_r416.go`, `autotune.go` | `guardAutoTuneKVPlanR416`, `autoTunePlanHasRealChangeR416d`, `PlanApplyAutoTuneWithMinContext` |
-| Терминальный content с tool_calls | `cmd/cppworker/tools_terminal_reason_r394.go` | `terminalContentR417`, `nonStreamContentR417` |
+| Профили моделей (замок) | `internal/balancer/model_profiles_guard.go`, `internal/api/model_profiles.go` | `profilesSnapshotR423`, `ReplaceModelProfiles`, `UpdateModelProfile`, `SwapConfigContentR423` |
+| AutoTune: гарды KV/слоёв/окна | `internal/balancer/autotune_kv_guard.go`, `autotune.go` | `guardAutoTuneKVPlanR416`, `autoTunePlanHasRealChangeR416d`, `PlanApplyAutoTuneWithMinContext` |
+| Терминальный content с tool_calls | `cmd/cppworker/tools_terminal_reason.go` | `terminalContentR417`, `nonStreamContentR417` |
 | Метаданные модели | `cmd/cppworker/handlers_model.go` | `handleOllamaShow`, `writeOllamaShowLoadedResponse` |
 | Транспорт/трансляции | `internal/balancer/llamacpp_transport.go`, `llamacpp_translate_resp.go`, `anthropic_r247.go` | `stripNativeDoneContent`, `translateUsageChunkToOllama` |
 | Очередь/допуск | `internal/balancer/admission_queue.go`, `unified_queue_r73.go` | admission, `X-Queue-*` |
-| Ожидание бэкенда | `internal/balancer/backend_wait_queue_r403.go` | `waitBackendR403`, `waitForLlamaCppBackendR403` |
+| Ожидание бэкенда | `internal/balancer/backend_wait_queue.go` | `waitBackendR403`, `waitForLlamaCppBackendR403` |
 | Статистика токенов | `internal/balancer/stats*.go`, `llamacpp_transport.go` | `recordTokenUsage` |
 
 ---

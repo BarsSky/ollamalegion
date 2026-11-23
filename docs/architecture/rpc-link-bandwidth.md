@@ -19,7 +19,7 @@ the composition will be rejected for nothing.
 
 ## 2. The ladder of sources (top to bottom)
 
-The resolver is `internal/balancer/link_bandwidth_r166.go`, function `LinkBandwidthInfo`.
+The resolver is `internal/balancer/link_bandwidth.go`, function `LinkBandwidthInfo`.
 
 | Priority | Source (`source`) | Where it comes from | When it is used |
 |---|---|---|---|
@@ -50,7 +50,7 @@ The API response (and the panel) always contains the `bandwidth` field:
 
 ### Balancer
 
-* `StartRPCLinkMeasurer` (`internal/balancer/rpc_link_measure_r118.go`) starts at
+* `StartRPCLinkMeasurer` (`internal/balancer/rpc_link_measure.go`) starts at
   startup: **the first measurement after 30 s** (nodes have time to register), then once every
   `LB_RPC_LINK_MEASURE_SEC` (default 900 s; `0` disables it).
 * Measurements are made only to nodes with the `main`/`donor` role.
@@ -58,7 +58,7 @@ The API response (and the panel) always contains the `bandwidth` field:
 
 ### Backend (cppworker)
 
-`/api/info` returns a `net` block (R166, `cmd/cppworker/netlink_r166.go`):
+`/api/info` returns a `net` block (R166, `cmd/cppworker/netlink.go`):
 
 ```json
 "net": {"interface": "eth0", "mtu": 1500, "source": "detected",

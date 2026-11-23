@@ -311,7 +311,7 @@ machines, so it could be neither written nor verified in a session without a sta
 
 | Layer | Artifact |
 |---|---|
-| Variables | `CPPWORKER_RPC_SERVERS` (`host:port,host:port`), `CPPWORKER_RPC_ENABLE`, `CPPWORKER_MAIN_GPU`, `CPPWORKER_LLAMA_BUILD` — parsing and validation: `cmd/cppworker/rpc_env_r101.go` |
+| Variables | `CPPWORKER_RPC_SERVERS` (`host:port,host:port`), `CPPWORKER_RPC_ENABLE`, `CPPWORKER_MAIN_GPU`, `CPPWORKER_LLAMA_BUILD` — parsing and validation: `cmd/cppworker/rpc_env.go` |
 | Config | `cppbackend.Config.RPCServers / RPCEnabled / LlamaBuild` |
 | Bridge | `bridge.ModelConfig.RPCServers` is filled in `LoadModelWithOpts` (`applyRPCServersR105`) |
 | Build version | `CPPWORKER_LLAMA_BUILD` → registration → `types.Backend.BuildInfo` → check of the RPC side compatibility in `POST /api/v1/placement/validate` (`version_mismatch`) |

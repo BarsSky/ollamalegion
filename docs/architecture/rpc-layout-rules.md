@@ -227,7 +227,7 @@ tree, so there is no separate "fast" path for a Go change in this image.
 ## 9. Node admission by version (R115): a mismatched commit is not "let's try" but a refusal
 
 The rule from section 1 stopped being advice and became a check in the code
-(`internal/cppbackend/rpc_version_gate_r115.go`).
+(`internal/cppbackend/rpc_version_gate.go`).
 
 **Where the master learns the node's version from.** `rpc-server` does not expose HTTP, so
 the **node's cppworker surface** is queried: `GET /api/v1/cppworker/config` ->

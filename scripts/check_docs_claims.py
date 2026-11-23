@@ -92,8 +92,9 @@ def main(argv):
         text = io.open(path, encoding='utf-8', errors='replace').read()
         for m in PATH_RE.finditer(text):
             ref = m.group(1)
-            # Строка-план (`- [ ] файл`) и упоминание удалённого файла — это не
-            # утверждение «файл есть», а намерение либо история.
+            # Строка-план (`- [ ] файл`) и упоминание удалённого или
+            # переименованного файла — это не утверждение «файл есть», а намерение
+            # либо история.
             prev_nl = text.rfind(chr(10), 0, m.start())
             line_text = text[prev_nl + 1:text.find(chr(10), m.start())]
             # Смотрим и предыдущую строку: «удалены A и» / «B» — одно утверждение.
@@ -101,8 +102,14 @@ def main(argv):
                 prev_prev = text.rfind(chr(10), 0, prev_nl)
                 line_text += ' ' + text[prev_prev + 1:prev_nl]
             low_path = line_text.lower()
+            # «переименовал / переименован(о)» — ОПИСАНИЕ переименования: старое имя
+            # в нём цитируется как история (docs/architecture/debts.ru.md §15d), а
+            # не утверждается как существующее. Инфинитив «переименовать» (задача в
+            # списке дел) намеренно НЕ подходит — такое имя проверяем.
             if ('- [ ]' in line_text or '~~' in line_text or 'удален' in low_path
-                    or 'удалён' in low_path or 'removed' in low_path):
+                    or 'удалён' in low_path or 'removed' in low_path
+                    or 'переименовал' in low_path or 'переименован' in low_path
+                    or 'renamed' in low_path):
                 continue
             if any(tok in ref for tok in ('<', '>', '*', '…', '$', '{', '}')):
                 continue

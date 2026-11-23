@@ -462,7 +462,7 @@ polling loop (модель state=loading, но polling тоже падал).
 
 **Решение (R246).**
 
-- `cmd/cppworker/tool_code_form_r246.go` + `internal/balancer/toolcall_tool_code_r246.go`:
+- `cmd/cppworker/tool_code_form.go` + `internal/balancer/toolcall_tool_code.go`:
   разбор `[tool_code]`/```tool_code (питоновский вызов, `print(…)` опционален,
   несколько вызовов в блоке), вырезание разметки из видимого текста, удержание
   маркеров в потоковом выводе.
@@ -471,7 +471,7 @@ polling loop (модель state=loading, но polling тоже падал).
   задано», а валидатор клиента на null отвечает ошибкой), обязательное поле в
   множественном написании переименовывается (`queries` → `query`), массив из
   одного элемента при объявленной строке становится строкой.
-- `cmd/cppworker/tool_history_r246.go` + `c/bridge`: tool-история уходит в шаблон
+- `cmd/cppworker/tool_history.go` + `c/bridge`: tool-история уходит в шаблон
   СТРУКТУРНО (`tool_calls`, `tool_call_id`). Форма выбирается по шаблону модели;
   правило тройное и покрыто тестом `TestR246_RealTemplatesChooseSafePath` на
   68 реальных шаблонах `c/llama.cpp/models/templates/*.jinja`:

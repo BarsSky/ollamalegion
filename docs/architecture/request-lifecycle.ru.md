@@ -213,7 +213,7 @@ flowchart TB
 | что видит клиент про окно | `context_size`, `context_size_total`, `parallel` | `handlers_model.go` |
 | ждёт ли запрос слот воркера | `inference: all slots busy, request will wait` → `inference: slot acquired after waiting` | `internal/cppbackend/backend.go` |
 | почему AutoTune reload не применился | `autotune reload failed … unload failed: cppworker error (HTTP 401)` | `internal/balancer/autotune.go` |
-| откуда в ответе `<channel\|>` | сырой хвост дельты; на tools-пути — `toolsStreamMarkerScanR414` | `cmd/cppworker/tools_stream_markers_r414.go` |
+| откуда в ответе `<channel\|>` | сырой хвост дельты; на tools-пути — `toolsStreamMarkerScanR414` | `cmd/cppworker/tools_stream_markers.go` |
 
 ---
 

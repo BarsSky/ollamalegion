@@ -124,7 +124,7 @@
     handler-путём (роутер), при любом составе кластера. Это измеренные «два
     мозга»: тест падает, если пути сойдутся (тогда его правят вместе с
     refactoring-plan.ru.md) или если решение начнёт зависеть от тела.
-    **T4 сделан по заголовкам (2026-11-11):** `internal/balancer/queue_headers_r493.go`
+    **T4 сделан по заголовкам (2026-11-11):** `internal/balancer/queue_headers.go`
     — имена `X-Queue-*` объявлены ОДИН раз, оба пути (handler llama.cpp и generic)
     зовут общие сеттеры `setQueueWaitHeadersR493` / `setQueueUnavailableHeadersR493`.
     Раньше литералы жили в трёх местах, и паритет держался на дисциплине — тот же
@@ -314,7 +314,7 @@
     **Второй живой замер** (после правки кадра): `tokens_per_second=48.66` есть,
     сумма отрезков = total, но `load_duration` всё ещё 0, хотя клиент ждал 40 с.
     Причина: ленивая загрузка идёт ВНУТРИ запроса, уже после `client.Do`, и
-    балансеру не видна. Закрыто в воркере: `cmd/cppworker/load_duration_r493.go`
+    балансеру не видна. Закрыто в воркере: `cmd/cppworker/load_duration.go`
     измеряет `ensureModelLoadedWithNCtx` (ячейка в контексте запроса, сигнатуры
     не менялись) и кладёт `load_duration` в done-кадры `/api/chat` (оба пути) и
     `/api/generate`; балансер складывает это со своим ожиданием. Заодно
@@ -575,9 +575,9 @@
     «R482: удержание вывода снято — ход снова потоковый», «R83 гейт n_ctx: тип
     KV-cache из плана загрузки», «/api/chat stream response summary» — и ни одного
     числа: ни `held_ms/held_bytes`, ни значения KV-cache, ни `generated_tokens`.
-    Причина: `cmd/cppworker/debug_bundle_r476.go` писал только `LogEntry.Message`,
+    Причина: `cmd/cppworker/debug_bundle.go` писал только `LogEntry.Message`,
     а `LogEntry.Fields` отбрасывал (балансерный дамп был починен раньше,
-    `internal/api/diag_bundle_r476.go`, а воркерная половина осталась).
+    `internal/api/diag_bundle.go`, а воркерная половина осталась).
     Сделано: общий форматтер `pkg/logger/fields_text.go` (`FieldsText`,
     `FieldValueText`) — один вид для обоих дампов, ключи по алфавиту, строки с
     пробелами в кавычках, вложенные структуры компактным JSON. Балансерный дамп
@@ -605,12 +605,12 @@
     второй половиной дефекта был шаг роста «до нужного + 200 токенов»: за ход
     агента промпт прибавляет 5–6k, поэтому следующий ход снова требовал роста.
     Что сделано:
-    - воркер: `cmd/cppworker/context_size_compare_r493.go`
+    - воркер: `cmd/cppworker/context_size_compare.go`
       (`sameContextSizeR493`) — окно сравнивается ВЫРОВНЕННЫМ тем же правилом,
       что у загрузчика; `loadOptionDiffs` (`inference.go`) переведён на него.
       Запрошенное меньшее окно, которое выравнивается в другое число, по-прежнему
       считается различием — ручная перезагрузка «на меньшее окно» работает;
-    - балансер: `internal/balancer/nctx_growth_target_r493.go`
+    - балансер: `internal/balancer/nctx_growth_target.go`
       (`growthTargetR493`) — цель роста выравнивается и берётся ступенью
       `nctxGrowthStepR493` (8k), но НИКОГДА не ниже загруженного окна; если нужное
       уже покрыто — роста нет, а не перезагрузка «вниз». `streamGrowthCheckR385`
@@ -717,7 +717,7 @@
     vram_percent=4635833999675857520`.
     Затронуты все места, которые читают `LogEntry.Fields`: экспорт
     `/api/v1/logs/export`, live-tail WebUI, текстовые дампы обоих архивов
-    (`internal/api/diag_bundle_r476.go`, `cmd/cppworker/debug_bundle_r476.go`).
+    (`internal/api/diag_bundle.go`, `cmd/cppworker/debug_bundle.go`).
     **Не проверено живьём:** новый архив со стенда (ожидание — те же строки, но
     `threshold=85 vram_percent=87.16`).
 
@@ -887,7 +887,7 @@
     демо-мок, i18n) и доков поле убрано. В API остаётся
     `effectiveAlgorithm: "unified-multistage"`. Дополнительно по просьбе владельца
     заложена реализация рекомендованного порядка: шов
-    `internal/balancer/selection_order_r493.go` + `LB_SELECTION_ORDER=unified|leastconn`
+    `internal/balancer/selection_order.go` + `LB_SELECTION_ORDER=unified|leastconn`
     (по умолчанию `unified`, поведение не меняется), 6 тестов + мутация; план
     полноценного режима — `docs/plans/2026-11-17-selection-order-plan.md`.
 12o. ~~**`reasoningBudget` / `CPPWORKER_REASONING_BUDGET` — настройка без эффекта**~~
@@ -958,7 +958,7 @@
     промпт влезал (по токенизатору 93962, запас 86k). Правило роста не менялось
     (`growthNeedR447`, включая запас под ответ 256 токенов); новое правило — одно
     на все пути отказа — `windowServeAsIsR447`
-    (`internal/balancer/window_serve_as_is_r447.go`): отказ только если промпт не
+    (`internal/balancer/window_serve_as_is.go`): отказ только если промпт не
     влезает или клиент ЯВНО попросил окно больше загруженного (иначе воркер
     отвергнет чужой `num_ctx`, R83/R301). Тесты:
     `window_serve_as_is_r447_test.go` (живой регресс 180200/180224 и
@@ -980,7 +980,7 @@
     читались как измерение**~~ **ЗАКРЫТО 2026-11-17 (R493):** два независимых
     дефекта «неточных чисел», оба найдены при разборе архива второго стенда.
 
-    (а) В `applyPromptCalibration` (`internal/balancer/prompt_calibration_r302.go`)
+    (а) В `applyPromptCalibration` (`internal/balancer/prompt_calibration.go`)
     ранний выход `if raw <= 0 || p == nil || p.promptCalib == nil { return }` стоял
     ДО вызова `applyExactPromptTokensR473`. Значит при отсутствии хранилища
     калибровки (юнит-тесты, лёгкая сборка, прокси без state-файла) НИ ОДИН запрос
@@ -1241,7 +1241,7 @@
     `/api/chat`). План: `refactoring-plan.ru.md`, этапы 1–7.
     **Этап 3 сделан 2026-11-13 (R493-12n):** правила окна (R288/R447/R466/R385)
     сведены в одну чистую функцию `decideWindowR493`
-    (`internal/balancer/window_decision_r493.go`), все входные точки её зовут
+    (`internal/balancer/window_decision.go`), все входные точки её зовут
     (`growthVerdictR301`, `growthDeferR299`, `streamGrowthPlanR385`), отличие пути
     стало ВХОДОМ (`GrowBlockedBy`), а не вторым набором правил. Флаг
     `LB_WINDOW_UNIFIED`: 0 — историческое поведение (дефолт), 1 — единое решение,
@@ -1639,8 +1639,8 @@ ubuntu-fallback job CI (он собирает `./cmd/balancer` под Linux с `
 отличает намеренное от случайного.
 
 **Страж.** `tests/platform_suffix_r648_test.go`: имя оканчивается токеном GOOS/GOARCH и в заголовке
-нет `//go:build` → красный, с именем файла и лечением. Проверен мутацией (`tests/zz_mutation_windows.go`
-→ красный, удалён → зелёный, следов не осталось).
+нет `//go:build` → красный, с именем файла и лечением. Проверен мутацией
+(`tests/zz_mutation_windows.go` → красный, удалён → зелёный, следов не осталось).
 
 **Как проверять до выпуска.** `GOOS=linux CGO_ENABLED=0 go build -tags llama_stub ./...` — ровно то,
 что делает Dockerfile балансера (без cgo-линковки). Это быстрее, чем ждать `docker build`, и ловит

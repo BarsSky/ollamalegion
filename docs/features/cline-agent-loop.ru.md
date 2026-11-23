@@ -106,7 +106,7 @@ node scripts/parallel-turn-probe.js --url http://127.0.0.1:18080/api/chat `
 | `list_files` + `"c:\\Ollama\\ollamalegion"` | `arguments: "c:\\…"` | то же |
 | `run_commands{[…]}` (нативный тег gemma) | `arguments: […]` | то же |
 
-**Правило приведения** (R113, `cmd/cppworker/tool_args_schema_r113.go`) —
+**Правило приведения** (R113, `cmd/cppworker/tool_args_schema.go`) —
 детерминированное и по схеме ИЗ ЗАПРОСА, без имён моделей:
 
 | Значение | Куда попадает |

@@ -106,7 +106,7 @@ The model does not guarantee this. Live shapes that arrived on the bench:
 | `list_files` + `"c:\\Ollama\\ollamalegion"` | `arguments: "c:\\…"` | same |
 | `run_commands{[…]}` (gemma native tag) | `arguments: […]` | same |
 
-**Coercion rule** (R113, `cmd/cppworker/tool_args_schema_r113.go`) —
+**Coercion rule** (R113, `cmd/cppworker/tool_args_schema.go`) —
 deterministic and driven by the schema FROM THE REQUEST, with no model names:
 
 | Value | Where it goes |

@@ -19,7 +19,7 @@
 
 ## 2. Лестница источников (сверху вниз)
 
-Резолвер — `internal/balancer/link_bandwidth_r166.go`, функция `LinkBandwidthInfo`.
+Резолвер — `internal/balancer/link_bandwidth.go`, функция `LinkBandwidthInfo`.
 
 | Приоритет | Источник (`source`) | Откуда берётся | Когда используется |
 |---|---|---|---|
@@ -50,7 +50,7 @@
 
 ### Балансер
 
-* `StartRPCLinkMeasurer` (`internal/balancer/rpc_link_measure_r118.go`) запускается при
+* `StartRPCLinkMeasurer` (`internal/balancer/rpc_link_measure.go`) запускается при
   старте: **первый замер через 30 с** (узлы успевают зарегистрироваться), далее раз в
   `LB_RPC_LINK_MEASURE_SEC` (по умолчанию 900 с; `0` — выключить).
 * Замер идёт только до узлов с ролью `main`/`donor`.
@@ -58,7 +58,7 @@
 
 ### Бэкенд (cppworker)
 
-`/api/info` отдаёт блок `net` (R166, `cmd/cppworker/netlink_r166.go`):
+`/api/info` отдаёт блок `net` (R166, `cmd/cppworker/netlink.go`):
 
 ```json
 "net": {"interface": "eth0", "mtu": 1500, "source": "detected",

@@ -35,7 +35,7 @@ no available backends with exclusions
 
 1. **Занятая копия** → заявка ждёт слот ЭТОЙ копии или встаёт в очередь к
    другой копии с нужным окном. Это гейт R459 для очереди
-   (`internal/balancer/unified_queue_r459_gate_r480.go`) плюс разделение
+   (`internal/balancer/unified_queue_gate.go`) плюс разделение
    «предпочтение» / «источник окна» в `availability_first_r493.go`.
 2. **Свободная копия** → можно принимать решение по выравниванию: поднять её
    окно до окна самой широкой копии. Это R494.
@@ -48,7 +48,7 @@ no available backends with exclusions
 
 ### 3.1 Решение считает балансер, а не браузер
 
-`internal/balancer/window_align_r494.go`:
+`internal/balancer/window_align.go`:
 
 * `windowAlignDecideR494(model, copies, cap)` — чистое решение по таблице копий:
   * считается только по копиям с ИЗВЕСТНЫМ окном (`Window > 0`): «неизвестно» —

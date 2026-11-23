@@ -463,7 +463,7 @@ the agent calls a tool and every time receives an error or an empty answer.
 
 **Fix (R246).**
 
-- `cmd/cppworker/tool_code_form_r246.go` + `internal/balancer/toolcall_tool_code_r246.go`:
+- `cmd/cppworker/tool_code_form.go` + `internal/balancer/toolcall_tool_code.go`:
   parse `[tool_code]`/```tool_code (Python call, optional `print(...)`, several
   calls per block), strip the markup from visible text, hold the markers back in
   the streamed output.
@@ -472,7 +472,7 @@ the agent calls a tool and every time receives an error or an empty answer.
   not set", and client validators reject null), a required field sent in plural
   is renamed (`queries` -> `query`), and a one-element array for a declared
   string becomes that string.
-- `cmd/cppworker/tool_history_r246.go` + `c/bridge`: tool history reaches the
+- `cmd/cppworker/tool_history.go` + `c/bridge`: tool history reaches the
   template STRUCTURALLY (`tool_calls`, `tool_call_id`). The shape is chosen per
   model template; the three-way rule is covered by
   `TestR246_RealTemplatesChooseSafePath` over the 68 real templates in

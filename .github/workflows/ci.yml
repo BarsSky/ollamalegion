@@ -534,7 +534,7 @@ jobs:
       - name: Test internal/api (no race)
         run: scripts/run_go_test.sh "internal/api" -tags llama_stub -timeout 120s -v ./internal/api/
 
-      - name: Test internal/balancer (-race)
+      - name: Test internal/balancer (no race)
         if: always()
         run: |
           # R60.29: bump 180s → 300s. R52.4b TestMain watchdog убран.
@@ -547,13 +547,17 @@ jobs:
           # нельзя понять, что именно упало (ровно та проблема, ради которой
           # run_go_test.sh и написан, см. его заголовок).
           #
-          # R738 (2026-11-24): 300s → 900s. Набор вырос (R722–R737), и на
-          # ubuntu-latest позднего шага он упирается в тот же бюджет, что и в
-          # основном job: прогон 45322613959 (коммит 50fdc882) —
-          # 'panic: test timed out after 5m0s / FAIL internal/balancer 300.067s'.
-          # Локально с -race стабильно 213 с; shared-раннер в загруженный момент
-          # идёт в 2–3 раза медленнее. 900 с — запас ~2x, как и в test.yml.
-          scripts/run_go_test.sh "internal/balancer (-race)" -race -tags llama_stub -timeout 900s ./internal/balancer/
+          # R748 (2026-11-24): -race СНЯТ с этого шага.
+          #
+          # Почему. `-race` для internal/... уже гоняется в job «Test
+          # (self-hosted Windows)» (шаг «Test (internal packages, -race)»), и там
+          # он зелёный. А на shared ubuntu-latest этот же пакет не укладывается
+          # даже в 900 с: прогоны 45322613959 (300 с), 45465945353 (900.059 с) —
+          # 'panic: test timed out'. Локально тот же набор с -race стабильно 213 с,
+          # то есть это разброс загруженного раннера, а не рост набора. Держать
+          # красный CI без сигнала хуже, чем потерять ДУБЛИРУЮЩИЙ прогон: гонки
+          # ловит self-hosted job и локальный прогон перед релизом.
+          scripts/run_go_test.sh "internal/balancer (no race)" -tags llama_stub -timeout 300s ./internal/balancer/
 
       - name: Test internal/config (no race)
         if: always()
@@ -651,9 +655,8 @@ jobs:
           # общий прогон должен быть детерминированным. Список строится через
           # go list, чтобы не перечислять пакеты руками.
           pkgs=$(go list ./internal/... | grep -v '/internal/sdbackend$')
-          # R738: 300s → 900s. Тот же набор, что у шага internal/balancer выше,
-          # но с инструментацией покрытия — бюджет должен быть не меньше.
-          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -p 1 -timeout 900s $pkgs
+          # Покрытие снимается без -race: гонки ловит self-hosted job (R748).
+          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -p 1 -timeout 600s $pkgs
           go tool cover -func=coverage.out | tail -1
 
       - name: Upload coverage artifact

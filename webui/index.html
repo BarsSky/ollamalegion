@@ -911,10 +911,72 @@
                      с ПРЕДЛОЖЕННЫМИ сервером ролями (suggestedRole) и сборка
                      bundle. Разметку и логику держит модуль image-models-hf.js;
                      визуальный язык — тот же, что на странице «GGUF модели»
-                     (классы .gguf-search-form/.gguf-file-item из pages.css). -->
+                     (классы .gguf-search-form/.gguf-file-item из pages.css).
+                     R749 (2026-11-25): порядок карточек снизу вверх переставлен —
+                     корзина (цель/состав/состояние/кнопки) стоит ПЕРВОЙ и
+                     липнет к верху вкладки, поиск и файлы идут ниже. -->
                 <div class="gguf-tab-content" id="imTabHf">
 
-                <!-- 1. Поиск репозитория на HuggingFace -->
+                <!-- 1. КОРЗИНА ЗАГРУЗКИ (R749): единственная точка управления
+                     скачиванием. Живой дефект: имя bundle, семейство, токен и
+                     кнопка жили в ОТДЕЛЬНОЙ карточке НИЖЕ списка файлов — оператор
+                     отмечал файлы и не видел, КУДА и ЧТО скачает и чего уже нет
+                     на узле. Здесь: цель (имя/семейство/бэкенд/репозиторий),
+                     построчный состав с ролью, размером и состоянием файла
+                     (есть на узле / нет / узел не прочитан), итог и кнопки.
+                     Карточка липкая: при прокрутке длинного списка файлов состав
+                     и кнопки остаются на виду. -->
+                <div class="card imh-cart" id="imHfCartCard">
+                    <div class="card-header">
+                        <h3><i class="fas fa-basket-shopping section-icon-i"></i> <span data-i18n="imageModels.cart_title">Корзина загрузки</span></h3>
+                        <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <span id="imHfSelectionSummary" style="font-size:var(--font-size-xs);color:var(--text-muted);"></span>
+                            <button class="btn btn-secondary btn-sm" data-imh-action="suggested" data-i18n="imageModels.hf_select_suggested">Отметить по ролям</button>
+                            <button class="btn btn-secondary btn-sm" data-imh-action="clear" data-i18n="imageModels.hf_clear_selection">Очистить</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <small style="display:block;margin-bottom:10px;color:var(--text-muted);font-size:var(--font-size-xs);" data-i18n="image.bundle_hint">Image-модель - это набор файлов: diffusion + VAE + text encoder. Для sd.cpp рабочие репозитории обычно leejet/* (city96/* для FLUX в sd.cpp не грузятся).</small>
+                        <div class="imh-cart-form">
+                            <div class="form-group">
+                                <label data-i18n="image.bundle_name">Имя bundle</label>
+                                <input type="text" id="imgBundleName" class="form-control" placeholder="z-image-turbo-q3k">
+                            </div>
+                            <div class="form-group">
+                                <label data-i18n="image.bundle_family">Семейство</label>
+                                <select class="form-control" id="imgBundleFamily"></select>
+                            </div>
+                            <div class="form-group">
+                                <label data-i18n="image.hf_token">HF token</label>
+                                <input type="password" id="imgHfToken" class="form-control" placeholder="hf_...">
+                            </div>
+                        </div>
+                        <div class="imh-cart-scope" id="imHfCartTarget"></div>
+                        <div class="imh-cart-list-head">
+                            <span id="imHfSelectionSummarySticky"></span>
+                            <span id="imHfCartNodeState" class="imh-cart-node-state"></span>
+                        </div>
+                        <div class="imh-cart-list" id="imHfCartList"></div>
+                        <div class="imh-cart-totals" id="imHfCartTotals"></div>
+                        <div class="imh-cart-actions">
+                            <button class="btn btn-primary" id="imHfDownloadSelected" data-admin-only data-imh-action="download">
+                                <i class="fas fa-download"></i> <span data-i18n="imageModels.hf_download_selected">Скачать выбранное</span>
+                            </button>
+                            <button class="btn btn-secondary" id="imHfDownloadMissing" data-admin-only data-imh-action="download-missing">
+                                <i class="fas fa-circle-down"></i> <span data-i18n="imageModels.cart_download_missing">Скачать недостающее</span>
+                            </button>
+                            <button class="btn btn-secondary" data-imh-action="verify" data-i18n="imageModels.hf_verify_compat">Проверить совместимость</button>
+                        </div>
+                        <div class="imh-files-verdict" id="imHfVerifyVerdict" style="display:none;"></div>
+                        <div id="imgBundleProgress" style="display:none;margin-top:12px;">
+                            <div id="imgBundleProgressLabel" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-bottom:4px;"></div>
+                            <div class="metric-mini-bar"><div class="metric-mini-fill" id="imgBundleProgressFill" style="width:0%"></div></div>
+                        </div>
+                        <div id="imgBundleStatus" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:8px;"></div>
+                    </div>
+                </div>
+
+                <!-- 2. Поиск репозитория на HuggingFace -->
                 <div class="card">
                     <div class="card-header">
                         <h3><i class="fab fa-huggingface section-icon-i"></i> <span data-i18n="imageModels.hf_search_title">Поиск модели на HuggingFace</span></h3>
@@ -943,7 +1005,7 @@
                     </div>
                 </div>
 
-                <!-- 2. Файлы выбранного репозитория: роль подставлена сервером,
+                <!-- 3. Файлы выбранного репозитория: роль подставлена сервером,
                      оператор может её изменить или снять галочку.
                      R693 (2026-11-24): карточка стоит в разметке здесь, но
                      ПОКАЗЫВАЕТСЯ внутри карточки нажатой модели — модуль
@@ -956,67 +1018,14 @@
                     <div class="card-header">
                         <h3><i class="fas fa-file section-icon-i"></i> <span data-i18n="imageModels.hf_files_title">Файлы репозитория</span>:
                             <span id="imHfRepoName" style="font-family:var(--font-family-mono);font-size:var(--font-size-sm);"></span></h3>
-                        <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                            <span id="imHfSelectionSummary" style="font-size:var(--font-size-xs);color:var(--text-muted);"></span>
-                            <button class="btn btn-secondary" data-imh-action="suggested" data-i18n="imageModels.hf_select_suggested">Отметить по ролям</button>
-                            <button class="btn btn-secondary" data-imh-action="clear" data-i18n="imageModels.hf_clear_selection">Снять отметки</button>
-                        </div>
                     </div>
                     <div class="card-body">
                         <small style="display:block;margin-bottom:10px;color:var(--text-muted);font-size:var(--font-size-xs);" data-i18n="imageModels.hf_files_hint">Роли предложены по именам файлов на сервере: проверьте их перед загрузкой. Крупные text encoder'ы (t5xxl/llm) по умолчанию не отмечены — их нужно выбирать осознанно.</small>
-                        <!-- R696: ЛИПКАЯ ПАНЕЛЬ ВЫБОРА. Живой дефект: список из
-                             16+ файлов уходил за нижнюю кромку окна, кнопка
-                             скачивания была в отдельной карточке НИЖЕ списка, и
-                             оператор не видел, что скачается всё отмеченное.
-                             Панель прилипает к верху списка внутри раскрытой
-                             карточки и всегда показывает счётчик и объём
-                             выбранного; кнопка «Скачать выбранное» отправляет
-                             РОВНО отмеченные файлы (тот же startBundle), а
-                             «Проверить совместимость» — вердикт воркера по
-                             набору до скачивания (POST /api/hf/verify). -->
-                        <div class="imh-files-actions" id="imHfActionsBar">
-                            <span class="imh-files-actions-summary" id="imHfSelectionSummarySticky"></span>
-                            <span class="imh-files-actions-buttons">
-                                <button class="btn btn-secondary btn-sm" data-imh-action="verify" data-i18n="imageModels.hf_verify_compat">Проверить совместимость</button>
-                                <button class="btn btn-primary btn-sm" id="imHfDownloadSelected" data-imh-action="download" data-admin-only>
-                                    <i class="fas fa-download"></i> <span data-i18n="imageModels.hf_download_selected">Скачать выбранное</span>
-                                </button>
-                            </span>
-                        </div>
-                        <div class="imh-files-verdict" id="imHfVerifyVerdict" style="display:none;"></div>
+                        <!-- R749: своей панели выбора и вердикта здесь больше НЕТ —
+                             они переехали в корзину наверху вкладки (единственная
+                             точка управления скачиванием). Карточка остаётся
+                             единственным местом рендера #imHfFilesBody. -->
                         <div id="imHfFilesBody" class="gguf-files-list"></div>
-                    </div>
-                </div>
-
-                <!-- 3. Сборка bundle: имя, семейство, HF-токен и запуск загрузки. -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3><i class="fas fa-download section-icon-i"></i> <span data-i18n="image.bundle_title">Скачать модель с HuggingFace</span></h3>
-                    </div>
-                    <div class="card-body">
-                        <small style="display:block;margin-bottom:12px;color:var(--text-muted);font-size:var(--font-size-xs);" data-i18n="image.bundle_hint">Image-модель - это набор файлов: diffusion + VAE + text encoder. Для sd.cpp рабочие репозитории обычно leejet/* (city96/* для FLUX в sd.cpp не грузятся).</small>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label data-i18n="image.bundle_name">Имя bundle</label>
-                                <input type="text" id="imgBundleName" class="form-control" placeholder="z-image-turbo-q3k">
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.bundle_family">Семейство</label>
-                                <select class="form-control" id="imgBundleFamily"></select>
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.hf_token">HF token</label>
-                                <input type="password" id="imgHfToken" class="form-control" placeholder="hf_...">
-                            </div>
-                        </div>
-                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
-                            <button class="btn btn-primary" id="imgBundleStart" data-admin-only data-imh-action="download" data-i18n="image.bundle_download">Скачать bundle</button>
-                        </div>
-                        <div id="imgBundleProgress" style="display:none;margin-top:12px;">
-                            <div id="imgBundleProgressLabel" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-bottom:4px;"></div>
-                            <div class="metric-mini-bar"><div class="metric-mini-fill" id="imgBundleProgressFill" style="width:0%"></div></div>
-                        </div>
-                        <div id="imgBundleStatus" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:8px;"></div>
                     </div>
                 </div>
 

@@ -108,6 +108,9 @@
     // keydownHandler — обработчик Enter в поле поиска: тоже хранится, чтобы
     // unmount() снял его, а повторный mount не навесил второй.
     var keydownHandler = null;
+    // R749: inputHandler — ввод имени bundle в корзине обновляет строку «Куда»
+    // сразу (change срабатывает только на blur). Хранится по той же причине.
+    var inputHandler = null;
     // dataRefreshBound — провайдер «Загрузок» регистрируется один раз за жизнь
     // страницы: у DataRefresh нет unregister (см. unmount ниже).
     var dataRefreshBound = false;
@@ -206,6 +209,20 @@
         pollIdleTicks: 0,
         downloads: null,
         downloadsError: '',
+        // ==== R749 (2026-11-25): корзина загрузки и состояние узла ====
+        //
+        // backendFiles — индекс файлов ВЫБРАННОГО image-бэкенда (GET .../models):
+        // {paths, models, at} либо null, пока не прочитан. Нужен, чтобы корзина
+        // отвечала «есть на узле / нет на узле», а не заставляла оператора
+        // скачивать вслепую то, что уже лежит. backendFilesBackendId — для какой
+        // машины построен индекс: при смене бэкенда индекс сбрасывается.
+        backendFiles: null,
+        backendFilesBackendId: '',
+        backendFilesBusy: null,
+        backendFilesError: '',
+        // onlyMissing — одноразовый режим startBundle: отправить ТОЛЬКО те
+        // отмеченные файлы, которых нет на узле (кнопка «Скачать недостающее»).
+        onlyMissing: false,
         busy: false
     };
 
@@ -1117,12 +1134,410 @@
                 ? t('imageModels.hf_selected_summary', 'Выбрано: {n} файлов · {size}', { n: n, size: formatBytes(total) })
                 : t('imageModels.hf_nothing_selected', 'Ничего не выбрано — скачается только отмеченное');
         }
-        var btn = el('imHfDownloadSelected');
-        if (btn) {
-            btn.disabled = n === 0;
-            var text = t('imageModels.hf_download_selected', 'Скачать выбранное');
-            btn.innerHTML = '<i class="fas fa-download"></i> ' + escapeHtml(text) +
-                ' (' + n + (total ? ' · ' + formatBytes(total) : '') + ')';
+        // R749: кнопка скачивания, построчный состав и состояние узла живут в
+        // корзине наверху вкладки - обновляем их тем же вызовом, что и сводку.
+        renderCart();
+    }
+
+    // =====================================================================
+    // R749 (2026-11-25): корзина загрузки на верху вкладки HuggingFace
+    // =====================================================================
+    //
+    // ЖИВОЙ ДЕФЕКТ (скриншот оператора). Имя bundle, семейство, HF-токен и
+    // кнопка скачивания жили в ОТДЕЛЬНОЙ карточке ПОД списком файлов, а вверху
+    // были только галочки. При 16+ файлах оператор отмечал набор и не видел:
+    //   - КУДА скачает (имя набора, семейство, бэкенд, репозиторий);
+    //   - ЧТО именно в корзине (роль, размер каждого файла);
+    //   - ЧЕГО не хватает на узле (какие файлы уже лежат, какие нет).
+    // Теперь цель, состав и состояние стоят одной карточкой над списком, а
+    // кнопки «Скачать выбранное» / «Скачать недостающее» работают с этим же
+    // составом. Карточка липкая (pages.css: .imh-cart).
+    //
+    // ОТКУДА БЕРЁТСЯ «ЕСТЬ НА УЗЛЕ». GET .../models (тот же прокси, что у
+    // таблицы «Модели на диске») отдаёт модели с files[]: filename + localPath.
+    // Индекс строится один раз на показ/смену бэкенда и сверяется по полному
+    // пути и по имени файла (регистр не важен). Это подсказка о РЕЕСТРЕ узла, а
+    // не инвентаризация диска: файл, положенный мимо реестра, здесь не виден, и
+    // это честно написано в подсказке. Точная инвентаризация с докачкой и
+    // перекачкой - следующий этап.
+
+    /** normPathKey / basenameKey — ключи сверки путей (регистр не важен). */
+    function normPathKey(path) {
+        return String(path == null ? '' : path).replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
+    }
+
+    function basenameKey(path) {
+        var s = String(path == null ? '' : path).replace(/\\/g, '/');
+        return s.slice(s.lastIndexOf('/') + 1).toLowerCase();
+    }
+
+    /**
+     * buildBackendFileIndex — индекс файлов узла по ответу GET /api/image/models.
+     *
+     * Формы ответа: массив моделей либо {models:[...]}; у модели files[] с
+     * filename (имя внутри репозитория) и localPath (путь на диске после
+     * bundle-загрузки). Кладём ОБА ключа и дополнительно ключ по имени файла:
+     * оператор мог собрать bundle, где файл лежит в подкаталоге, а реестр знает
+     * только имя. Совпадение по имени - подсказка, а не приговор (см. Stage 3).
+     */
+    function buildBackendFileIndex(data) {
+        var arr = Array.isArray(data) ? data
+            : (data && Array.isArray(data.models) ? data.models
+                : (data && Array.isArray(data.data) ? data.data : []));
+        var paths = Object.create(null);
+        var models = 0;
+        arr.forEach(function (m) {
+            if (!m) return;
+            var modelName = String(m.name || m.id || '');
+            var files = Array.isArray(m.files) ? m.files : [];
+            if (modelName && files.length) models++;
+            files.forEach(function (f) {
+                if (!f) return;
+                var entry = { model: modelName, role: String(f.role || '') };
+                [f.filename, f.localPath, f.local_path].forEach(function (p) {
+                    var full = normPathKey(p);
+                    if (full) paths[full] = entry;
+                    var base = p ? basenameKey(p) : '';
+                    if (base) paths['*' + base] = entry;
+                });
+            });
+        });
+        return { paths: paths, models: models, at: Date.now() };
+    }
+
+    /** presenceLookup — запись реестра узла для пути файла (или null). */
+    function presenceLookup(index, path) {
+        var paths = (index && index.paths) || {};
+        var full = normPathKey(path);
+        if (full && paths[full]) return paths[full];
+        var base = basenameKey(path);
+        return (base && paths['*' + base]) || null;
+    }
+
+    /** presenceOf — состояние файла на узле: known=false, пока реестр не прочитан. */
+    function presenceOf(path) {
+        if (!backendId()) return { known: false, present: false, model: '', role: '' };
+        if (!state.backendFiles || state.backendFilesBackendId !== backendId()) {
+            return { known: false, present: false, model: '', role: '' };
+        }
+        var hit = presenceLookup(state.backendFiles, path);
+        return hit
+            ? { known: true, present: true, model: hit.model, role: hit.role }
+            : { known: true, present: false, model: '', role: '' };
+    }
+
+    /**
+     * refreshBackendFiles — перечитать реестр узла.
+     *
+     * Один запрос на показ таба и повторно после завершения bundle (файлы
+     * появились в реестре) либо по кнопке «Перечитать узел» (только когда реестр
+     * не прочитан - постоянной кнопки обновления здесь нет, R493).
+     */
+    function refreshBackendFiles() {
+        var id = backendId();
+        if (!id) {
+            state.backendFiles = null;
+            state.backendFilesError = '';
+            state.backendFilesBackendId = '';
+            renderCart();
+            return Promise.resolve(null);
+        }
+        if (state.backendFilesBusy) return state.backendFilesBusy;
+        state.backendFilesError = '';
+        var p = request(backendUrl('models'), { timeoutMs: TIMEOUT_CONTROL_MS }).then(function (data) {
+            state.backendFiles = buildBackendFileIndex(data);
+            state.backendFilesBackendId = id;
+            return state.backendFiles;
+        }).catch(function (e) {
+            state.backendFilesError = (e && e.message) || String(e);
+            // Старый индекс не выбрасываем: он всё ещё описывает узел, но
+            // подсветим, что прочитать свежий реестр не удалось.
+            return null;
+        }).then(function (idx) {
+            state.backendFilesBusy = null;
+            renderCart();
+            return idx;
+        });
+        state.backendFilesBusy = p;
+        return p;
+    }
+
+    /** ensureBackendFiles — прочитать реестр, только если он ещё не прочитан. */
+    function ensureBackendFiles() {
+        var id = backendId();
+        if (!id) return;
+        if (state.backendFiles && state.backendFilesBackendId === id) return;
+        if (state.backendFilesBusy) return;
+        refreshBackendFiles();
+    }
+
+    /** backendLabel — человеческая подпись выбранного бэкенда для строки «Куда». */
+    function backendLabel() {
+        var id = backendId();
+        if (!id) return '';
+        var label = id;
+        try {
+            var pageState = window.ImagePage && window.ImagePage._state;
+            var list = (pageState && pageState.backends) || [];
+            list.forEach(function (b) {
+                if (!b || b.id !== id) return;
+                label = String(b.name || b.id || id);
+                if (b.host) label += ' (' + b.host + (b.imagePort ? ':' + b.imagePort : '') + ')';
+            });
+        } catch (e) { /* страница моделей может быть не смонтирована */ }
+        return label;
+    }
+
+    /**
+     * cartEntries — состав корзины: отмеченные файлы репозитория + компоненты
+     * из других репозиториев (R710). Порядок - как в списке файлов.
+     */
+    function cartEntries() {
+        var out = [];
+        var files = Array.isArray(state.files) ? state.files : [];
+        Object.keys(state.selection || {}).forEach(function (p) {
+            var s = state.selection[p];
+            if (!s || !s.checked) return;
+            var f = files.filter(function (x) { return filePath(x) === p; })[0];
+            out.push({
+                path: p,
+                role: s.role || suggestedRole(f) || 'diffusion',
+                sizeBytes: Number(s.sizeBytes || fileSize(f) || 0),
+                repo: state.selectedRepo || '',
+                probe: state.probes[p] || null,
+                extra: false
+            });
+        });
+        (state.extraComponents || []).forEach(function (c) {
+            if (!c || !c.role || !c.filename) return;
+            out.push({
+                path: String(c.filename),
+                role: String(c.role),
+                sizeBytes: Number(c.sizeBytes || 0),
+                repo: String(c.repo || ''),
+                probe: null,
+                extra: true
+            });
+        });
+        return out;
+    }
+
+    /** cartStatusHtml — цветные метки строки: состояние на узле + пред-проверка. */
+    function cartStatusHtml(entry) {
+        var p = presenceOf(entry.path);
+        var html = '';
+        if (!p.known) {
+            html += '<span class="imh-cart-status unknown" title="' +
+                escapeHtml(t('imageModels.cart_unknown_hint',
+                    'Список файлов узла не прочитан ({error}).', { error: state.backendFilesError || '' })) + '">' +
+                escapeHtml(t('imageModels.cart_unknown', 'узел не прочитан')) + '</span>';
+        } else if (p.present) {
+            html += '<span class="imh-cart-status ok" title="' +
+                escapeHtml(String(p.model || '') + (p.role ? ' · ' + roleLabel(p.role) : '')) + '">' +
+                escapeHtml(t('imageModels.cart_present', 'есть на узле')) + '</span>';
+        } else {
+            html += '<span class="imh-cart-status absent">' +
+                escapeHtml(t('imageModels.cart_absent', 'нет на узле')) + '</span>';
+        }
+        if (entry.probe) {
+            var badge = probeBadge(entry.probe);
+            html += ' <span class="imh-cart-status ' +
+                (badge.level === 'ok' ? 'ok' : (badge.level === 'error' ? 'bad' : 'unknown')) +
+                '" title="' + escapeHtml(badge.hint || '') + '">' +
+                escapeHtml(badge.label || '') + '</span>';
+        }
+        return html;
+    }
+
+    /**
+     * renderCart — цель, состав, итог и кнопки корзины.
+     *
+     * Ничего не запрашивает сама: реестр узла читает refreshBackendFiles (один
+     * раз), этот рендер только показывает state. Поэтому отметка галочки
+     * обновляет корзину мгновенно, без сети.
+     */
+    function renderCart() {
+        var card = el('imHfCartCard');
+        // Старая разметка (без корзины): тихо выходим - модуль обязан работать
+        // и на странице, где карточки ещё нет.
+        if (!card) return;
+        ensureBackendFiles();
+
+        var entries = cartEntries();
+        var totalBytes = 0;
+        var presentCount = 0;
+        var missingCount = 0;
+        var missingBytes = 0;
+        var unknownCount = 0;
+        entries.forEach(function (e) {
+            totalBytes += e.sizeBytes;
+            var p = presenceOf(e.path);
+            if (!p.known) { unknownCount++; return; }
+            if (p.present) { presentCount++; return; }
+            missingCount++;
+            missingBytes += e.sizeBytes;
+        });
+
+        // --- цель: имя, семейство, бэкенд, репозиторий ---
+        var target = el('imHfCartTarget');
+        if (target) {
+            var nameInput = el('imgBundleName');
+            var familySel = el('imgBundleFamily');
+            var name = nameInput && nameInput.value ? String(nameInput.value).trim() : '';
+            var family = familySel && familySel.value ? String(familySel.value) : (state.bundleFamily || '');
+            var repo = state.selectedRepo || '';
+            target.innerHTML =
+                '<span class="imh-cart-scope-item"><strong>' +
+                    escapeHtml(t('imageModels.cart_target', 'Куда')) + ':</strong> ' +
+                    (name
+                        ? '<span style="font-family:var(--font-family-mono);">' + escapeHtml(name) + '</span>'
+                        : '<span style="color:var(--warning, #e0a030);">' +
+                            escapeHtml(t('imageModels.cart_name_unset', 'имя не задано')) + '</span>') +
+                '</span>' +
+                '<span class="imh-cart-scope-item"><strong>' +
+                    escapeHtml(t('imageModels.cart_family', 'Семейство')) + ':</strong> ' +
+                    escapeHtml(family || '-') +
+                '</span>' +
+                '<span class="imh-cart-scope-item"><strong>' +
+                    escapeHtml(t('imageModels.cart_backend', 'Бэкенд')) + ':</strong> ' +
+                    escapeHtml(backendLabel() || '-') +
+                '</span>' +
+                '<span class="imh-cart-scope-item"><strong>' +
+                    escapeHtml(t('imageModels.cart_repo', 'Репозиторий')) + ':</strong> ' +
+                    (repo ? escapeHtml(repo)
+                        : escapeHtml(t('imageModels.cart_repo_unset', 'не выбран'))) +
+                '</span>';
+        }
+
+        // --- реестр узла: справочная строка в шапке списка ---
+        var nodeState = el('imHfCartNodeState');
+        if (nodeState) {
+            var idx = state.backendFiles;
+            if (state.backendFilesError && state.backendFilesBusy === null) {
+                nodeState.textContent = t('imageModels.cart_scan_failed',
+                    'Не удалось прочитать список файлов узла: {error}', { error: state.backendFilesError });
+            } else if (!idx || state.backendFilesBackendId !== backendId()) {
+                nodeState.textContent = t('imageModels.cart_unknown', 'узел не прочитан');
+            } else {
+                nodeState.textContent = t('imageModels.cart_registry',
+                    'в реестре узла: {n} моделей', { n: idx.models });
+            }
+        }
+
+        // --- состав ---
+        var list = el('imHfCartList');
+        if (list) {
+            if (!entries.length) {
+                list.innerHTML = '<div class="imh-cart-empty">' +
+                    escapeHtml(t('imageModels.cart_empty',
+                        'Корзина пуста: найдите репозиторий и отметьте файлы — здесь появится роль, размер и состояние каждого файла на узле.')) +
+                    '</div>';
+            } else {
+                list.innerHTML = entries.map(function (e) {
+                    var nameCell = escapeHtml(e.path);
+                    if (e.extra) {
+                        nameCell = '<i class="fas fa-plus-circle" style="color:var(--success, #5cb85c);"></i> ' +
+                            nameCell + ' <span style="color:var(--text-muted);">(' +
+                            escapeHtml(t('imageModels.cart_extra_source', 'из {repo}', { repo: e.repo })) +
+                            ')</span>';
+                    }
+                    return '<div class="imh-cart-item" data-imh-cart-path="' + escapeHtml(e.path) + '">' +
+                        '<span class="imh-cart-role">' + escapeHtml(roleLabel(e.role)) + '</span>' +
+                        '<span class="imh-cart-name">' + nameCell + '</span>' +
+                        '<span class="imh-cart-size">' + escapeHtml(formatBytes(e.sizeBytes)) + '</span>' +
+                        '<span class="imh-cart-status-wrap">' + cartStatusHtml(e) + '</span>' +
+                    '</div>';
+                }).join('');
+            }
+        }
+
+        // --- итог ---
+        var totals = el('imHfCartTotals');
+        if (totals) {
+            if (!entries.length) {
+                totals.innerHTML = escapeHtml(t('imageModels.cart_empty',
+                    'Корзина пуста: найдите репозиторий и отметьте файлы — здесь появится роль, размер и состояние каждого файла на узле.'));
+            } else {
+                var parts = [t('imageModels.cart_totals', 'В корзине: {n} файлов · {size}',
+                    { n: entries.length, size: formatBytes(totalBytes) })];
+                if (!unknownCount) {
+                    parts.push(t('imageModels.cart_on_node', 'на узле: {n}', { n: presentCount }));
+                    if (missingCount) {
+                        parts.push(t('imageModels.cart_missing_count', 'не хватает: {n} · {size}',
+                            { n: missingCount, size: formatBytes(missingBytes) }));
+                    } else {
+                        parts.push(t('imageModels.cart_all_present', 'Всё выбранное уже есть на узле'));
+                    }
+                } else if (state.backendFilesError) {
+                    parts.push(t('imageModels.cart_unknown_hint',
+                        'Список файлов узла не прочитан ({error}).', { error: state.backendFilesError }));
+                } else {
+                    parts.push(t('imageModels.cart_unknown', 'узел не прочитан'));
+                }
+                var html = escapeHtml(parts.join(' · '));
+                if (state.backendFilesError && state.backendFilesBusy === null) {
+                    html += ' <button class="btn btn-sm btn-secondary" data-imh-action="scan-backend">' +
+                        escapeHtml(t('imageModels.cart_scan', 'Перечитать узел')) + '</button>';
+                }
+                totals.innerHTML = html;
+            }
+        }
+
+        // --- кнопки ---
+        var dl = el('imHfDownloadSelected');
+        if (dl) {
+            dl.disabled = entries.length === 0;
+            dl.innerHTML = '<i class="fas fa-download"></i> ' +
+                escapeHtml(t('imageModels.hf_download_selected', 'Скачать выбранное')) +
+                ' (' + entries.length + (totalBytes ? ' · ' + formatBytes(totalBytes) : '') + ')';
+        }
+        var dm = el('imHfDownloadMissing');
+        if (dm) {
+            var registryKnown = !!(state.backendFiles && state.backendFilesBackendId === backendId() && !state.backendFilesError);
+            dm.disabled = entries.length === 0 || !registryKnown || missingCount === 0;
+            dm.innerHTML = '<i class="fas fa-circle-down"></i> ' +
+                escapeHtml(t('imageModels.cart_download_missing', 'Скачать недостающее')) +
+                ' (' + (registryKnown ? missingCount : '?') +
+                (registryKnown && missingBytes ? ' · ' + formatBytes(missingBytes) : '') + ')';
+            dm.title = !registryKnown
+                ? t('imageModels.cart_unknown_hint', 'Список файлов узла не прочитан ({error}).',
+                    { error: state.backendFilesError || '' })
+                : (missingCount === 0 ? t('imageModels.cart_all_present', 'Всё выбранное уже есть на узле') : '');
+        }
+    }
+
+    /**
+     * downloadMissing — скачать только те отмеченные файлы, которых нет на узле.
+     *
+     * Реестр перечитывается ПЕРЕД решением: между составлением корзины и
+     * нажатием файл мог доехать. Если реестр прочитать не удалось, обещать
+     * «недостающее» нельзя - оператор получает ошибку, а не молчаливое
+     * скачивание всего набора.
+     */
+    async function downloadMissing() {
+        if (!requireBackend()) return false;
+        var entries = cartEntries();
+        if (!entries.length) {
+            toast(t('imageModels.hf_none_selected', 'Отметьте хотя бы один файл модели'), 'warn');
+            return false;
+        }
+        var idx = await refreshBackendFiles();
+        if (!idx) {
+            toast(t('imageModels.cart_scan_failed',
+                'Не удалось прочитать список файлов узла: {error}', { error: state.backendFilesError || '' }), 'error');
+            return false;
+        }
+        var missing = entries.filter(function (e) { return !presenceOf(e.path).present; });
+        if (!missing.length) {
+            toast(t('imageModels.cart_all_present', 'Всё выбранное уже есть на узле'), 'info');
+            return false;
+        }
+        toast(t('imageModels.cart_missing_toast', 'Скачиваю недостающее: {n} файлов', { n: missing.length }), 'info');
+        state.onlyMissing = true;
+        try {
+            return await startBundle({ onlyMissing: true });
+        } finally {
+            state.onlyMissing = false;
         }
     }
 
@@ -2635,6 +3050,9 @@
                 stopPolling();
                 if (status === 'completed') {
                     toast(t('image.bundle_all_done', 'All bundle files downloaded'), 'success');
+                    // R749: файлы доехали - перечитаем реестр узла, чтобы корзина
+                    // сразу показала «есть на узле», а не ждала перезахода на таб.
+                    refreshBackendFiles();
                     refreshModels();
                 } else {
                     toast(t('image.bundle_failed', 'Bundle download failed') + ': ' + status, 'error');
@@ -2653,7 +3071,15 @@
         }
     }
 
-    async function startBundle() {
+    /**
+     * startBundle — запустить bundle-загрузку (POST /api/hf/bundle).
+     *
+     * opts.onlyMissing (R749) — отправить ТОЛЬКО те отмеченные файлы, которых нет
+     * в реестре узла (кнопка «Скачать недостающее»). Если таких нет, запрос не
+     * уходит вообще: «скачать ничего» не должно выглядеть как успех.
+     */
+    async function startBundle(opts) {
+        opts = opts || {};
         if (!requireBackend()) return false;
         var nameInput = el('imgBundleName');
         var familySel = el('imgBundleFamily');
@@ -2673,11 +3099,22 @@
             });
             return false;
         }
+        // R749: режим «только недостающее» фильтрует УЖЕ проверенный список.
+        var filesToSend = built.files;
+        if (opts.onlyMissing) {
+            filesToSend = built.files.filter(function (f) {
+                return !presenceOf(f.filename).present;
+            });
+            if (!filesToSend.length) {
+                toast(t('imageModels.cart_all_present', 'Всё выбранное уже есть на узле'), 'info');
+                return false;
+            }
+        }
         var family = familySel && familySel.value ? String(familySel.value) : 'other';
         var body = JSON.stringify({
             name: built.name,
             family: family,
-            files: built.files.map(function (f) {
+            files: filesToSend.map(function (f) {
                 // sizeBytes нужен воркеру, чтобы не перекачивать уже лежащие
                 // файлы нужного размера (hf_bundle.go:128).
                 return f.sizeBytes > 0
@@ -2825,6 +3262,11 @@
             if (act === 'suggested') { selectBySuggested(); return; }
             if (act === 'clear') { clearSelection(); return; }
             if (act === 'download') { startBundle(); return; }
+            // R749: скачать только отсутствующие на узле файлы.
+            if (act === 'download-missing') { downloadMissing(); return; }
+            // R749: реестр узла не прочитан - перечитать (постоянной кнопки
+            // обновления здесь нет: она появляется только при ошибке чтения).
+            if (act === 'scan-backend') { refreshBackendFiles(); return; }
             // R696: вердикт по выбранному набору до скачивания.
             if (act === 'verify') { verifySelection(true); return; }
             // R710: недостающие компоненты набора.
@@ -2917,6 +3359,19 @@
     }
 
     /**
+     * onInput — ввод в корзине (R749).
+     *
+     * Имя bundle правится посимвольно, а строка «Куда» должна показывать его
+     * сразу, не дожидаясь blur: иначе оператор видит «имя не задано» при уже
+     * введённом имени и не понимает, куда уйдёт набор.
+     */
+    function onInput(ev) {
+        var target = ev && ev.target;
+        if (!target || target.id !== 'imgBundleName') return;
+        renderCart();
+    }
+
+    /**
      * applyProbedFamily — подставить семейство профиля по заголовку файла.
      *
      * ЗАЧЕМ: именно промах по семейству даёт «get sd version from file failed».
@@ -2968,9 +3423,12 @@
             return false;
         }
         if (tab !== 'hf') return false;
+        // R749: реестр узла нужен корзине - читаем один раз на показ таба.
+        ensureBackendFiles();
         renderSearchResults();
         renderFiles();
         renderBundleProgress();
+        renderCart();
         return true;
     }
 
@@ -2982,6 +3440,11 @@
             // Делегирование: контент табов перерисовывается, слушатели — одни.
             page.addEventListener('click', onClick);
             page.addEventListener('change', onChange);
+            // R749: имя bundle в корзине обновляет строку «Куда» по вводу.
+            if (!inputHandler) {
+                inputHandler = onInput;
+                page.addEventListener('input', inputHandler);
+            }
         }
         // R694: динамические подписи табов HF/Загрузки собраны в JS, поэтому
         // штатный I18N.apply(document) их не переводит — перерисовываем сами.
@@ -3011,7 +3474,12 @@
         // заставил бы общую кнопку обновления дёргать «Загрузки» дважды.
         if (!dataRefreshBound && window.DataRefresh && typeof window.DataRefresh.register === 'function') {
             dataRefreshBound = true;
-            window.DataRefresh.register('image', function () { return refreshDownloads(); });
+            window.DataRefresh.register('image', function () {
+                // R749: общая кнопка обновления страницы обновляет и реестр узла
+                // для корзины - отдельной кнопки на таб не заводим (R493).
+                refreshBackendFiles();
+                return refreshDownloads();
+            });
         }
     }
 
@@ -3043,6 +3511,10 @@
         if (page && page.removeEventListener) {
             page.removeEventListener('click', onClick);
             page.removeEventListener('change', onChange);
+            if (inputHandler) {
+                page.removeEventListener('input', inputHandler);
+                inputHandler = null;
+            }
         }
         if (keydownHandler) {
             var query = el('imHfQuery');
@@ -3056,6 +3528,14 @@
     function render(ctx) {
         if (ctx) state.ctx = ctx;
         mount();
+        // R749: бэкенд мог смениться на странице - индекс реестра относится к
+        // прежней машине и обязан быть сброшен, иначе корзина покажет чужое
+        // «есть на узле».
+        if (state.backendFilesBackendId && state.backendFilesBackendId !== backendId()) {
+            state.backendFiles = null;
+            state.backendFilesError = '';
+            state.backendFilesBackendId = '';
+        }
         var tab = state.ctx && state.ctx.tab;
         if (tab === 'downloads') {
             // Всегда перечитываем снимок: на этом табе данные меняются каждую
@@ -3100,6 +3580,12 @@
             selectedBytes: selectedBytes,
             renderSelectionSummary: renderSelectionSummary,
             renderVerifyVerdict: renderVerifyVerdict,
+            // R749: корзина - состав, состояние узла и «скачать недостающее».
+            renderCart: renderCart,
+            cartEntries: cartEntries,
+            presenceOf: presenceOf,
+            refreshBackendFiles: refreshBackendFiles,
+            downloadMissing: downloadMissing,
             // R710: компоненты набора (для тестов и для страницы «Модели на диске»).
             loadComponentCatalog: loadComponentCatalog,
             addDefaultComponents: addDefaultComponents,
@@ -3153,7 +3639,13 @@
             componentWarningText: componentWarningText,
             componentSizeText: componentSizeText,
             componentRoleRankVal: componentRoleRankVal,
-            componentErrorText: componentErrorText
+            componentErrorText: componentErrorText,
+            // R749: сверка состава корзины с реестром узла - чистые помощники
+            // под тестом (webui/tests/image-hf-cart-r749.test.js).
+            buildBackendFileIndex: buildBackendFileIndex,
+            presenceLookup: presenceLookup,
+            normPathKey: normPathKey,
+            basenameKey: basenameKey
         }
     };
 

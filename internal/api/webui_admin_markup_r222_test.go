@@ -30,7 +30,7 @@ func TestR222_StaticAdminControlsAreMarked(t *testing.T) {
 		"saveSettings", "resetSettings", "exportSettingsBtn", "importSettingsBtn",
 		"clearLogs", "exportLogs", "restartBalancerBtn", "retakeSetupWizardBtn",
 		"addBackendBtn", "exportBackends", "imageBackendsAdd", "imageProfilesNewBtn",
-		"imPolicySaveBtn", "imPolicyResetBtn", "imgBundleStart", "llamaCppResetBtn",
+		"imPolicySaveBtn", "imPolicyResetBtn", "imHfDownloadSelected", "imHfDownloadMissing", "llamaCppResetBtn",
 		"modelPullBtn", "saveBackendLimitsBtn",
 	}
 	for _, id := range ids {

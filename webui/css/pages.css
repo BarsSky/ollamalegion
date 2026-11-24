@@ -2145,43 +2145,157 @@
 }
 
 /* ============================================================
-   R696 (2026-11-23): HF-карточка файлов - липкая панель выбора.
-   Живой дефект: в репозитории 16+ файлов список уходил за нижнюю
-   кромку окна, кнопка скачивания стояла в ОТДЕЛЬНОЙ карточке ниже, и
-   оператор не видел, что скачается всё отмеченное. Панель прилипает к
-   верху видимой части списка (внутри раскрытой карточки, R693), поэтому
-   счётчик «выбрано N файлов · X ГБ» и кнопка «Скачать выбранное» видны
-   без прокрутки. position: sticky срабатывает относительно окна - карточка
-   живёт в обычном потоке страницы, а не в скролл-контейнере.
+   R749 (2026-11-25): корзина загрузки на верху вкладки HuggingFace.
+   Живой дефект: имя bundle, семейство, токен и кнопка скачивания жили в
+   ОТДЕЛЬНОЙ карточке НИЖЕ списка файлов, а вверху были только галочки.
+   При 16+ файлах оператор не видел, КУДА и ЧТО скачает и чего уже нет на
+   узле. Карточка стоит первой в #imTabHf и липнет к верху окна (top: 0),
+   поэтому цель, состав и кнопки остаются на виду при прокрутке списка.
+   sticky работает только при overflow: visible у предков - правило
+   #imTabHf > .card ниже это обеспечивает.
    ============================================================ */
-.imh-files-actions {
+.imh-cart {
     position: sticky;
     top: 0;
     z-index: 6;
+    overflow: visible;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+.imh-cart .card-body {
+    padding-top: 10px;
+}
+
+.imh-cart-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: var(--space-2);
+    margin-bottom: 8px;
+}
+
+.imh-cart-form .form-group {
+    margin: 0;
+}
+
+.imh-cart-scope {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-2);
+    gap: 6px 16px;
     padding: 8px 10px;
-    margin: 0 0 8px;
+    margin-bottom: 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
     background: var(--bg-secondary, var(--bg-primary));
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
 }
 
-.imh-files-actions-summary {
+.imh-cart-scope strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.imh-cart-list-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+
+.imh-cart-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 190px;
+    overflow-y: auto;
+    margin-bottom: 8px;
+}
+
+.imh-cart-item {
+    display: grid;
+    grid-template-columns: minmax(84px, 130px) minmax(0, 1fr) auto auto;
+    gap: 8px;
+    align-items: center;
+    padding: 5px 8px;
+    font-size: var(--font-size-xs);
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.imh-cart-role {
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.imh-cart-name {
+    font-family: var(--font-family-mono);
+    word-break: break-all;
+}
+
+.imh-cart-size {
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.imh-cart-status {
+    white-space: nowrap;
+    font-size: var(--font-size-xs);
+}
+
+.imh-cart-status.ok {
+    color: var(--success, #5cb85c);
+}
+
+.imh-cart-status.absent {
+    color: var(--warning, #e0a030);
+}
+
+.imh-cart-status.unknown {
+    color: var(--text-muted);
+}
+
+.imh-cart-status.bad {
+    color: var(--danger, #d9534f);
+}
+
+.imh-cart-empty {
+    padding: 10px;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.imh-cart-totals {
+    margin-bottom: 8px;
     font-size: var(--font-size-xs);
     color: var(--text-secondary, var(--text-muted));
     white-space: normal;
 }
 
-.imh-files-actions-buttons {
+.imh-cart-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    margin-left: auto;
+    gap: 8px;
+    align-items: center;
+}
+
+@media (max-width: 700px) {
+    .imh-cart {
+        position: static;
+    }
+
+    .imh-cart-item {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .imh-cart-role {
+        grid-column: 1 / -1;
+    }
 }
 
 .imh-files-verdict {
@@ -2204,20 +2318,12 @@
     color: var(--warning, #e0a030);
 }
 
-/* R696: sticky внутри карточки требует, чтобы у предка не было overflow:hidden
- * (.card его ставит ради скруглений). Панель выбора должна оставаться видимой
- * при прокрутке длинного списка файлов, поэтому для НЕЁ overflow разрешаем:
- * скругление карточки рисуется фоном, а не обрезкой. */
-#imHfFilesCard {
-    overflow: visible;
-}
-
-/* R696: position: sticky НЕ работает внутри предка с overflow:hidden -
+/* R749: position: sticky НЕ работает внутри предка с overflow:hidden -
  * .card ставит его ради скруглений, а карточка-обёртка вкладки HuggingFace
- * (поиск + список результатов) как раз такая. Без этого правила липкая панель
- * выбора «уезжала» вместе со списком (замер CDP: после прокрутки на 800 px
- * кнопка оказывалась на top=-578 при окне 720). Скругление карточки не страдает:
- * фон рисуется по border-radius, обрезка нужна только для дочерних теней. */
+ * (корзина + поиск + список результатов) как раз такая. Без этого правила
+ * корзина «уезжала» вместе со списком (замер CDP на R696: после прокрутки
+ * на 800 px кнопка оказывалась на top=-578 при окне 720). Скругление
+ * карточки не страдает: фон рисуется по border-radius. */
 #imTabHf > .card {
     overflow: visible;
 }

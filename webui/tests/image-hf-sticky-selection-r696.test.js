@@ -381,29 +381,38 @@ function openRepo() {
         assert.notStrictEqual(summary(), before, 'сводка не обновилась после изменения выбора');
     });
 
-    // 10. СТАТИКА: панель обязана быть в РАЗМЕТКЕ ВНУТРИ карточки файлов, а
-    // sticky-правило — в CSS. Без этого модуль может «работать» в тесте DOM-
-    // заглушки, а у оператора панели просто нет (именно так выглядел дефект:
-    // кнопка была в ОТДЕЛЬНОЙ карточке ниже списка).
-    await check('10. разметка: липкая панель внутри #imHfFilesCard и sticky в CSS', function () {
+    // 10. СТАТИКА: панель обязана быть в РАЗМЕТКЕ, а sticky-правило — в CSS.
+    // R749 (2026-11-25): панель переехала из карточки файлов в КОРЗИНУ наверху
+    // вкладки (единственная точка управления скачиванием), поэтому проверяем
+    // новый адрес: #imHfCartCard стоит ДО карточки файлов и содержит кнопки.
+    // Без этого модуль может «работать» в тесте DOM-заглушки, а у оператора
+    // панели просто нет (именно так выглядел исходный дефект R696: кнопка была
+    // в ОТДЕЛЬНОЙ карточке ниже списка).
+    await check('10. разметка: корзина выше карточки файлов, sticky в CSS', function () {
         const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-        const cardStart = html.indexOf('id="imHfFilesCard"');
-        assert.ok(cardStart !== -1, 'в index.html нет карточки файлов #imHfFilesCard');
-        const cardEnd = html.indexOf('id="imgBundleName"', cardStart);
-        assert.ok(cardEnd > cardStart, 'не удалось ограничить разметку карточки файлов');
-        const cardHtml = html.slice(cardStart, cardEnd);
-        ['imHfActionsBar', 'imHfDownloadSelected', 'imHfSelectionSummarySticky', 'imHfVerifyVerdict']
+        const cartStart = html.indexOf('id="imHfCartCard"');
+        assert.ok(cartStart !== -1, 'в index.html нет корзины #imHfCartCard');
+        const cardStart = html.indexOf('id="imHfFilesCard"', cartStart);
+        assert.ok(cardStart > cartStart, 'корзина обязана стоять выше карточки файлов');
+        const cartHtml = html.slice(cartStart, cardStart);
+        ['imHfDownloadSelected', 'imHfSelectionSummarySticky', 'imHfVerifyVerdict',
+            'imgBundleName', 'imgBundleFamily', 'imHfCartTarget', 'imHfCartList']
             .forEach(function (id) {
-                assert.ok(cardHtml.indexOf('id="' + id + '"') !== -1,
-                    'в карточке файлов нет #' + id + ' (панель выбора не видна у оператора)');
+                assert.ok(cartHtml.indexOf('id="' + id + '"') !== -1,
+                    'в корзине нет #' + id + ' (панель выбора не видна у оператора)');
             });
-        assert.ok(cardHtml.indexOf('data-imh-action="download"') !== -1,
-            'кнопка панели не привязана к действию скачивания');
-        assert.ok(cardHtml.indexOf('data-imh-action="verify"') !== -1,
-            'в панели нет кнопки проверки совместимости');
+        assert.ok(cartHtml.indexOf('data-imh-action="download"') !== -1,
+            'кнопка корзины не привязана к действию скачивания');
+        assert.ok(cartHtml.indexOf('data-imh-action="verify"') !== -1,
+            'в корзине нет кнопки проверки совместимости');
+        // В карточке файлов кнопок скачивания быть не должно: две точки
+        // управления - ровно тот дефект, который чинит R749.
+        const filesHtml = html.slice(cardStart, html.indexOf('id="imTabLoaded"', cardStart));
+        assert.strictEqual(filesHtml.indexOf('data-imh-action="download"'), -1,
+            'в карточке файлов осталась вторая кнопка скачивания');
         const css = fs.readFileSync(path.join(__dirname, '..', 'css', 'pages.css'), 'utf8');
-        const rule = /\.imh-files-actions\s*\{[\s\S]*?position:\s*sticky/.exec(css);
-        assert.ok(rule, 'в pages.css нет position: sticky у .imh-files-actions');
+        const rule = /\.imh-cart\s*\{[\s\S]*?position:\s*sticky/.exec(css);
+        assert.ok(rule, 'в pages.css нет position: sticky у .imh-cart');
         // sticky не работает внутри предка с overflow:hidden — карточка-обёртка
         // вкладки HF обязана разрешать overflow (замер CDP: иначе панель уезжает).
         assert.ok(/#imTabHf\s*>\s*\.card\s*\{\s*[\s\S]*?overflow:\s*visible/.test(css),

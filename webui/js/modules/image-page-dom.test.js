@@ -493,7 +493,11 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
     check('разметка HF-таба на месте и принадлежит модулю image-models-hf.js', function () {
         ['imHfQuery', 'imHfTask', 'imHfSearchBtn', 'imHfSearchResults',
             'imHfFilesCard', 'imHfRepoName', 'imHfFilesBody', 'imHfSelectionSummary',
-            'imgBundleName', 'imgBundleFamily', 'imgHfToken', 'imgBundleStart',
+            // R749: сборка переехала в корзину наверху вкладки - состав, цель и
+            // обе кнопки скачивания обязаны быть в разметке (не в JS-строках).
+            'imHfCartCard', 'imHfCartTarget', 'imHfCartList', 'imHfCartTotals',
+            'imHfDownloadSelected', 'imHfDownloadMissing',
+            'imgBundleName', 'imgBundleFamily', 'imgHfToken',
             'imgBundleProgress', 'imgBundleProgressFill', 'imgBundleStatus',
             'imDownloadsHost'].forEach(function (id) {
             assert.ok(KNOWN_IDS.has(id), 'в index.html нет #' + id);

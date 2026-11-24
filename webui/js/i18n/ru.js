@@ -1896,12 +1896,10 @@ window.I18N_RU = {
   "image.select_model": "Выберите модель",
   "image.duplicate_host_warning": "У другого бэкенда такой же HOST: запросы к одному из них уйдут на чужую машину, и список моделей будет от соседа. Задайте BACKEND_HOST на той машине и пересоздайте воркер.",
   "image.unknown": "неизвестно",
-  "image.bundle_title": "Скачать модель с HuggingFace",
   "image.bundle_hint": "Image-модель - это набор файлов: diffusion + VAE + text encoder. Для sd.cpp рабочие репозитории обычно leejet/* (сборки city96/* для FLUX в sd.cpp не грузятся).",
   "image.bundle_name": "Имя bundle",
   "image.bundle_family": "Семейство",
   "image.hf_token": "HF token",
-  "image.bundle_download": "Скачать bundle",
   "image.bundle_started": "Загрузка bundle начата",
   "image.bundle_need_name": "Нужно имя bundle",
   "image.bundle_need_diffusion": "В bundle обязателен файл роли diffusion",
@@ -2124,8 +2122,34 @@ window.I18N_RU = {
   "imageModels.hf_files_title": "Файлы репозитория",
   "imageModels.hf_files_hint": "Роли предложены по именам файлов на сервере: проверьте их перед загрузкой. Крупные text encoder'ы (t5xxl/llm) по умолчанию не отмечены — их нужно выбирать осознанно.",
   "imageModels.hf_select_suggested": "Отметить по ролям",
-  "imageModels.hf_clear_selection": "Снять отметки",
+  "imageModels.hf_clear_selection": "Очистить",
   "imageModels.hf_selected_count": "Выбрано файлов: {n}",
+  // ==== R749 (2026-11-25): корзина загрузки наверху вкладки HuggingFace ====
+  // Живой дефект: цель (имя/семейство), состав и кнопки жили в отдельной карточке
+  // НИЖЕ списка файлов, а вверху были только галочки. Корзина отвечает на три
+  // вопроса оператора: КУДА скачает, ЧТО в наборе, ЧЕГО не хватает на узле.
+  "imageModels.cart_title": "Корзина загрузки",
+  "imageModels.cart_target": "Куда",
+  "imageModels.cart_family": "Семейство",
+  "imageModels.cart_backend": "Бэкенд",
+  "imageModels.cart_repo": "Репозиторий",
+  "imageModels.cart_name_unset": "имя не задано",
+  "imageModels.cart_repo_unset": "не выбран",
+  "imageModels.cart_empty": "Корзина пуста: найдите репозиторий и отметьте файлы — здесь появится роль, размер и состояние каждого файла на узле.",
+  "imageModels.cart_download_missing": "Скачать недостающее",
+  "imageModels.cart_present": "есть на узле",
+  "imageModels.cart_absent": "нет на узле",
+  "imageModels.cart_unknown": "узел не прочитан",
+  "imageModels.cart_unknown_hint": "Список файлов узла не прочитан ({error}).",
+  "imageModels.cart_totals": "В корзине: {n} файлов · {size}",
+  "imageModels.cart_on_node": "на узле: {n}",
+  "imageModels.cart_missing_count": "не хватает: {n} · {size}",
+  "imageModels.cart_all_present": "Всё выбранное уже есть на узле",
+  "imageModels.cart_scan": "Перечитать узел",
+  "imageModels.cart_missing_toast": "Скачиваю недостающее: {n} файлов",
+  "imageModels.cart_scan_failed": "Не удалось прочитать список файлов узла: {error}",
+  "imageModels.cart_extra_source": "из {repo}",
+  "imageModels.cart_registry": "в реестре узла: {n} моделей",
   // ==== R696 (2026-11-23): липкая панель выбора и вердикт набора ====
   // Живой дефект: в репозитории 16+ файлов список уходил за кромку окна, кнопка
   // скачивания была в отдельной карточке ниже, и не было видно, что скачается

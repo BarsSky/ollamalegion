@@ -26,7 +26,7 @@ import (
 func catalogProxyR493(t *testing.T, slots map[string]int) *Proxy {
 	t.Helper()
 	p := availProxyR493(t, slots)
-	p.modelCatalog = newModelCatalog()
+	if p.modelCatalog == nil { p.modelCatalog = newModelCatalog() } else { p.modelCatalog.reset() }
 	return p
 }
 
@@ -195,7 +195,7 @@ func TestR493b_LoadStageDoesNotPickNodeWithoutFile(t *testing.T) {
 
 	// Контроль 2: каталог НЕ опрошен — узел не исключаем (иначе при выключенном
 	// поллере каталога из выбора выпал бы весь кластер).
-	p.modelCatalog = newModelCatalog()
+	if p.modelCatalog == nil { p.modelCatalog = newModelCatalog() } else { p.modelCatalog.reset() }
 	if got := p.pickLoadableFreeBackendR493("m12b", types1); got != "other" {
 		t.Fatalf("без снимка каталога узел нельзя исключать, got %q", got)
 	}
@@ -271,7 +271,7 @@ func TestR493b_ColdStartPicksNodeWithFileOnDisk(t *testing.T) {
 	// Контроль: каталог не опрошен — выбор ОБЯЗАН состояться, «не знаем» не равно
 	// «файла нет». Какой именно узел выберется (master или other) — дело прежней
 	// логики (P3/score); проверяем, что мы не ввели отказ там, где данных нет.
-	p.modelCatalog = newModelCatalog()
+	if p.modelCatalog == nil { p.modelCatalog = newModelCatalog() } else { p.modelCatalog.reset() }
 	if got := p.selectBackend("m12b", types.BackendTypeLlamaCpp); got != "master" && got != "other" {
 		t.Fatalf("без снимка каталога выбор не должен отказывать, получено %q", got)
 	}

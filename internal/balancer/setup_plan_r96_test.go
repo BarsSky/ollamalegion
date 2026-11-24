@@ -49,9 +49,23 @@ func planProxyR96(t *testing.T, vramFreeMB ...int) *Proxy {
 	// с пустым каталогом, чтобы discovery зависел только от профилей.
 	if p.llamaCppMetricsPoller != nil {
 		p.llamaCppMetricsPoller.Stop()
-		p.llamaCppMetricsPoller.WaitStopped(2 * time.Second)
+		// R737: результат ожидания ПРОВЕРЯЕТСЯ. Раньше бюджет 2 с молча
+		// игнорировался, и на медленном раннере тест успевал подменить каталог,
+		// пока фоновое обновление его ещё читало — отсюда WARNING: DATA RACE в CI
+		// (запись в setup_plan_r96_test.go, чтение в model_catalog.go из
+		// refreshBackendModelCatalog). Теперь «не остановился» — падение теста с
+		// причиной, а не гонка.
+		if !p.llamaCppMetricsPoller.WaitStopped(10 * time.Second) {
+			t.Fatalf("поллер метрик не остановился за 10 с: подмена каталога гоняется с его чтением")
+		}
 	}
-	p.modelCatalog = newModelCatalog()
+	// R737: НЕ подменяем указатель (это запись в общий p.modelCatalog), а
+	// очищаем содержимое под внутренним мьютексом каталога.
+	if p.modelCatalog == nil {
+		p.modelCatalog = newModelCatalog()
+	} else {
+		p.modelCatalog.reset()
+	}
 	return p
 }
 

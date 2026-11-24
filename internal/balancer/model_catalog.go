@@ -148,6 +148,23 @@ func newModelCatalog() *modelCatalog {
 	return &modelCatalog{byID: make(map[string]*backendCatalogEntry)}
 }
 
+// reset — очистить каталог НА МЕСТЕ (под своим мьютексом).
+//
+// ЗАЧЕМ. Тесты (R96/R493/R552) подменяли указатель `p.modelCatalog = newModelCatalog()`
+// и ловили data race: подмена указателя идёт без синхронизации, а фоновый
+// поллер в это же время читает `p.modelCatalog` (CI: WARNING: DATA RACE, запись
+// в setup_plan_r96_test.go:54, чтение в model_catalog.go:397 из
+// `refreshBackendModelCatalog`). Сброс содержимого вместо замены указателя
+// убирает саму запись в общий указатель: читатели держат внутренний RWMutex.
+func (mc *modelCatalog) reset() {
+	if mc == nil {
+		return
+	}
+	mc.mu.Lock()
+	mc.byID = make(map[string]*backendCatalogEntry)
+	mc.mu.Unlock()
+}
+
 // store — записать список файлов бэкенда (ключи нормализуются).
 //
 // R93: возвращает, ЧТО изменилось по сравнению с предыдущим снимком: добавленные

@@ -25,7 +25,7 @@ import (
 // catalogStoreR552 — записать снимок каталога узла.
 func catalogStoreR552(p *Proxy, backendID string, files []string, dirErr string) {
 	if p.modelCatalog == nil {
-		p.modelCatalog = newModelCatalog()
+		if p.modelCatalog == nil { p.modelCatalog = newModelCatalog() } else { p.modelCatalog.reset() }
 	}
 	p.modelCatalog.store(backendID, files, dirErr, time.Now())
 }

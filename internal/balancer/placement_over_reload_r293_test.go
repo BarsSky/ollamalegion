@@ -104,7 +104,13 @@ func TestR293_NoPlacementWhenCurrentIsIdle(t *testing.T) {
 // TestR293_NoPlacementWithoutFileOnDisk — узел без файла модели не кандидат.
 func TestR293_NoPlacementWithoutFileOnDisk(t *testing.T) {
 	p := newPlacementTestProxy(t)
-	p.modelCatalog = newModelCatalog() // каталог пуст: «знаем, что файла нет»
+	// R737: сброс на месте, а не подмена указателя — иначе запись в общий
+	// p.modelCatalog гоняется с фоновым обновлением каталога (см. model_catalog.reset).
+	if p.modelCatalog == nil {
+		p.modelCatalog = newModelCatalog()
+	} else {
+		p.modelCatalog.reset() // каталог пуст: «знаем, что файла нет»
+	}
 	stop := beginClientStreamR271(p, "node-current", placementTestModel)
 	defer stop()
 

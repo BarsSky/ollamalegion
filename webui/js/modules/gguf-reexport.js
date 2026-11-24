@@ -47,12 +47,12 @@
  * и берётся лениво: если его нет, шаги, которым он нужен, честно говорят об
  * этом, а остальные работают.
  *
- * ЭКСПОРТ: window.GgufReexport = { mount, _state, _buildJobBody, _verdictFor,
- * _renderModels, _renderInspect, _renderNormalize, _renderRescan, _renderLoad,
- * _loadWarning, _phaseLabel, _modelHandle, _jobErrorText, _formatBytes,
- * _formatDuration, _statusLabel, _probeOnce, _buildHTML, _renderJobs,
- * _schedulePolling, _resetJobsLayer, _stopPolling }. Тесты используют
- * подчёркнутые члены; публичный контракт — только mount().
+ * ЭКСПОРТ: window.GgufReexport = { mount, _state, _buildJobBody, _buildBundleBody,
+ * _verdictFor, _renderModels, _renderInspect, _renderNormalize, _renderRescan,
+ * _renderLoad, _renderBundle, _loadWarning, _phaseLabel, _modelHandle,
+ * _jobErrorText, _formatBytes, _formatDuration, _statusLabel, _probeOnce,
+ * _buildHTML, _renderJobs, _schedulePolling, _resetJobsLayer, _stopPolling }.
+ * Тесты используют подчёркнутые члены; публичный контракт — только mount().
  */
 (function () {
     'use strict';
@@ -71,6 +71,11 @@
     // (hf_to_gguf) в light-образе объявлена available=false, и кнопки под неё
     // здесь нет — «нет torch» это не ошибка формы, а свойство сборки.
     var PATCH_TARGET = 'inkling2_loop';
+    // Цель Фазы 4: набор уже скачанных файлов image-модели → bundle с profile.json
+    // (роли по заголовкам, R696). Отдельная цель, а не режим нормализации: у неё
+    // другой источник (каталог), другой результат (каталог) и другой валидатор
+    // (imageworker), поэтому и шаг в блоке свой.
+    var BUNDLE_TARGET = 'image_bundle';
 
     var state = {
         probed: false,
@@ -93,7 +98,9 @@
         // Шаг 4: пересканирование каталога на воркерах.
         rescan: null,
         // Шаг 5: пробная загрузка через балансер.
-        load: null
+        load: null,
+        // Шаг 6 (Фаза 4): сборка image-bundle из набора файлов.
+        bundle: null
     };
 
     function t(key, vars) {
@@ -350,6 +357,37 @@
                         '<div id="rxLoadResult" class="rx-result"></div>' +
                     '</div>' +
 
+                    // --- шаг 6 (Фаза 4): набор файлов → image-bundle ---
+                    //
+                    // ПОЧЕМУ ОТДЕЛЬНЫЙ ШАГ, А НЕ ПАРАМЕТР НОРМАЛИЗАЦИИ: источник здесь
+                    // КАТАЛОГ (не файл), результат — каталог bundle, а проверку делает
+                    // imageworker (свой эндпоинт). Смешать это с шагами loop-схемы значило
+                    // бы объяснять оператору, почему «нормализация» просит каталог.
+                    '<div class="rx-step" data-step="bundle" id="rxStepBundle">' +
+                        stepHead(6, t('reexport.step_bundle_title')) +
+                        '<div class="rx-step-hint">' + esc(t('reexport.step_bundle_hint')) + '</div>' +
+                        '<div class="rx-step-actions" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">' +
+                            '<div class="form-group" style="margin:0;min-width:240px;">' +
+                                '<label for="rxBundleDir">' + esc(t('reexport.bundle_dir')) + '</label>' +
+                                '<input class="form-control" id="rxBundleDir" type="text" placeholder="' +
+                                    esc(t('reexport.bundle_dir_hint')) + '">' +
+                            '</div>' +
+                            '<div class="form-group" style="margin:0;min-width:170px;">' +
+                                '<label for="rxBundleName">' + esc(t('reexport.bundle_name')) + '</label>' +
+                                '<input class="form-control" id="rxBundleName" type="text" placeholder="' +
+                                    esc(t('reexport.bundle_name_hint')) + '">' +
+                            '</div>' +
+                            '<button type="button" class="btn btn-sm btn-secondary" id="rxBundleCheck">' +
+                                '<i class="fas fa-stethoscope" aria-hidden="true"></i> ' +
+                                esc(t('reexport.btn_bundle_check')) + '</button>' +
+                            '<button type="button" class="btn btn-sm btn-primary" id="rxBundleBuild">' +
+                                '<i class="fas fa-cubes-stacked" aria-hidden="true"></i> ' +
+                                esc(t('reexport.btn_bundle_build')) + '</button>' +
+                        '</div>' +
+                        '<div id="rxBundleStatus" class="rx-status" role="status" aria-live="polite"></div>' +
+                        '<div id="rxBundleResult" class="rx-result"></div>' +
+                    '</div>' +
+
                     // --- история задач ---
                     '<div style="margin-top:14px;">' +
                         '<h4 style="margin:0 0 8px;font-size:var(--font-size-sm);">' + esc(t('reexport.jobs')) + '</h4>' +
@@ -381,6 +419,7 @@
         renderNormalize(el);
         renderRescan(el);
         renderLoad(el);
+        renderBundle(el);
         loadModels();
         if (jobs()) {
             jobs().loadJobs();
@@ -481,6 +520,13 @@
         if (rescan) rescan.addEventListener('click', function () { rescanModels(el); });
         var loadBtn = el.querySelector('#rxCheckLoad');
         if (loadBtn) loadBtn.addEventListener('click', function () { checkLoad(el); });
+        // Шаг 6 (Фаза 4): «Проверить набор» — пробный прогон (dry_run), «Собрать
+        // bundle» — запись. Обе кнопки — та же ручка POST /api/reexport/jobs с
+        // целью image_bundle: отдельного «сборочного» API нет.
+        var bundleCheck = el.querySelector('#rxBundleCheck');
+        if (bundleCheck) bundleCheck.addEventListener('click', function () { runBundle(el, true); });
+        var bundleBuild = el.querySelector('#rxBundleBuild');
+        if (bundleBuild) bundleBuild.addEventListener('click', function () { runBundle(el, false); });
         // Кнопка отмены в таблице задач: рисует строки и слушает их слой задач,
         // здесь только спрашиваем, загружен ли он.
         if (jobs()) jobs().bind(el);
@@ -868,6 +914,158 @@
     }
 
     // =====================================================================
+    // Шаг 6 (Фаза 4): набор файлов → image-bundle
+    // =====================================================================
+    //
+    // ЧТО ЗДЕСЬ ПРОИСХОДИТ И ПОЧЕМУ ЭТО НЕ «ЕЩЁ ОДНА КНОПКА НОРМАЛИЗАЦИИ».
+    // Цель image_bundle берёт КАТАЛОГ уже скачанных файлов image-модели и
+    // собирает из него bundle, который imageworker загрузит: роли файлов
+    // определяются по заголовкам (R696 — тот же код, что на воркере), пишутся
+    // profile.json и sd-server.config.json, вердикт проверяется через imageworker.
+    // Оператору не нужно ни знать имена флагов движка, ни собирать профиль
+    // руками — но и «собрать» тут не значит «починить»: если набора не хватает,
+    // сервис честно назовёт отсутствующие роли, а не сделает вид, что всё готово.
+
+    /** bundleTargetSpec — цель сборки bundle из возможностей сервиса. */
+    function bundleTargetSpec() {
+        var targets = (state.caps && state.caps.targets) || [];
+        for (var i = 0; i < targets.length; i++) {
+            if (targets[i] && targets[i].id === BUNDLE_TARGET) return targets[i];
+        }
+        return null;
+    }
+
+    /**
+     * buildBundleBody — тело POST для сборки bundle (чистая функция: её проверяет тест).
+     *
+     * dryRun=true — «Проверить набор»: сервис читает заголовки и отдаёт роли,
+     * семейство и вердикт, НЕ копируя файлы. dryRun=false — запись.
+     */
+    function buildBundleBody(el, dryRun) {
+        var dir = el.querySelector('#rxBundleDir');
+        var name = el.querySelector('#rxBundleName');
+        var opts = {};
+        if (dryRun) opts.dry_run = true;
+        if (name && name.value && name.value.trim()) opts.name = name.value.trim();
+        return {
+            model_dir: dir && dir.value ? dir.value.trim() : '',
+            target: BUNDLE_TARGET,
+            options: opts
+        };
+    }
+
+    /** renderBundle — состояние шага 6 и доступность цели. */
+    function renderBundle(el) {
+        var status = el.querySelector('#rxBundleStatus');
+        var result = el.querySelector('#rxBundleResult');
+        if (!status || !result) return;
+        var spec = bundleTargetSpec();
+        var available = !!(spec && spec.available !== false);
+        var checkBtn = el.querySelector('#rxBundleCheck');
+        var buildBtn = el.querySelector('#rxBundleBuild');
+        var running = !!(state.bundle && state.bundle.status === 'running');
+        if (checkBtn) checkBtn.disabled = !available || running;
+        if (buildBtn) buildBtn.disabled = !available || running;
+        var st = state.bundle;
+        if (!st) {
+            status.textContent = available
+                ? ''
+                : (t('reexport.bundle_unavailable') + (spec && spec.reason ? ' — ' + spec.reason : ''));
+            result.innerHTML = '';
+            return;
+        }
+        var bits = [];
+        if (st.status === 'running') bits.push(t('reexport.bundle_running'));
+        else if (st.status === 'succeeded') bits.push(t('reexport.bundle_done'));
+        else bits.push(t('reexport.bundle_failed'));
+        if (st.jobId) bits.push(st.jobId);
+        if (st.error) bits.push(st.error);
+        status.textContent = bits.join(' · ');
+        result.innerHTML = bundleResultHTML(st);
+    }
+
+    /**
+     * bundleResultHTML — итог сборки: роли, семейство и ВЕРДИКТ ВОРКЕРА.
+     *
+     * ПОЧЕМУ РОЛИ В ИТОГЕ, А НЕ ТОЛЬКО «успешно»: именно они объясняют, что
+     * сервис понял про набор. Ошибка раскладки (энкодер принят за diffusion)
+     * видна здесь до нажатия «Загрузить», а не в логе движка.
+     */
+    function bundleResultHTML(st) {
+        var job = st && st.job;
+        if (!job) return '';
+        if (job.error && job.error.message) {
+            return '<div class="rx-error-text" style="color:var(--danger, #ef4444);">' +
+                esc(jobErrorText(job.error, job)) + '</div>';
+        }
+        var facts = (job.result && job.result.facts) || {};
+        var rows = [];
+        if (st.dryRun) rows.push([t('reexport.bundle_plan_only'), t('reexport.yes')]);
+        if (facts.bundle_path) rows.push([t('reexport.result_path'), facts.bundle_path]);
+        if (facts.family) rows.push([t('reexport.bundle_family'), facts.family]);
+        if (facts.compat_verdict) rows.push([t('reexport.bundle_verdict'), facts.compat_verdict]);
+        if (facts.compat_reason) rows.push([t('reexport.bundle_reason'), facts.compat_reason]);
+        if (facts.missing && facts.missing.length) {
+            rows.push([t('reexport.bundle_missing'), facts.missing.join(', ')]);
+        }
+        rows.push([t('reexport.bundle_worker'),
+            facts.worker_checked ? t('reexport.yes') : t('reexport.bundle_worker_local')]);
+
+        var html = '';
+        if (rows.length) {
+            html += '<div class="rx-facts" style="display:flex;gap:14px;flex-wrap:wrap;margin:6px 0;">' +
+                rows.map(function (r) {
+                    return '<span><span style="color:var(--text-muted);">' + esc(r[0]) + ':</span> ' +
+                        esc(r[1]) + '</span>';
+                }).join('') + '</div>';
+        }
+        var roles = facts.roles || {};
+        var names = Object.keys(roles).sort();
+        if (names.length) {
+            html += '<div style="margin-top:4px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
+                esc(t('reexport.bundle_roles')) + ':</div>' +
+                '<ul style="margin:2px 0 0 16px;font-size:var(--font-size-xs);">' +
+                names.map(function (n) {
+                    return '<li><code>' + esc(n) + '</code> — ' + esc(roles[n]) + '</li>';
+                }).join('') + '</ul>';
+        }
+        return html;
+    }
+
+    /** runBundle — постановка задачи сборки bundle и ожидание терминального статуса. */
+    function runBundle(el, dryRun) {
+        var layer = jobs();
+        if (!layer) {
+            showError(el, t('reexport.jobs_module_missing'));
+            return Promise.resolve();
+        }
+        var body = buildBundleBody(el, dryRun);
+        if (!body.model_dir) {
+            showError(el, t('reexport.bundle_need_dir'));
+            return Promise.resolve();
+        }
+        showError(el, '');
+        state.bundle = { status: 'running', jobId: '', job: null, error: '', dryRun: !!dryRun };
+        renderBundle(el);
+        return layer.createJob(body).then(function (job) {
+            state.bundle.jobId = job && job.id ? job.id : '';
+            return layer.waitJob(state.bundle.jobId, 'bundleTimer', function (view) {
+                state.bundle.job = view;
+                state.bundle.status = view.status;
+                renderBundle(el);
+            });
+        }).then(function (final) {
+            state.bundle.job = final;
+            state.bundle.status = final.status;
+            renderBundle(el);
+        }).catch(function (err) {
+            state.bundle.status = 'failed';
+            state.bundle.error = (err && err.message) ? err.message : String(err);
+            renderBundle(el);
+        });
+    }
+
+    // =====================================================================
     // Шаг 4: пересканирование моделей
     // =====================================================================
 
@@ -1232,7 +1430,7 @@
 
     /** stopPolling — гасит ВСЁ: используется при уходе со страницы (clearBlock). */
     function stopPolling() {
-        var keys = ['inspectTimer', 'normalizeTimer', 'loadTimer'];
+        var keys = ['inspectTimer', 'normalizeTimer', 'loadTimer', 'bundleTimer'];
         for (var i = 0; i < keys.length; i++) {
             if (state[keys[i]]) {
                 clearTimeout(state[keys[i]]);
@@ -1248,6 +1446,9 @@
         _state: state,
         _buildHTML: buildHTML,
         _buildJobBody: buildJobBody,
+        _buildBundleBody: buildBundleBody,
+        _renderBundle: renderBundle,
+        _runBundle: runBundle,
         _verdictFor: verdictFor,
         _renderModels: renderModels,
         _renderInspect: renderInspect,

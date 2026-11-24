@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -63,6 +64,13 @@ type jobOptions struct {
 	Verify *bool `json:"verify,omitempty"`
 	// OutType — тип квантования/выхода для цели hf_to_gguf (q8_0, f16, ...).
 	OutType string `json:"outtype,omitempty"`
+	// Name — имя bundle для цели image_bundle: каталог в томе моделей и имя
+	// модели для imageworker (пусто — имя каталога набора).
+	Name string `json:"name,omitempty"`
+	// Roles — переопределение ролей файлов (цель image_bundle): «путь в наборе →
+	// роль». Сильнее заголовка: живой VAE FLUX (arch "Flux.1-AE") выглядит для
+	// парсера diffusion-моделью, и без подсказки роль пришлось бы угадывать.
+	Roles map[string]string `json:"roles,omitempty"`
 }
 
 func (o jobOptions) verifyEnabled() bool { return o.Verify == nil || *o.Verify }
@@ -171,6 +179,11 @@ type createRequest struct {
 type Manager struct {
 	cfg    config
 	runner jobRunner
+	// bundle — исполнитель цели image_bundle (Фаза 4). Отдельный от
+	// python-драйвера: роли определяет Go-парсер заголовков, раскладка —
+	// копирование файлов, то есть python для этой цели не нужен вовсе. Выбор
+	// исполнителя — по targetSpec.Kind в runOne.
+	bundle jobRunner
 	log    *zap.SugaredLogger
 
 	mu         sync.Mutex
@@ -191,6 +204,7 @@ func newManager(cfg config, runner jobRunner, log *zap.SugaredLogger) *Manager {
 	m := &Manager{
 		cfg:        cfg,
 		runner:     runner,
+		bundle:     newBundleRunner(cfg, log),
 		log:        log,
 		jobs:       map[string]*job{},
 		queue:      make(chan string, 64),
@@ -275,7 +289,7 @@ func (m *Manager) Create(req createRequest) (*jobView, error) {
 	if strings.TrimSpace(req.ModelDir) == "" {
 		return nil, &jobError{Code: "invalid_request", Message: "не указан model_dir (файл или каталог модели в томе моделей)"}
 	}
-	src, err := m.resolveSource(req.ModelDir)
+	src, err := m.resolveSource(req.ModelDir, spec.Kind)
 	if err != nil {
 		return nil, err
 	}
@@ -284,15 +298,15 @@ func (m *Manager) Create(req createRequest) (*jobView, error) {
 		return nil, err
 	}
 	if !req.Options.DryRun {
-		if _, err := os.Stat(outPath); err == nil && !req.Options.Force {
-			return nil, &jobError{Code: "dst_exists",
-				Message: fmt.Sprintf("результат уже существует: %s (включите force, чтобы перезаписать)", outPath)}
+		if err := m.checkDestination(src, outPath, spec.Kind, req.Options); err != nil {
+			return nil, err
 		}
-		if dir := filepath.Dir(outPath); dir != "" {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return nil, &jobError{Code: "dst_unwritable",
-					Message: fmt.Sprintf("каталог результата %s недоступен для записи: %v", dir, err)}
-			}
+	}
+	if spec.Kind == "bundle" {
+		// Опции набора проверяются здесь же: роль с опечаткой или подсказка
+		// несуществующему файлу — ошибка запроса, а не «фоновая неудача».
+		if err := validateBundleOptions(src, req.Options); err != nil {
+			return nil, err
 		}
 	}
 
@@ -334,7 +348,12 @@ func (m *Manager) Create(req createRequest) (*jobView, error) {
 //
 // Отдельно проверяется выход за корень: сервис работает с моделью, которую
 // принёс оператор, и не должен читать произвольные файлы хоста по запросу из UI.
-func (m *Manager) resolveSource(modelDir string) (string, error) {
+//
+// ДЛЯ ЦЕЛИ bundle ИСТОЧНИКОМ МОЖЕТ БЫТЬ ЛЮБОЙ КАТАЛОГ С ВЕСАМИ: раньше каталог
+// принимался только как HF-чекпойнт (config.json), и каталог со скачанными
+// GGUF/safetensors отвергался бы — ровно тот вход, ради которого Фаза 4 нужна.
+func (m *Manager) resolveSource(modelDir, kind string) (string, error) {
+	bundleKind := kind == "bundle"
 	in := strings.TrimSpace(modelDir)
 	candidates := []string{in}
 	if !filepath.IsAbs(in) {
@@ -355,6 +374,13 @@ func (m *Manager) resolveSource(modelDir string) (string, error) {
 			continue
 		}
 		if st.IsDir() {
+			if bundleKind {
+				if _, ferr := bundleWeightFiles(clean); ferr != nil || !bundleHasWeights(clean) {
+					return "", &jobError{Code: "input_missing", Message: fmt.Sprintf(
+						"в каталоге %s нет файлов весов (*.gguf/*.safetensors/*.ckpt): собирать bundle не из чего", clean)}
+				}
+				return clean, nil
+			}
 			// Каталог допустим только как HF-чекпойнт для полного ре-экспорта.
 			if !fileExists(filepath.Join(clean, "config.json")) {
 				return "", &jobError{Code: "model_not_found", Message: fmt.Sprintf(
@@ -362,10 +388,21 @@ func (m *Manager) resolveSource(modelDir string) (string, error) {
 			}
 			return clean, nil
 		}
+		if bundleKind {
+			return "", &jobError{Code: "input_missing", Message: fmt.Sprintf(
+				"цель %s собирает bundle из КАТАЛОГА файлов, а не из одного файла: %s", targetImageBundle, clean)}
+		}
 		return clean, nil
 	}
 	return "", &jobError{Code: "model_not_found", Message: fmt.Sprintf(
 		"модель %q не найдена в томе моделей %s", modelDir, m.cfg.ModelsDir)}
+}
+
+// bundleHasWeights — есть ли в каталоге хотя бы один файл весов (без обхода
+// недоступных вложений: та же граница глубины, что у сканирования набора).
+func bundleHasWeights(dir string) bool {
+	files, err := bundleWeightFiles(dir)
+	return err == nil && len(files) > 0
 }
 
 // resolveOutput выбирает путь результата: явный out_path, иначе рядом с моделью.
@@ -386,6 +423,11 @@ func (m *Manager) resolveSource(modelDir string) (string, error) {
 // Проверка отношения путей — filepath.Rel (как componentBundleDir в R710), а не
 // «префикс строки»: иначе /models2 прошёл бы проверку на /models.
 func (m *Manager) resolveOutput(src, target string, opts jobOptions) (string, error) {
+	if spec, ok := targetByID(target); ok && spec.Kind == "bundle" {
+		// Цель bundle пишет КАТАЛОГ, а не файл: у неё своя формула имени и своя
+		// проверка «внутри тома» — но правила те же (path_not_allowed, §3 плана).
+		return m.resolveBundleOutput(src, opts)
+	}
 	modelDir := filepath.Dir(filepath.Clean(src))
 	requested := strings.TrimSpace(opts.OutPath)
 
@@ -435,6 +477,159 @@ func defaultResultName(src, target string) string {
 		base = filepath.Base(src)
 	}
 	return base + "." + target + ".gguf"
+}
+
+// resolveBundleOutput — каталог bundle для цели image_bundle.
+//
+// Правила (те же, что у файловых целей, §3 плана — «выход только внутри
+// ${MODELS_DIR}»):
+//   - по умолчанию — <модели>/<имя>, имя берётся из options.name, иначе из имени
+//     каталога набора: каталог — это и есть имя модели для воркера;
+//   - options.out_path — путь каталога внутри тома моделей (относительный
+//     считается от корня тома, а не от каталога набора: bundle лежит на верхнем
+//     уровне, воркер ищет модели там);
+//   - СОВПАДЕНИЕ с каталогом набора разрешено осознанно: это режим «манифест в
+//     уже разложенном каталоге», и он не требует копировать гигабайты;
+//   - пересечение (каталог bundle внутри набора или наоборот) запрещено: копия
+//     попала бы в собственный источник, а имя модели разъехалось бы с каталогом.
+func (m *Manager) resolveBundleOutput(src string, opts jobOptions) (string, error) {
+	src = filepath.Clean(src)
+	name := strings.TrimSpace(opts.Name)
+	requested := strings.TrimSpace(opts.OutPath)
+	// Корень — каталог image-моделей, а не том целиком: воркер ищет модели только
+	// там (SDWORKER_IMAGE_MODELS_DIR), и bundle в корне тома он не увидит.
+	root := m.cfg.imageOutRoot()
+
+	var cand string
+	switch {
+	case requested == "":
+		if name == "" {
+			name = filepath.Base(src)
+		}
+		if err := validateBundleName(name); err != nil {
+			return "", err
+		}
+		cand = filepath.Join(root, name)
+	case filepath.IsAbs(requested):
+		cand = filepath.Clean(requested)
+	default:
+		// Относительный путь — от каталога image-моделей: именно там оператор
+		// видит модели на странице, и «out_path: my-model» означает «рядом с ними».
+		cand = filepath.Join(root, requested)
+	}
+
+	abs, err := filepath.Abs(cand)
+	if err != nil {
+		return "", &jobError{Code: "invalid_request", Message: fmt.Sprintf("каталог bundle %q: %v", cand, err)}
+	}
+	abs = filepath.Clean(abs)
+	if !pathWithin(abs, root) {
+		return "", &jobError{Code: "path_not_allowed", Message: fmt.Sprintf(
+			"каталог bundle %q вне каталога image-моделей %s: bundle обязан быть в нём, иначе imageworker его не увидит (REEXPORT_IMAGE_MODELS_DIR, у воркера — SDWORKER_IMAGE_MODELS_DIR)",
+			abs, root)}
+	}
+	if !pathWithin(abs, m.cfg.ModelsDir) {
+		return "", &jobError{Code: "path_not_allowed", Message: fmt.Sprintf(
+			"каталог bundle %q вне тома моделей %s", abs, m.cfg.ModelsDir)}
+	}
+	if samePath(abs, src) {
+		// Манифест в существующем каталоге: имя модели — имя каталога, поэтому
+		// options.name с другим именем отвергается, а не игнорируется молча.
+		if name != "" && name != filepath.Base(abs) {
+			return "", &jobError{Code: "invalid_request", Message: fmt.Sprintf(
+				"name=%q не совпадает с каталогом набора %q: при записи манифеста на месте "+
+					"имя модели — имя каталога (воркер ключует модели по нему)", name, filepath.Base(abs))}
+		}
+		return abs, nil
+	}
+	if pathWithin(abs, src) || pathWithin(src, abs) {
+		return "", &jobError{Code: "path_not_allowed", Message: fmt.Sprintf(
+			"каталог bundle %q и каталог набора %q пересекаются: копия попала бы в собственный источник",
+			abs, src)}
+	}
+	if err := validateBundleName(filepath.Base(abs)); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+// validateBundleName — имя bundle: один компонент пути без спецсимволов.
+//
+// Имя становится КАТАЛОГОМ в томе моделей и ключом модели в реестре воркера,
+// поэтому `..`, слэши и абсолютные пути — отказ (path_not_allowed), а не
+// «нормализуем и поедем»: «нормализация» уже дважды приводила к записи мимо тома
+// (D10.2, R731), и здесь она запрещена.
+func validateBundleName(name string) error {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return &jobError{Code: "invalid_request", Message: "не указано имя bundle (name или каталог результата)"}
+	}
+	if n == "." || n == ".." || n != filepath.Base(n) || filepath.IsAbs(n) ||
+		strings.ContainsAny(n, `/\`) || strings.ContainsAny(n, "\x00\r\n\t") {
+		return &jobError{Code: "path_not_allowed", Message: fmt.Sprintf(
+			"имя bundle %q недопустимо: это имя каталога в томе моделей (без слэшей и «..»)", name)}
+	}
+	if len(n) > 128 {
+		return &jobError{Code: "invalid_request", Message: fmt.Sprintf("имя bundle длиннее 128 символов: %q", n)}
+	}
+	return nil
+}
+
+// checkDestination — проверки до постановки задачи в очередь.
+//
+// ДЛЯ bundle ОНИ ДРУГИЕ: результат — каталог, «уже существует» значит «в нём уже
+// есть файлы» (пустой каталог — законный задел), а сам каталог создаёт
+// исполнитель: в очереди задача может простоять час, и пустой каталог в томе
+// моделей воркер показал бы моделью без файлов.
+func (m *Manager) checkDestination(src, outPath, kind string, opts jobOptions) error {
+	if kind == "bundle" {
+		if samePath(src, outPath) {
+			return nil // режим «манифест в существующем каталоге» идемпотентен
+		}
+		entries, err := os.ReadDir(outPath)
+		switch {
+		case err == nil:
+			if len(entries) > 0 && !opts.Force {
+				return &jobError{Code: "dst_exists", Message: fmt.Sprintf(
+					"каталог bundle уже существует и не пуст: %s (включите force, чтобы дополнить/перезаписать)", outPath)}
+			}
+		case !os.IsNotExist(err):
+			return &jobError{Code: "dst_unwritable", Message: fmt.Sprintf("каталог bundle %s: %v", outPath, err)}
+		}
+		if dir := filepath.Dir(outPath); dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return &jobError{Code: "dst_unwritable", Message: fmt.Sprintf(
+					"каталог результата %s недоступен для записи: %v", dir, err)}
+			}
+		}
+		return nil
+	}
+	if _, err := os.Stat(outPath); err == nil && !opts.Force {
+		return &jobError{Code: "dst_exists",
+			Message: fmt.Sprintf("результат уже существует: %s (включите force, чтобы перезаписать)", outPath)}
+	}
+	if dir := filepath.Dir(outPath); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return &jobError{Code: "dst_unwritable", Message: fmt.Sprintf(
+				"каталог результата %s недоступен для записи: %v", dir, err)}
+		}
+	}
+	return nil
+}
+
+// samePath — один и тот же путь (без учёта регистра на Windows, где сервис тоже
+// запускают локально `go run`).
+func samePath(a, b string) bool {
+	ca, cb := filepath.Clean(a), filepath.Clean(b)
+	if ca == cb {
+		return true
+	}
+	// На Linux пути регистрозависимы, поэтому сравнение без учёта регистра
+	// включается только для Windows.
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(ca, cb)
+	}
+	return false
 }
 
 // outRootHint — куда ещё можно писать, если основной корень не подошёл.
@@ -580,7 +775,20 @@ func (m *Manager) runOne(ctx context.Context, id string) {
 		ModelsDir:     m.cfg.ModelsDir,
 		ConverterPath: m.cfg.ConverterPath,
 	}
-	err := m.runner.Run(runCtx, req, func(ev runEvent) {
+	// ИСПОЛНИТЕЛЬ ВЫБИРАЕТСЯ ПО ВИДУ ЦЕЛИ, а не «какой один есть»: bundle
+	// собирается Go-кодом (заголовки + копирование), остальные цели — python-
+	// драйвером. Ошибка конфигурации (нет исполнителя) обязана быть отказом
+	// задачи, а не паникой в воркере очереди.
+	runner := m.runner
+	if spec, ok := targetByID(target); ok && spec.Kind == "bundle" {
+		runner = m.bundle
+	}
+	if runner == nil {
+		m.setStatus(id, statusFailed, &jobError{Code: "runner_missing",
+			Message: fmt.Sprintf("для цели %q нет исполнителя в этой сборке сервиса", target)})
+		return
+	}
+	err := runner.Run(runCtx, req, func(ev runEvent) {
 		m.applyEvent(id, ev)
 	})
 
@@ -649,7 +857,17 @@ func (m *Manager) removePartial(j *job) {
 	if !pathWithin(j.OutPath, m.cfg.ModelsDir) {
 		return
 	}
-	if _, err := os.Stat(j.OutPath); err != nil {
+	st, err := os.Stat(j.OutPath)
+	if err != nil {
+		return
+	}
+	// КАТАЛОГ BUNDLE НЕ УДАЛЯЕМ. Огрызок ГОТОВОГО ФАЙЛА опасен: воркер увидит
+	// «модель» и упадёт на загрузке. Неполный каталог bundle опасен иначе — в нём
+	// уже лежат скопированные гигабайты, profile.json не записан, и воркер видит
+	// набор как неполный (вердикт compat это и говорит). Удалять чужой труд молча
+	// нельзя: решение «докопировать или выбросить» — за оператором.
+	if st.IsDir() {
+		j.LogTail = append(j.LogTail, "неполный bundle оставлен на диске: "+j.OutPath)
 		return
 	}
 	if err := os.Remove(j.OutPath); err != nil {
@@ -679,7 +897,7 @@ func (m *Manager) checkSpace(target, src, out string, opts jobOptions) *jobError
 	if m.freeSpace == nil {
 		return nil
 	}
-	need, err := needForTask(target, src, opts)
+	need, err := needForTask(target, src, out, opts)
 	if err != nil {
 		m.log.Warnw("space requirement not computed — задача продолжается", "target", target,
 			"src", src, "error", err)

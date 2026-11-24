@@ -193,6 +193,47 @@ func (a *App) handleListModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRescanModels — POST /api/image/models/scan: ПЕРЕЧИТАТЬ реестр моделей с
+// диска, не дожидаясь изменения набора каталогов.
+//
+// ЗАЧЕМ ОТДЕЛЬНЫЙ ЭНДПОИНТ (Фаза 4 плана ре-экспорта). GET /api/image/models
+// перечитывает каталог только если изменился НАБОР подкаталогов
+// (sdbackend.RefreshIfChanged): запись profile.json в УЖЕ существующий каталог
+// отпечаток не меняет. Внешний писатель — сервис gguf-reexport (цель
+// image_bundle) — собирает bundle и в новом каталоге, и в существующем; во
+// втором случае GET показывал СТАРЫЙ вердикт (профиль, синтезированный до нашей
+// записи), то есть только что собранный набор выглядел неполным. Здесь реестр
+// перечитывается принудительно — это и есть «пересканирование моделей image» из
+// §4.3 плана, а не догадка «GET вроде перечитывает».
+func (a *App) handleRescanModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST")
+		return
+	}
+	// Во время активной загрузки bundle каталог уже создан, а profile.json ещё
+	// нет: перечитывание синтезировало бы «пустую» модель — тот же живой дефект,
+	// из-за которого handleListModels не перечитывает реестр при активных
+	// загрузках. Отказываем явно, а не молча сканируем.
+	if a.svc.HF.HasActiveDownloads() {
+		writeJSONError(w, http.StatusConflict, "downloads_in_progress",
+			"пересканирование недоступно во время загрузки bundle")
+		return
+	}
+	if err := a.svc.Registry.Load(); err != nil {
+		writeError(w, http.StatusInternalServerError, "registry_rescan_failed: "+err.Error())
+		return
+	}
+	logger.Get().Infow("image models registry rescanned on demand",
+		"models", len(a.svc.Registry.Names()))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":        a.svc.Models(),
+		"state":         a.svc.Sup.State(),
+		"current_model": a.svc.Sup.CurrentModel(),
+		"warnings":      a.svc.Registry.Warnings(),
+		"rescanned":     true,
+	})
+}
+
 // loadRequest — тело POST /api/image/models/load.
 type loadRequest struct {
 	Name string `json:"name"`

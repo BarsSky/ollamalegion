@@ -441,7 +441,12 @@ func DefaultComponent(family, role string) (ImageComponent, bool) {
 // знает и про DiT-семейства без своей записи в таблице (там всё равно нужен
 // VAE), и про «роль занята файлом с другим содержимым». Возвращает роли (id), а
 // не подписи, потому что по ним ищется каталог.
-func (c *BundleCompat) RequiredComponentRoles() []string {
+//
+// ПОЧЕМУ ФУНКЦИЯ, А НЕ МЕТОД (Фаза 4). С Типа-общего-пакета (internal/imagemodel)
+// BundleCompat — псевдоним типа, а на псевдоним чужого типа методы определять
+// нельзя. Логика осталась здесь: она зависит от каталога компонентов R710, а не
+// от разбора заголовков.
+func RequiredComponentRoles(c *BundleCompat) []string {
 	if c == nil {
 		return nil
 	}

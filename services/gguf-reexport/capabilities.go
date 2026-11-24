@@ -16,12 +16,25 @@ import (
 	"time"
 )
 
+// targetImageBundle — ID цели «набор файлов → image-bundle» (Фаза 4).
+//
+// Константа, а не литерал: ID встречается в capabilities, в sd-server.config.json
+// (built_by.target) и в тестах; разъехавшееся имя цели означало бы «кнопка есть,
+// задачи нет» (Create отвечает unknown_target).
+const targetImageBundle = "image_bundle"
+
 // targetSpec — цель ре-экспорта: одна операция, которую сервис умеет выполнить.
 type targetSpec struct {
-	ID                    string             `json:"id"`
-	Label                 string             `json:"label"`
-	Kind                  string             `json:"kind"` // metadata_patch | convert
-	Architectures         []string           `json:"architectures"`
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// Kind — ЧЕМ исполняется цель: metadata_patch | convert идут python-драйвером,
+	// bundle — Go-кодом сервиса (bundle.go). По kind менеджер выбирает исполнителя
+	// (jobs.go:runOne), поэтому его нельзя подменять на «примерно то же».
+	Kind          string   `json:"kind"`
+	Architectures []string `json:"architectures"`
+	// RequiresSourceWeights — нужны ли ИСХОДНЫЕ веса: convert строит из
+	// HF-чекпойнта, normalize переупаковывает метаданные, bundle работает с уже
+	// скачанными файлами.
 	RequiresSourceWeights bool               `json:"requires_source_weights"`
 	Available             bool               `json:"available"`
 	Reason                string             `json:"reason,omitempty"`
@@ -32,7 +45,7 @@ type targetSpec struct {
 // строилась из ответа сервиса, а не из захардкоженного списка полей.
 type targetOptionSpec struct {
 	ID      string      `json:"id"`
-	Type    string      `json:"type"` // bool | string
+	Type    string      `json:"type"` // bool | string | json
 	Default interface{} `json:"default"`
 	Label   string      `json:"label"`
 	Hint    string      `json:"hint,omitempty"`
@@ -84,6 +97,35 @@ func defaultTargets() []targetSpec {
 					Label: "Тип выхода (f16, bf16, q8_0, q4_k_m)"},
 				{ID: "dry_run", Type: "bool", Default: false, Label: "Только проверка входа"},
 				{ID: "force", Type: "bool", Default: false, Label: "Перезаписать существующий результат"},
+			},
+		},
+		{
+			// Фаза 4 плана: «набор файлов → bundle». ДОСТУПНА ВСЕГДА — и это
+			// честно: роли определяет Go-парсер заголовков (internal/cppbackend),
+			// раскладка — копирование файлов, вердикт — internal/sdbackend. Ни
+			// torch, ни конвертер llama.cpp, ни root не нужны, поэтому закрывать
+			// её пробой python было бы враньём в другую сторону (кнопка спрятана
+			// там, где сборка как раз работает).
+			ID:                    targetImageBundle,
+			Label:                 "Набор файлов → image-bundle (роли по заголовкам, R696)",
+			Kind:                  "bundle",
+			Architectures:         []string{"*"},
+			RequiresSourceWeights: false,
+			Available:             true,
+			Options: []targetOptionSpec{
+				{ID: "name", Type: "string", Default: "",
+					Label: "Имя bundle (каталог в томе моделей)",
+					Hint:  "пусто — имя каталога набора; по этому имени imageworker знает модель"},
+				{ID: "out_path", Type: "string", Default: "",
+					Label: "Каталог bundle",
+					Hint:  "пусто — <models>/<name>; абсолютный путь допустим только внутри тома моделей"},
+				{ID: "roles", Type: "json", Default: map[string]string{},
+					Label: "Переопределение ролей (json: файл → роль)",
+					Hint:  "сильнее заголовка: {\"ae.safetensors\": \"vae\"}"},
+				{ID: "dry_run", Type: "bool", Default: false,
+					Label: "Только план (файлы не копируются)",
+					Hint:  "читает заголовки и показывает роли, семейство и вердикт, ничего не записывая"},
+				{ID: "force", Type: "bool", Default: false, Label: "Перезаписать существующий bundle"},
 			},
 		},
 	}
@@ -319,6 +361,18 @@ type limitsInfo struct {
 	ScanDepth     int    `json:"scan_depth"`
 	MaxListed     int    `json:"max_listed_models"`
 	Cancel        string `json:"cancel"`
+	// ImageModelsDir — каталог, в который цель image_bundle пишет bundle: его
+	// читает imageworker (SDWORKER_IMAGE_MODELS_DIR), и путь вне него — отказ
+	// path_not_allowed. ImageOutFallback=true — переменная задана, но лежит вне
+	// тома моделей и приглушена (иначе сервис писал бы туда, где воркер не ищет).
+	ImageModelsDir   string `json:"image_models_dir,omitempty"`
+	ImageOutFallback bool   `json:"image_out_fallback,omitempty"`
+	// ImageWorker — адрес imageworker для пересканирования и проверки вердикта
+	// собранного bundle (REEXPORT_IMAGEWORKER_URL). Пусто = проверка только
+	// локальная (тот же R696-код, что у воркера), и задача пишет
+	// worker_checked=false — панель и оператор видят это из ответа, а не
+	// догадываются, почему «проверено» появилось без воркера.
+	ImageWorker string `json:"image_worker,omitempty"`
 }
 
 // buildCapabilities собирает ответ. Версия конвертера берётся из ЗАПЕЧЁННОЙ
@@ -391,6 +445,11 @@ func buildCapabilities(info pythonInfo) capabilitiesResponse {
 			"get":          "GET /api/reexport/jobs/{id}",
 			"cancel":       "DELETE /api/reexport/jobs/{id}",
 			"rescan":       "POST /api/models/refresh на cppworker — после успешной задачи воркер должен перечитать каталог",
+			// imageworker: отдельного scan-эндпоинта нет, GET /api/image/models
+			// сам перечитывает реестр при изменении каталога моделей
+			// (sdbackend.RefreshIfChanged) — это и есть пересканирование из §4.3.
+			"image_rescan": "POST /api/image/models/scan на imageworker — принудительное перечитывание реестра и вердикт compat (R696); " +
+				"GET /api/image/models перечитывает только при смене набора каталогов",
 		},
 	}
 }

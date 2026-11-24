@@ -27,7 +27,7 @@
 // classifySpecialRole вызывается ТОЛЬКО когда семейство diffusion по тензорам не
 // опознано (см. applySpecialRole в hf_probe.go) — тогда «внутренний CLIP» уже
 // учтён версией модели.
-package cppbackend
+package imagemodel
 
 import (
 	"os"
@@ -64,7 +64,7 @@ const (
 // решает, какую роль играет файл, и она обязана проверяться на реальных байтах
 // заголовков, а не через HTTP-мок.
 func ProbeHead(head []byte, filename string) *HFProbeResult {
-	return probeHeadInto(&HFProbeResult{}, head, filename)
+	return ProbeHeadInto(&HFProbeResult{}, head, filename)
 }
 
 // ProbeLocalFile — то же, что ProbeFile, но для файла на диске: читаем только

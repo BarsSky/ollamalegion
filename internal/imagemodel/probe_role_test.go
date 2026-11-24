@@ -9,7 +9,7 @@
 // Qwen-Image 2.1. Воркер подключил его как --model, движок ответил
 // «get sd version from file failed», и оператор увидел только «модель не
 // загрузилась».
-package cppbackend
+package imagemodel
 
 import (
 	"os"

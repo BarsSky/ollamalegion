@@ -130,6 +130,9 @@ func (s *server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	caps.Limits.JobsDir = s.cfg.JobsDir
 	caps.Limits.ScanDepth = s.cfg.ScanDepth
 	caps.Limits.MaxListed = s.cfg.ScanMaxFiles
+	caps.Limits.ImageWorker = s.cfg.ImageWorkerURL
+	caps.Limits.ImageModelsDir = s.cfg.imageOutRoot()
+	caps.Limits.ImageOutFallback = s.cfg.imageOutFallback()
 	writeJSON(w, http.StatusOK, caps)
 }
 

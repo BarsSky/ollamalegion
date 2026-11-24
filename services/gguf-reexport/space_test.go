@@ -23,7 +23,7 @@ func TestNeedForTaskCountsInputOutputAndReserve(t *testing.T) {
 	}
 
 	// normalize: результат — копия данных входа, отдельного выхода нет.
-	need, err := needForTask("inkling2_loop", src, jobOptions{})
+	need, err := needForTask("inkling2_loop", src, filepath.Join(dir, "out.gguf"), jobOptions{})
 	if err != nil {
 		t.Fatalf("needForTask(normalize): %v", err)
 	}
@@ -38,7 +38,7 @@ func TestNeedForTaskCountsInputOutputAndReserve(t *testing.T) {
 	}
 
 	// convert: вход + выход + запас (выход ≈ вход: конвертер пишет те же веса).
-	need, err = needForTask("hf_to_gguf", src, jobOptions{})
+	need, err = needForTask("hf_to_gguf", src, filepath.Join(dir, "out.gguf"), jobOptions{})
 	if err != nil {
 		t.Fatalf("needForTask(convert): %v", err)
 	}
@@ -50,7 +50,7 @@ func TestNeedForTaskCountsInputOutputAndReserve(t *testing.T) {
 	}
 
 	// dry-run ничего не пишет — и места не требует.
-	need, err = needForTask("inkling2_loop", src, jobOptions{DryRun: true})
+	need, err = needForTask("inkling2_loop", src, filepath.Join(dir, "out.gguf"), jobOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("needForTask(dry-run): %v", err)
 	}

@@ -155,7 +155,7 @@ func TestBundleCompat_RequiredComponentRoles_R710(t *testing.T) {
 	if compat.Verdict != CompatIncomplete {
 		t.Fatalf("вердикт %q, want %q (diffusion без VAE/TE)", compat.Verdict, CompatIncomplete)
 	}
-	roles := compat.RequiredComponentRoles()
+	roles := RequiredComponentRoles(compat)
 	if len(roles) != 2 || roles[0] != types.ImageFileRoleVae || roles[1] != types.ImageFileRoleLLM {
 		t.Fatalf("недостающие роли = %v, want [vae llm]", roles)
 	}
@@ -338,7 +338,7 @@ func TestComponentInstall_WritesRoleKeepsExistingFiles_R710(t *testing.T) {
 			t.Fatalf("вердикт всё ещё считает VAE отсутствующим: %+v", compatAfter.Roles)
 		}
 	}
-	if got := compatAfter.RequiredComponentRoles(); len(got) != 1 || got[0] != types.ImageFileRoleLLM {
+	if got := RequiredComponentRoles(compatAfter); len(got) != 1 || got[0] != types.ImageFileRoleLLM {
 		t.Fatalf("следующий шаг = %v, want [llm] (VAE добавлен, энкодера нет)", got)
 	}
 	if compatAfter.Verdict != CompatIncomplete {

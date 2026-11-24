@@ -96,3 +96,50 @@ func TestCapabilitiesReportActionableProbeError(t *testing.T) {
 		t.Fatalf("torch_state=%q, ожидался unknown (пробу не выполнить)", caps.Converter.TorchState)
 	}
 }
+
+// TestCapabilitiesImageBundleAvailableWithoutPython — Фаза 4: цель «набор файлов
+// → bundle» НЕ зависит от python/torch и обязана оставаться доступной даже
+// тогда, когда python-часть сломана.
+//
+// ЗАЧЕМ. Роли определяет Go-парсер заголовков (internal/imagemodel), раскладка —
+// копирование файлов, вердикт — тот же R696-код. Если бы цель закрывалась пробой
+// python, кнопка пропадала бы ровно в той сборке, где она работает (light-образ).
+// При этом цель НЕ должна выглядеть «магической»: режим (kind=bundle) и опции
+// объявлены данными, чтобы форма WebUI строилась из ответа.
+func TestCapabilitiesImageBundleAvailableWithoutPython(t *testing.T) {
+	defer targetRegistry.setAvailability("hf_to_gguf", false, "образ без torch")
+	defer targetRegistry.setAvailability("inkling2_loop", true, "")
+
+	info := pythonInfo{OK: false, Error: "python-драйвер не ответил: exit status 2"}
+	applyAvailability(info)
+	caps := buildCapabilities(info)
+
+	spec, ok := targetSpecByID(caps, targetImageBundle)
+	if !ok {
+		t.Fatal("цель image_bundle отсутствует в capabilities: WebUI о ней не узнает")
+	}
+	if !spec.Available {
+		t.Fatalf("цель объявлена недоступной без python, хотя собирается Go-кодом: %q", spec.Reason)
+	}
+	if spec.Kind != "bundle" {
+		t.Fatalf("kind=%q, ожидался bundle (по нему менеджер выбирает исполнителя)", spec.Kind)
+	}
+	if spec.RequiresSourceWeights {
+		t.Fatal("цель работает с уже скачанными файлами, исходные веса ей не нужны")
+	}
+	wantOptions := []string{"name", "out_path", "roles", "dry_run", "force"}
+	got := map[string]bool{}
+	for _, o := range spec.Options {
+		got[o.ID] = true
+	}
+	for _, id := range wantOptions {
+		if !got[id] {
+			t.Fatalf("в capabilities нет опции %q (форма WebUI строится по ним): %+v", id, spec.Options)
+		}
+	}
+	// hf_to_gguf от сломанной python-части закрывается — и это не должно
+	// задевать image_bundle (проверено выше): у целей разные зависимости.
+	if hf, _ := targetSpecByID(caps, "hf_to_gguf"); hf.Available {
+		t.Fatal("hf_to_gguf открылась без python/torch")
+	}
+}

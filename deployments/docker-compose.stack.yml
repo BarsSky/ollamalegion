@@ -1460,6 +1460,14 @@ services:
       # токена осознанно: WebUI ходит сессией (R222), а не вшитым токеном.
       - REEXPORT_API_TOKEN=${CPPWORKER_API_TOKEN:-}
       - REEXPORT_SCAN_DEPTH=${GGUF_REEXPORT_SCAN_DEPTH:-3}
+      # Фаза 4: адрес API image-воркера для пересканирования каталога
+      # (POST /api/image/models/scan) и проверки вердикта compat собранного
+      # bundle. Пусто = проверка только локальная + worker_checked=false в задаче.
+      - REEXPORT_IMAGEWORKER_URL=${GGUF_REEXPORT_IMAGEWORKER_URL:-}
+      # Куда цель image_bundle кладёт bundle: каталог image-моделей в томе.
+      # По умолчанию <MODELS_DIR>/image — ровно то, что imageworker читает
+      # (SDWORKER_IMAGE_MODELS_DIR); путь вне него — отказ path_not_allowed.
+      - REEXPORT_IMAGE_MODELS_DIR=${GGUF_REEXPORT_IMAGE_MODELS_DIR:-image}
       # Версия в шапке логов сервиса (образ печёт свою; env — для локального запуска).
       - APP_VERSION=${GGUF_REEXPORT_TAG:-r261121-r709}
       - LOG_LEVEL=${GGUF_REEXPORT_LOG_LEVEL:-info}

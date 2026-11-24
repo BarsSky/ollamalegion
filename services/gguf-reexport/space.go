@@ -42,8 +42,12 @@ type spaceNeed struct {
 //
 //	normalize (metadata_patch): вход + запас — результат это копия данных входа;
 //	convert (hf_to_gguf):      вход + выход + запас, выход ≈ вход;
+//	bundle (image_bundle):     вход + выход + запас — набор копируется в каталог
+//	                           bundle; если bundle собирается В каталоге набора
+//	                           (манифест на месте), копирования нет и писать
+//	                           нечего — проверять нечего тоже;
 //	dry_run:                   0 — файл не пишется вообще.
-func needForTask(target, src string, opts jobOptions) (spaceNeed, error) {
+func needForTask(target, src, out string, opts jobOptions) (spaceNeed, error) {
 	if opts.DryRun {
 		return spaceNeed{}, nil
 	}
@@ -51,8 +55,18 @@ func needForTask(target, src string, opts jobOptions) (spaceNeed, error) {
 	if err != nil {
 		return spaceNeed{}, err
 	}
+	spec, _ := targetByID(target)
 	need := spaceNeed{Input: in}
-	if spec, ok := targetByID(target); ok && spec.Kind == "convert" {
+	switch spec.Kind {
+	case "convert":
+		need.Output = in
+	case "bundle":
+		if samePath(src, out) {
+			// Манифест на месте: пишутся два JSON-файла (килобайты), копии нет.
+			// Требовать «вход + запас» здесь значило бы отказывать в задаче,
+			// которая не занимает места вовсе.
+			return spaceNeed{}, nil
+		}
 		need.Output = in
 	}
 	need.Need = need.Input + need.Output + spaceReserveBytes

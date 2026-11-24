@@ -79,6 +79,11 @@ func (a *App) setupRouter() http.Handler {
 	mux.HandleFunc("/api/image/models/export", a.handleExportBundle)
 	mux.HandleFunc("/api/image/models/import", a.handleImportBundle)
 	mux.HandleFunc("/api/image/models/reload", a.handleReloadModel)
+	// Фаза 4 плана ре-экспорта: принудительное пересканирование каталога моделей.
+	// Маршрут обязан быть зарегистрирован ДО префиксного /api/image/models/{name}/
+	// (serveMux берёт самый длинный шаблон, но порядок регистрации в этом файле
+	// читают люди — пусть «scan» стоит рядом со списком, а не после компонентов).
+	mux.HandleFunc("/api/image/models/scan", a.handleRescanModels)
 	// R710 (2026-11-24): «в наборе не хватает VAE/text encoder» → добавить
 	// недостающее из интерфейса. Каталог — данные (семейство → репозитории и
 	// файлы), установка — загрузка в каталог СУЩЕСТВУЮЩЕГО bundle + правка

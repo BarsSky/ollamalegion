@@ -178,12 +178,18 @@ class _ConvertProgress(threading.Thread):
         super().__init__(daemon=True)
         self._dst = dst
         self._expected = expected_bytes
-        self._stop = stop
+        # ИМЯ ВАЖНО. Было `self._stop = stop`, и это затирало внутренний метод
+        # CPython `Thread._stop`, который `Thread.join()` вызывает на завершённом
+        # потоке (`_wait_for_tstate_lock` -> `self._stop()`). Итог живого прогона:
+        # `TypeError: 'Event' object is not callable` в join — КАЖДАЯ задача
+        # hf_to_gguf падала в конце, уже после работы конвертера. Поэтому поле
+        # называется `_stop_evt`; страж — driver_no_thread_shadow_test.go (R732).
+        self._stop_evt = stop
         self._interval = interval
         self._last = -1.0
 
     def run(self) -> None:
-        while not self._stop.wait(self._interval):
+        while not self._stop_evt.wait(self._interval):
             try:
                 size = os.path.getsize(self._dst)
             except OSError:

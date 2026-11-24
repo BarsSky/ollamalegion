@@ -122,6 +122,12 @@ add_executable(test_batch_n_tokens
     ../head_dim.c
     # R248/B2: bridge.c вызывает bridge_mtmd_* (mmproj) — компилируем обёртку.
     ../csrc/vision_mtmd.cpp
+    # R705-fix (CI, 2026-11-24): bridge.c зовёт ollamalegion_model_head_dim_*_full
+    # из csrc/model_hparams.cpp. В c/bridge/CMakeLists.txt файл был, а в тестах —
+    # нет, и CI-джоба «C-bridge regression test» падала на линковке:
+    #   bridge.c:(.text+0x7cc5): undefined reference to
+    #   `ollamalegion_model_head_dim_v_full'
+    ../csrc/model_hparams.cpp
 )
 target_include_directories(test_batch_n_tokens PRIVATE
     ${CMAKE_SOURCE_DIR}/..
@@ -150,6 +156,9 @@ add_library(bridge_compile_all OBJECT
     ../head_dim.c
     ../csrc/chat_thinking.cpp
     ../csrc/vision_mtmd.cpp
+    # R705-fix: см. test_batch_n_tokens — без этого файла линковка/компиляция
+    # моста не сходится с тем, что реально собирает образ.
+    ../csrc/model_hparams.cpp
 )
 target_include_directories(bridge_compile_all PRIVATE
     ${CMAKE_SOURCE_DIR}/..
@@ -176,6 +185,8 @@ add_executable(test_batched_batch
     ../head_dim.c
     # R248/B2: см. test_batch_n_tokens.
     ../csrc/vision_mtmd.cpp
+    # R705-fix: см. test_batch_n_tokens.
+    ../csrc/model_hparams.cpp
 )
 target_include_directories(test_batched_batch PRIVATE
     ${CMAKE_SOURCE_DIR}/..

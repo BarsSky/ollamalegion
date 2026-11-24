@@ -22,20 +22,50 @@
    * 3. Geo heuristic based on timezone (Intl.DateTimeFormat)
    * 4. Fallback: 'en'
    */
+  // Safe access to browser storage: в Node (тесты, SSR) `localStorage` нет.
+  //
+  // ЖИВОЙ ДЕФЕКТ CI. Модуль читал `localStorage.getItem(...)` прямо в
+  // `detectLanguage`, и на раннере с Node 20 (`localStorage` появился в Node 22)
+  // падал при загрузке: `ReferenceError: localStorage is not defined` —
+  // `webui/tests/image-hf-i18n-r694.test.js` и `image-role-label-r695.test.js`
+  // краснели ТОЛЬКО в CI (локально Node 22, поэтому «не воспроизводится»).
+  // Хранилище — оптимизация «запомнить выбор», а не условие работы, поэтому его
+  // отсутствие означает «взять язык из окружения или дефолт», а не падение.
+  function safeStorageGet(key) {
+    try {
+      if (typeof localStorage === 'undefined' || !localStorage) return null;
+      return localStorage.getItem(key);
+    } catch (e) {
+      return null; // приватный режим/запрет доступа — не повод падать
+    }
+  }
+
+  function safeStorageSet(key, value) {
+    try {
+      if (typeof localStorage === 'undefined' || !localStorage) return;
+      localStorage.setItem(key, value);
+    } catch (e) {
+      // тот же случай: язык просто не запомнится между визитами
+    }
+  }
+
   function detectLanguage() {
     // 1. Stored preference
-    var stored = localStorage.getItem(STORAGE_KEY);
+    var stored = safeStorageGet(STORAGE_KEY);
     if (stored && (stored === 'ru' || stored === 'en')) return stored;
 
-    // 2. Browser language (primary)
-    var browserLang = (navigator.language || navigator.userLanguage || '').toLowerCase();
+    // 2. Browser language (primary). `navigator` в Node 20 тоже нет — читаем
+    // через проверку, а не полагаемся на глобал.
+    var nav = (typeof navigator !== 'undefined' && navigator) ? navigator : null;
+    var browserLang = ((nav && (nav.language || nav.userLanguage)) || '').toLowerCase();
     if (browserLang.startsWith('ru')) return 'ru';
     if (browserLang.startsWith('en')) return 'en';
 
     // 3. navigator.languages array (fallback order)
-    if (navigator.languages && navigator.languages.length) {
-      for (var i = 0; i < navigator.languages.length; i++) {
-        var lang = navigator.languages[i].toLowerCase();
+    var navLangs = (nav && nav.languages) ? nav.languages : null;
+    if (navLangs && navLangs.length) {
+      for (var i = 0; i < navLangs.length; i++) {
+        var lang = String(navLangs[i] || '').toLowerCase();
         if (lang.startsWith('ru')) return 'ru';
         if (lang.startsWith('en')) return 'en';
       }
@@ -133,7 +163,9 @@
       return;
     }
     currentLang = lang;
-    localStorage.setItem(STORAGE_KEY, lang);
+    // Запись — тоже через безопасную обёртку: в Node 20 `localStorage` нет, а
+    // setLang зовётся из тестов и из кода, который может исполняться вне браузера.
+    safeStorageSet(STORAGE_KEY, lang);
     document.documentElement.setAttribute('lang', lang);
     // Dispatch event so other modules can react
     window.dispatchEvent(new CustomEvent('i18n:changed', { detail: { lang: lang } }));

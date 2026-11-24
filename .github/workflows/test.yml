@@ -118,7 +118,20 @@ jobs:
         # 'FAIL ollama-legion/internal/balancer 180.049s' (прогон
         # 35872569511). В ci.yml для того же пакета бюджет давно 300s —
         # приводим к одному значению (см. .github/workflows/ci.yml:436).
-        run: scripts/run_go_test.sh "internal/..." -race -tags llama_stub -timeout 300s -v ./internal/...
+        #
+        # R734 (2026-11-24): 300s → 600s. Пакет вырос (R722–R733 добавили
+        # тесты диагностики, профилей, ре-экспорта), и на ubuntu-latest он
+        # перестал влезать:
+        #   FAIL ollama-loadbalancer/internal/balancer 300.047s  (прогон
+        #   45303700933, коммит 4a1b3b72: 'panic: test timed out after 5m0s').
+        # Числа для калибровки: ЛОКАЛЬНО тот же набор с -race — 212s (тёплый
+        # кэш, Windows), последний ЗЕЛЁНЫЙ прогон CI (40cfc8a5, 2026-11-22) —
+        # шаг целиком 396s на ВСЕ пакеты internal/... Сон в тестах — реальное
+        # время (опросы по 4–5 с), поэтому медленный раннер добавляет в
+        # основном ВРЕМЯ КОМПИЛЯЦИИ с -race (~100–150 с), а не само выполнение;
+        # 600 с покрывает этот рост с запасом. Job-бюджет 25 минут оставлен:
+        # 360 (internal) + 320 (tests/) + 120 (остальное) ≈ 13 минут.
+        run: scripts/run_go_test.sh "internal/..." -race -tags llama_stub -timeout 600s -v ./internal/...
 
       - name: Test cmd/... (no race)
         run: scripts/run_go_test.sh "cmd/..." -tags llama_stub -timeout 60s -v ./cmd/...

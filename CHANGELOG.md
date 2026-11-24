@@ -11,6 +11,15 @@
 
 **ТЕСТЫ.** Новый `webui/tests/image-hf-cart-r749.test.js` (13 проверок): чистые помощники сверки (путь/localPath/имя, регистр), цель корзины с именем из репозитория и подписью бэкенда, построчные роли/размеры/статусы, итог «на узле K · не хватает M», «Скачать недостающее» отправляет РОВНО отсутствующие файлы (и ни одного запроса, когда отсутствующих нет), пустая корзина, «Скачать выбранное» по-прежнему отправляет все отмеченные, статика разметки (корзина первая, файлы без кнопок, `#imgBundleStart` отсутствует), sticky-CSS, ключи ru/en, токены модуля. Прогоны: `scripts/run-webui-tests.js` — **170/170**; `image-models-hf.test.js` — 46, `image-page-dom.test.js` — 28, `image-hf-i18n-r694.test.js` — 11, `image-components-r710.test.js` — 22, `image-hf-sticky-selection-r696.test.js` — 10, `image-hf-files-expand.test.js` — 13; `go test -tags llama_stub ./tests/ -run 'TestR628|TestR506'`, `./internal/api/ -run 'TestR222'`, `TestLintCSSAndI18nNoEmDash`; `check_webui_i18n_keys.py`, `check_webui_assets.py`, `check_webui_refs.js`, `i18n_diff --strict`, ratchet R575/R586 (used 2491, unused 0, keys 2437) — зелёные.
 
+**ЖИВОЙ ПРОГОН (webui `r261120-r749`, playwright, панель 18083, бэкенд `imageworker`):**
+- `identity.json` образа: `version`/`image_tag` = `r261120-r749`, commit `3a6e58a1`; после раскатки все пять контейнеров healthy;
+- слева активен «imageworker · imageworker:18093 · healthy», `#imgBackendSelect=imageworker`;
+- на вкладке HuggingFace корзина стоит выше поиска (top 304 px против 698 px), `position: sticky`; после раскрытия `leejet/FLUX.1-schnell-gguf` (5 файлов, отмечен 1) корзина на 105 px, карточка файлов на 975 px — корзина выше;
+- строка «Куда: flux.1-schnell-gguf · Семейство: flux · Бэкенд: imageworker (imageworker:18093) · Репозиторий: leejet/FLUX.1-schnell-gguf»; состав: «diffusion (веса) · flux1-schnell-q2_k.gguf · 3.8 GB · нет на узле»; итог «В корзине: 1 файлов · 3.8 GB · на узле: 0 · не хватает: 1 · 3.8 GB»; кнопки «Скачать выбранное (1 · 3.8 GB)» и «Скачать недостающее (1 · 3.8 GB)» активны;
+- прокрутка на 900 px: `cartTop=0`, корзина видна (sticky работает);
+- `#imgBundleStart` в DOM отсутствует, в карточке файлов нет `data-imh-action="download"`, ошибок консоли нет;
+- `scripts/check-image-tags.ps1` — OK (webui `r261120-r749`, остальные теги без изменений); скриншот — `test-results/image-cart-r749.png`.
+
 **СЛЕДУЮЩИЕ ЭТАПЫ (по согласованию):** 3 — управление группой файлов на странице моделей (докачать/перекачать/удалить отдельный файл, «докачать недостающее» из `compat`); 4 — бейджи форматов (`safetensors` где движок читает, где нужен только GGUF; предупреждение про MLX-квантованные safetensors).
 
 ## [0.7.489 - R747: страница Image — мастер-детейл как на GGUF (слева бэкенды, справа их табы), 2026-11-25]

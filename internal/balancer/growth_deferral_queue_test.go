@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"ollama-loadbalancer/pkg/types"
 )
@@ -33,16 +34,18 @@ func newReloadCounterR679(t *testing.T) *reloadCounterR679 {
 	c := &reloadCounterR679{}
 	c.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/models/load" && r.Method == http.MethodPost {
-			atomic.AddInt32(&c.reloads, 1)
 			var req struct {
 				Name        string `json:"name"`
 				ContextSize int    `json:"contextSize"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&req)
+			// R741: сначала цель/имя, ПОТОМ счётчик. Иначе ожидание «счётчик == N»
+			// может вернуться раньше, чем записан target, и проверка цели прочитает 0.
 			c.mu.Lock()
 			c.target = req.ContextSize
 			c.lastName = req.Name
 			c.mu.Unlock()
+			atomic.AddInt32(&c.reloads, 1)
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = io.WriteString(w, `{"status":"loading"}`)
 			return
@@ -60,6 +63,33 @@ func (c *reloadCounterR679) relTarget() (int, string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.target, c.lastName
+}
+
+// waitReloadsR679 — дождаться, пока фейковый воркер насчитает want перезагрузок.
+//
+// ЗАЧЕМ. Рост окна запускается АСИНХРОННО — это и есть требование R664/R679
+// («не перезагружать под обслуживаемым запросом»). Поэтому сразу после
+// drainDeferredGrowthR664 счётчик может быть ещё 0, и проверка «!= 1» ловила не
+// дефект, а гонку с фоновой горутиной: на загруженном раннере под покрытием это
+// дало плавающий красный CI (прогон 45327320473, шаг «Generate coverage
+// (race + atomic)»):
+//
+//	growth_deferral_queue_test.go:144: перезагрузок 0 после хода, want 1
+//
+// Ждём до 5 с, опрашивая счётчик (без фиксированного «сна на угад»), и падаем с
+// причиной, если перезагрузки не случилось вовсе.
+func waitReloadsR679(t *testing.T, w *reloadCounterR679, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if n := w.count(); n >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("перезагрузок %d за 5 с, want %d: отложенный рост обязан исполниться", w.count(), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // queueProxyR679 — прокси с загруженной моделью «m» (8192 на слот) и живым
@@ -140,9 +170,8 @@ func TestR679_PreflightPlansGrowthInsteadOfRunningIt(t *testing.T) {
 		t.Fatalf("после завершения хода учёт = %d, want 0", got)
 	}
 	p.drainDeferredGrowthR664("bk-1")
-	if n := w.count(); n != 1 {
-		t.Fatalf("перезагрузок %d после хода, want 1: отложенный рост обязан исполниться", n)
-	}
+	// R741: перезагрузка асинхронна — ждём её, а не проверяем мгновенно.
+	waitReloadsR679(t, w, 1)
 	target, name := w.relTarget()
 	if target != 16384 {
 		t.Fatalf("суммарное окно перезагрузки = %d, want 16384 (16384 на клиента × 1 слот)", target)

@@ -82,6 +82,11 @@ func newSupervisorWithFake(t *testing.T, models map[string]types.ImageModelProfi
 
 	fake := newFakeBackend(t)
 	sup := NewSupervisor(&cfg, reg, NewMetrics())
+	// R742: занятость порта в общем хелпере не проверяется — порт из freePort на
+	// shared-раннере может занять другой тестовый процесс, и тест ждал бы 60 с
+	// вместо проверки своего поведения (см. SetPortFreeSkipForTests). Тест
+	// TestSupervisor_Load_PortBusy собирает супервизор САМ и проверку сохраняет.
+	sup.SetPortFreeSkipForTests(true)
 	sup.SetReadinessPoll(5 * time.Millisecond)
 	sup.SetPollEvery(2 * time.Millisecond)
 	sup.SetReadinessTimeout(3 * time.Second)
@@ -237,6 +242,7 @@ func TestSupervisor_Load_FlagIncompatibleError(t *testing.T) {
 	cfg.StartupTimeoutSec = 5
 	cfg.SDServerBin = "sd-server-new-build"
 	sup := NewSupervisor(&cfg, reg, NewMetrics())
+
 	sup.SetReadinessPoll(2 * time.Millisecond)
 	sup.SetReadinessTimeout(2 * time.Second)
 	sup.SetClientFactoryAddr(func(string) *SDServerClient {
@@ -454,6 +460,10 @@ func TestSupervisor_Load_WaitsForPortToFree(t *testing.T) {
 	sup, _, runner := newSupervisorWithFake(t, map[string]types.ImageModelProfile{
 		"sd15-test": simpleProfile("sd15-test"),
 	})
+	// R742: этот тест ПРОВЕРЯЕТ ожидание свободного порта, поэтому общая ручка
+	// хелпера (SetPortFreeSkipForTests(true)) здесь снимается — иначе проверка
+	// стала бы вакуумной.
+	sup.SetPortFreeSkipForTests(false)
 	// Занимаем порт движка и отпускаем его через 300 мс — так ведёт себя
 	// умирающий CUDA-процесс sd-server (сокет живёт ещё какое-то время).
 	addr := net.JoinHostPort(sup.cfg.ListenIP, strconv.Itoa(sup.cfg.ServerPort))

@@ -53,6 +53,10 @@ func newTestService(t *testing.T, models map[string]types.ImageModelProfile) *te
 		t.Fatalf("store: %v", err)
 	}
 	sup := NewSupervisor(&cfg, reg, metrics)
+	// R742: занятость порта здесь не проверяется (см. SetPortFreeSkipForTests):
+	// на shared-раннере порт из freePort может занять другой процесс, и тест
+	// ждал бы 60 с вместо проверки своего поведения.
+	sup.SetPortFreeSkipForTests(true)
 	sup.SetReadinessPoll(2 * time.Millisecond)
 	sup.SetPollEvery(2 * time.Millisecond)
 	sup.SetReadinessTimeout(2 * time.Second)

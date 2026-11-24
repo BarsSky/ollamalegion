@@ -249,6 +249,9 @@ type Supervisor struct {
 	// portFreeTimeout — ожидание свободного порта движка перед spawn
 	// (0 = portFreeTimeout-константа; поле нужно тестам).
 	portFreeTimeout time.Duration
+	// portFreeSkip — тестовая ручка: не проверять занятость порта (см.
+	// SetPortFreeSkipForTests — флейк на shared-раннере).
+	portFreeSkip bool
 	// PollEvery — интервал опроса джоб движка (в тестах 2 мс).
 	PollEvery time.Duration
 
@@ -669,6 +672,22 @@ func (s *Supervisor) portFreeWait() time.Duration {
 // SetPortFreeTimeout — переопределение ожидания порта (тесты/экзотические среды).
 func (s *Supervisor) SetPortFreeTimeout(d time.Duration) { s.portFreeTimeout = d }
 
+// SetPortFreeSkipForTests — НЕ проверять занятость порта перед spawn.
+//
+// ЖИВОЙ ФЛЕЙК, ради которого появилось. Тесты берут порт через `freePort`
+// (net.Listen на 127.0.0.1:0 + Close) и отдают его супервизору; между закрытием
+// и проверкой порт может занять ДРУГОЙ тестовый процесс (Go гоняет пакеты
+// параллельно), и `waitPortFree` ждёт portFreeTimeout = 60 с, а затем тест
+// краснеет не по своей теме (прогон 45329600591, шаг «Test internal/...»):
+//
+//	--- FAIL: TestGenerateSync_EngineQueueFull (60.09s)
+//	FAIL	ollama-loadbalancer/internal/sdbackend	61.645s
+//
+// В проверяемом поведении (429 «queue is full») порт не участвует, поэтому
+// тестам, которые его не проверяют, проверка отключается ЯВНО. Тесты самой
+// проверки порта (занятый порт → отказ) продолжают её использовать.
+func (s *Supervisor) SetPortFreeSkipForTests(skip bool) { s.portFreeSkip = skip }
+
 // Reload — kill + spawn той же модели (кнопка «Перезагрузить»).
 func (s *Supervisor) Reload(ctx context.Context, name string) (*Capabilities, error) {
 	if err := s.Unload(ctx); err != nil {
@@ -776,6 +795,9 @@ func (s *Supervisor) writeSidecar(p *types.ImageModelProfile) error {
 
 // waitPortFree — ждёт, пока порт движка перестанет быть занятым.
 func (s *Supervisor) waitPortFree(ctx context.Context, timeout time.Duration) error {
+	if s.portFreeSkip {
+		return nil // тесты: порт не участвует в проверяемом поведении
+	}
 	addr := net.JoinHostPort(listenIP(s.cfg.ListenIP), fmt.Sprintf("%d", s.cfg.ServerPort))
 	deadline := time.Now().Add(timeout)
 	for {

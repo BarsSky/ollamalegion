@@ -46,6 +46,12 @@ func newRunnerForJobs(t *testing.T) (*JobRunner, *fakepServer, *Supervisor) {
 	sup.SetReadinessTimeout(2 * time.Second)
 	sup.SetPollEvery(5 * time.Millisecond)
 
+	// R742: занятость порта в этих тестах не проверяется (проверяемое поведение —
+	// ответы движка), а на shared-раннере порт из freePort может занять другой
+	// тестовый процесс: тогда waitPortFree ждёт 60 с и тест краснеет не по теме
+	// (прогон 45329600591: TestGenerateSync_EngineQueueFull 60.09s).
+	sup.SetPortFreeSkipForTests(true)
+
 	fake := newFakeServer()
 	t.Cleanup(fake.Close)
 	sup.SetSDServerBaseURL(fake.URL)

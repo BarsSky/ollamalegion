@@ -2299,6 +2299,20 @@
 }
 .rx-help-list { margin: var(--space-1) 0 0; padding-left: var(--space-5); }
 .rx-help-list > li { margin-bottom: var(--space-1); }
+/* R746: видимая ручка справки - шеврон крутится при раскрытии. */
+.rx-help-chevron { transition: transform 0.15s ease; font-size: var(--font-size-xs); }
+.rx-help[open] .rx-help-chevron { transform: rotate(90deg); }
+/* R746: выбор модели - радиокнопка в отдельной колонке и подпись «выбрано». */
+.rx-col-pick { width: 34px; text-align: center; }
+.rx-model-row { cursor: pointer; }
+.rx-model-row:hover { background: var(--bg-hover); }
+.rx-model-row.rx-row-selected { background: var(--bg-secondary); }
+.rx-model-row.rx-row-selected > .rx-col-pick { box-shadow: inset 3px 0 0 var(--primary); }
+.rx-selected {
+    margin-top: var(--space-2);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+}
 .rx-status {
     font-size: var(--font-size-xs);
     color: var(--text-secondary);

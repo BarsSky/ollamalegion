@@ -135,6 +135,7 @@ function jsonResponse(status, body) {
 
 // Как на живой странице: слой задач грузится ПЕРЕД главным модулем
 // (webui/index.html: gguf-reexport-jobs.js → gguf-reexport.js).
+require('../js/modules/gguf-reexport-help.js');
 require('../js/modules/gguf-reexport-jobs.js');
 require('../js/modules/gguf-reexport.js');
 const R = global.window.GgufReexport;
@@ -621,6 +622,26 @@ checkAsync('слой задач не загружен: блок жив, шаги
     R._stopPolling();
 });
 
+// --- R746: выбор модели и привязка к бэкенду -------------------------------
+checkAsync('R746: у моделей есть радиокнопка выбора, и строка «выбрано» называет файл', async () => {
+    await mountWith(standardFetch());
+    const html = hostEl.innerHTML;
+    assert.ok(html.indexOf('id="rxSelected"') >= 0, 'нет строки «выбрано» в разметке блока');
+    const rows = node('#rxModelsBody').innerHTML || '';
+    assert.ok(rows.indexOf('name="rxModelPick"') >= 0, 'в таблице нет радиокнопок выбора модели');
+    assert.ok(/data-selected="1"/.test(rows), 'ни одна строка не помечена выбранной по умолчанию');
+    const sel = node('#rxSelected').innerHTML || '';
+    assert.ok(sel.indexOf('выбрано') >= 0 && /\.gguf/.test(sel),
+        'строка «выбрано» не называет модель: ' + sel);
+});
+
+checkAsync('R746: блок называет узел проверки и том, с которым работает', async () => {
+    await mountWith(standardFetch());
+    const scope = node('#rxScopeNote').textContent || '';
+    assert.ok(scope.indexOf('том') >= 0, 'нет пояснения, с каким томом работает блок: ' + scope);
+    const loadNote = node('#rxLoadBackendNote').textContent || '';
+    assert.ok(loadNote.length > 0, 'шаг 5 молчит о том, на каком узле пойдёт проверка');
+});
 // --- R745: сворачиваемая справка в блоке -----------------------------------
 checkAsync('R745: справка — сворачиваемый блок и свёрнута по умолчанию', async () => {
     await mountWith(standardFetch());

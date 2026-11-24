@@ -83,6 +83,8 @@
         caps: null,
         models: [],
         selectedModel: '',
+        // R746: раскрыта ли справка (в DOM, а не в панели — её пересобирают).
+        helpOpen: false,
         modelsError: '',
         jobs: [],
         error: '',
@@ -223,6 +225,17 @@
     function mount() {
         var el = host();
         if (!el) return Promise.resolve(false);
+        // R746: панель пересобирается часто — не перерисовываем уже смонтированный
+        // блок, иначе теряются справка, выбранная модель и введённый путь.
+        // Проверка через document.getElementById + contains: в тестовых DOM-заглушках
+        // querySelector отдаёт узел на ЛЮБОЙ селектор, и наивная проверка «карточка
+        // есть» ложно срабатывала (сценарий-тест это и поймал).
+        var card = (typeof document !== 'undefined' && document.getElementById)
+            ? document.getElementById('ggufReexportCard') : null;
+        if (card && typeof el.contains === 'function' && el.contains(card)) {
+            updateConverterLine(el);
+            return Promise.resolve(true);
+        }
         // Повторный вход на страницу: если модуль уже известен — рисуем сразу из
         // кэша и обновляем возможности в фоне (без мигания «блока нет»).
         if (state.available && state.caps) {
@@ -267,45 +280,32 @@
             '</div>';
     }
 
-    /**
-     * helpHTML — содержимое сворачиваемой справки (R745).
-     *
-     * ЗАЧЕМ В САМОМ БЛОКЕ, А НЕ ТОЛЬКО В ДОКЕ. Оператор попадает сюда с вопросом
-     * «что мне нажать и что станет с файлом», а документация лежит в репозитории.
-     * Справка отвечает на месте: что делает каждая цель СЕЙЧАС (список берётся из
-     * capabilities, поэтому врать про доступность не может), порядок шагов, лимиты
-     * и типовые причины отказа. Блок свёрнут по умолчанию (<details> без open):
-     * постоянные пояснения не должны отодвигать шаги вниз.
-     */
+    // helpLayer — ленивый резолвер слоя пояснений (R746): нет файла — работаем без
+    // справки и подписи «выбрано»; разделение нужно из-за стража R628 (1500 строк).
+    var helpLayerCache = { ready: false, value: null };
+    function helpLayer() {
+        if (helpLayerCache.ready) return helpLayerCache.value;
+        helpLayerCache.ready = true;
+        if (typeof window === 'undefined' || typeof window.GgufReexportHelp !== 'object' ||
+            typeof window.GgufReexportHelp.create !== 'function') {
+            helpLayerCache.value = null;
+            if (typeof console !== 'undefined') {
+                console.warn('[reexport] слой пояснений не загружен (js/modules/gguf-reexport-help.js): справка и подпись выбора недоступны');
+            }
+            return null;
+        }
+        helpLayerCache.value = window.GgufReexportHelp.create({
+            t: t,
+            esc: esc,
+            currentModel: currentModel
+        });
+        return helpLayerCache.value;
+    }
+
+    /** helpHTML — содержимое справки (рисует слой пояснений). */
     function helpHTML() {
-        var caps = state.caps || {};
-        var targets = (caps.targets || []);
-        var targetsHtml = targets.map(function (tg) {
-            var label = esc(tg.label || tg.id || '');
-            var mark = tg.available
-                ? '<span class="rx-badge rx-badge-patchable">' + esc(t('reexport.help_available')) + '</span>'
-                : '<span class="rx-badge rx-badge-unreadable">' + esc(t('reexport.help_unavailable')) + '</span>';
-            var reason = (!tg.available && tg.reason) ? '<div class="rx-step-hint">' + esc(tg.reason) + '</div>' : '';
-            return '<li>' + label + ' ' + mark + reason + '</li>';
-        }).join('');
-        var flow = [1, 2, 3, 4, 5].map(function (n) {
-            return '<li>' + esc(t('reexport.help_flow_' + n)) + '</li>';
-        }).join('');
-        var faq = [1, 2, 3, 4].map(function (n) {
-            return '<li>' + esc(t('reexport.help_faq_' + n)) + '</li>';
-        }).join('');
-        return '<div class="rx-help-body">' +
-            '<p>' + esc(t('reexport.help_what')) + '</p>' +
-            '<div class="rx-help-title">' + esc(t('reexport.help_targets_title')) + '</div>' +
-            '<ul class="rx-help-list" id="rxHelpTargets">' + targetsHtml + '</ul>' +
-            '<div class="rx-help-title">' + esc(t('reexport.help_flow_title')) + '</div>' +
-            '<ol class="rx-help-list" id="rxHelpFlow">' + flow + '</ol>' +
-            '<div class="rx-help-title">' + esc(t('reexport.help_limits_title')) + '</div>' +
-            '<p>' + esc(t('reexport.help_limits')) + '</p>' +
-            '<div class="rx-help-title">' + esc(t('reexport.help_faq_title')) + '</div>' +
-            '<ul class="rx-help-list" id="rxHelpFaq">' + faq + '</ul>' +
-            '<div class="rx-step-hint">' + esc(t('reexport.help_docs')) + '</div>' +
-            '</div>';
+        var layer = helpLayer();
+        return layer ? layer.helpHTML(state.caps || {}) : '';
     }
     /** buildHTML — разметка блока. Данные подставляются отдельными функциями. */
     function buildHTML() {
@@ -323,10 +323,13 @@
                 '<div class="card-body">' +
                     '<div id="rxArch" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;"></div>' +
                     '<div id="rxTargetNote" style="margin-bottom:12px;font-size:var(--font-size-xs);color:var(--text-muted);"></div>' +
+                    '<div id="rxScopeNote" class="rx-step-hint" style="margin-bottom:12px;"></div>' +
                     '<div id="rxError" role="alert" style="display:none;margin-bottom:12px;padding:8px 10px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:var(--font-size-sm);"></div>' +
                     // --- R745: сворачиваемая справка (свёрнута по умолчанию) ---
-                    '<details class="rx-help" id="rxHelp">' +
+                    // R746: шеврон = видимая ручка, `open` — из состояния модуля.
+                    '<details class="rx-help" id="rxHelp"' + (state.helpOpen ? ' open' : '') + '>' +
                         '<summary class="rx-help-summary">' +
+                            '<i class="fas fa-chevron-right rx-help-chevron" aria-hidden="true"></i> ' +
                             '<i class="fas fa-circle-question" aria-hidden="true"></i> ' +
                             esc(t('reexport.help_summary')) +
                         '</summary>' +
@@ -338,10 +341,12 @@
                         stepHead(1, t('reexport.step_model_title')) +
                         '<div class="table-responsive">' +
                             '<table class="data-table"><thead><tr>' +
+                                '<th class="rx-col-pick" aria-label="' + esc(t('reexport.col_pick')) + '"></th>' +
                                 '<th>' + esc(t('reexport.col_model_file')) + '</th>' +
                                 '<th>' + esc(t('reexport.col_verdict')) + '</th>' +
                             '</tr></thead><tbody id="rxModelsBody"></tbody></table>' +
                         '</div>' +
+                        '<div id="rxSelected" class="rx-selected" role="status"></div>' +
                     '</div>' +
 
                     // --- шаг 2: проверка (inspect) ---
@@ -395,6 +400,7 @@
                     '<div class="rx-step" data-step="load" id="rxStepLoad">' +
                         stepHead(5, t('reexport.step_load_title')) +
                         '<div class="rx-step-hint">' + esc(t('reexport.step_load_hint')) + '</div>' +
+                        '<div id="rxLoadBackendNote" class="rx-step-hint"></div>' +
                         '<div class="rx-step-actions">' +
                             '<button type="button" class="btn btn-sm btn-secondary" id="rxCheckLoad">' +
                                 '<i class="fas fa-server" aria-hidden="true"></i> ' +
@@ -538,6 +544,20 @@
         if (normalizeBtn) normalizeBtn.disabled = disabled;
     }
 
+    /** updateLoadBackendNote — «узел: X» для шага 5 (текст даёт слой пояснений). */
+    function updateLoadBackendNote(el) {
+        var node = el.querySelector('#rxLoadBackendNote');
+        var layer = helpLayer();
+        if (node && layer) node.textContent = layer.loadNote(loadBackendId());
+    }
+
+    /** updateScopeNote — с каким томом работает блок (текст даёт слой пояснений). */
+    function updateScopeNote(el) {
+        var node = el.querySelector('#rxScopeNote');
+        var layer = helpLayer();
+        if (node && layer) node.textContent = layer.scopeNote();
+    }
+
     /** bind — обработчики блока. Пересоздаются вместе с разметкой. */
     function bind(el) {
         var refresh = el.querySelector('#rxRefresh');
@@ -550,6 +570,11 @@
                 });
             });
         }
+        var help = el.querySelector('#rxHelp');
+        if (help) {
+            // R746: раскрытие запоминается — панель пересобирается и схлопывает DOM.
+            help.addEventListener('toggle', function () { state.helpOpen = !!help.open; });
+        }
         var models = el.querySelector('#rxModelsBody');
         if (models) {
             models.addEventListener('click', function (ev) {
@@ -557,7 +582,14 @@
                 if (!row) return;
                 selectModel(el, row.getAttribute('data-model-path'));
             });
+            models.addEventListener('change', function (ev) {
+                var radio = ev && ev.target;
+                if (!radio || !radio.value) return;
+                selectModel(el, radio.value);
+            });
         }
+        updateLoadBackendNote(el);
+        updateScopeNote(el);
         var inspectBtn = el.querySelector('#rxInspect');
         if (inspectBtn) inspectBtn.addEventListener('click', function () { runInspect(el); });
         var normBtn = el.querySelector('#rxNormalize');
@@ -702,13 +734,15 @@
             var why = state.modelsError
                 ? t('reexport.models_failed') + ': ' + state.modelsError
                 : t('reexport.no_models');
-            tbody.innerHTML = '<tr><td colspan="2" style="color:var(--text-muted);">' + esc(why) + '</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="3" style="color:var(--text-muted);">' + esc(why) + '</td></tr>';
+            renderSelected(el);
             return;
         }
         tbody.innerHTML = state.models.map(function (m) {
             var v = verdictFor(m);
-            var selected = (m.path === state.selectedModel) ? ' data-selected="1"' : '';
-            var bg = (m.path === state.selectedModel) ? 'var(--bg-secondary)' : 'transparent';
+            var isSel = m.path === state.selectedModel;
+            var selected = isSel ? ' data-selected="1"' : '';
+            var rowClass = isSel ? 'rx-row-selected' : '';
             var meta = [];
             meta.push(m.path);
             if (m.size_bytes) meta.push(formatBytes(m.size_bytes));
@@ -716,7 +750,10 @@
             if (m.block_count) meta.push('block_count=' + m.block_count);
             if (m.physical_blocks) meta.push(t('reexport.fact_physical') + '=' + m.physical_blocks);
             return '<tr data-model-path="' + esc(m.path) + '"' + selected +
-                ' style="cursor:pointer;background:' + bg + ';">' +
+                ' class="rx-model-row ' + rowClass + '">' +
+                '<td class="rx-col-pick"><input type="radio" name="rxModelPick" value="' +
+                    esc(m.path) + '"' + (isSel ? ' checked' : '') + ' aria-label="' +
+                    esc(t('reexport.col_pick')) + '"></td>' +
                 '<td><code>' + esc(m.name || m.path) + '</code>' +
                     '<div style="font-size:var(--font-size-xs);color:var(--text-muted);">' +
                         esc(meta.join(' · ')) + '</div></td>' +
@@ -725,6 +762,15 @@
                         esc(v.text) + '</div></td>' +
                 '</tr>';
         }).join('');
+        renderSelected(el);
+    }
+
+    /** renderSelected — строка «выбрано: файл» (слой пояснений). */
+    function renderSelected(el) {
+        var node = el.querySelector('#rxSelected');
+        if (!node) return;
+        var layer = helpLayer();
+        node.innerHTML = layer ? layer.selectedText() : '';
     }
 
     /** currentModel — выбранная модель (объект списка сервиса). */
@@ -1491,6 +1537,12 @@
 
     window.GgufReexport = {
         mount: mount,
+        // isAvailable — ответил ли модуль на capabilities; по нему вкладка
+        // «Ре-экспорт» в панели бэкенда не появляется без профиля reexport.
+        isAvailable: function () { return !!state.available; },
+        // probe — фоновая проба доступности (её зовёт страница GGUF, чтобы решить,
+        // рисовать ли вкладку «Ре-экспорт»). Не блокирует рендер страницы.
+        probe: function () { return probeOnce(); },
         _state: state,
         _buildHTML: buildHTML,
         _buildJobBody: buildJobBody,

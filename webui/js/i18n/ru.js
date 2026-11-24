@@ -1417,6 +1417,7 @@ window.I18N_RU = {
   "gguf.tab_downloads": "Загрузки",
   "gguf.tab_hf": "HuggingFace",
   "gguf.tab_settings": "Настройки",
+  "gguf.tab_reexport": "Ре-экспорт",
   "gguf.tab_loaded": "Загружено",
   "gguf.tab_about": "Инфо",
   "gguf.models_on_disk": "Модели на диске",
@@ -2877,5 +2878,11 @@ window.I18N_RU = {
   "reexport.help_faq_2": "model_not_patchable — это не GGUF loop-экспорта; нужна другая цель (полный convert из HF-чекпойнта, образ full).",
   "reexport.help_faq_3": "Медленная генерация после ре-экспорта — ограничение RAM/CPU (веса не влезают в VRAM), а не схемы: смотрите offload_degraded и число слоёв на GPU.",
   "reexport.help_faq_4": "401 на кнопках — панель ходит сессией, а токен на запись подставляет nginx на границе (CPPWORKER_API_TOKEN); в логе сервиса видно, включена ли защита записи.",
-  "reexport.help_docs": "Подробно: docs/operations/gguf-reexport.ru.md (контракт API, коды отказа, живой прогон)."
+  "reexport.help_docs": "Подробно: docs/operations/gguf-reexport.ru.md (контракт API, коды отказа, живой прогон).",
+  "reexport.col_pick": "выбор",
+  "reexport.selected_prefix": "выбрано:",
+  "reexport.selected_none": "модель не выбрана — нажмите на строку в таблице",
+  "reexport.load_node_pre": "узел проверки: {name} (бэкенд выбран слева)",
+  "reexport.load_node_missing": "бэкенд не выбран — выберите узел слева, иначе проверять некуда",
+  "reexport.scope_note": "Блок работает с томом моделей сервиса ре-экспорта (обычно это тот же том, что у выбранного слева бэкенда). Цели inkling2_loop и hf_to_gguf — для GGUF-моделей; image_bundle собирает каталог image-модели и после «Пересканировать» виден на вкладке Image.",
 };

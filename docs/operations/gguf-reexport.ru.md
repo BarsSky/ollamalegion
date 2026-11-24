@@ -10,8 +10,7 @@
 loop-экспорт; загрузчик ждёт ОТДЕЛЬНУЮ архитектуру `inkling2_loop`. `normalize` переупаковывает
 метаданные и раскладывает лежащие матрицы запросов, `convert` прогоняет HF-чекпойнт через
 `convert_hf_to_gguf.py`, цель `image_bundle` собирает каталог image-модели (роли по R696).
-Отдельный сервис, а не ручка в воркере: torch (+2.5 ГБ), 16.6 ГиБ I/O на одном диске, а
-однослотовый воркер занял бы слот инференса. Go — HTTP/состояние/отмена, python — работа.
+Отдельный сервис, а не ручка в воркере: torch (+2.5 ГБ), 16.6 ГиБ I/O, а однослотовый воркер занял бы слот инференса. Go — HTTP/состояние/отмена, python — работа.
 
 ## 2. Контракт API
 ```
@@ -24,10 +23,10 @@ GET    /api/reexport/jobs           → список задач (свежие п
 GET    /api/reexport/jobs/{id}      → статус/прогресс/ошибка/хвост лога
 DELETE /api/reexport/jobs/{id}      → отмена: процесс убит, недописанный файл удалён
 ```
-`capabilities` — источник истины для WebUI: `inkling2_loop` (python + скрипт патча),
-`hf_to_gguf` (torch + конвертер; в light `available=false`), `image_bundle` (всегда: роли читает
-Go-парсер). Ошибки — `{"error":{"code","message","detail"}}`, §8. Задачи — файлы в томе
-`reexport_jobs` (tmp+rename): переживают рестарт, `running` → `interrupted`; параллелизм 1.
+`capabilities` — источник истины для WebUI: `inkling2_loop` (python + патч), `hf_to_gguf` (torch +
+конвертер; в light `available=false`), `image_bundle` (всегда: роли читает Go-парсер). Ошибки —
+`{"error":{"code","message","detail"}}`, §8; задачи — файлы в томе `reexport_jobs` (переживают
+рестарт, `running` → `interrupted`, параллелизм 1).
 
 ## 3. Куда пишется результат, сколько нужно места, отмена
 **Выход всегда внутри `${MODELS_DIR}`.** Файловые цели: `out_path` — имя/подкаталог ВНУТРИ
@@ -43,8 +42,8 @@ Go-парсер). Ошибки — `{"error":{"code","message","detail"}}`, §8.
 недописанный файл; неполный КАТАЛОГ остаётся (гигабайты уже скопированы — решает оператор).
 
 ## 4. Как WebUI узнаёт о модуле и что вызывает
-Страница моделей создаёт пустой `#ggufReexportHost`, а `js/modules/gguf-reexport.js` делает
-`GET /api/reexport/capabilities` через nginx панели: 200 → блок рисуется, 424/502/таймаут →
+Страница моделей создаёт пустой `#ggufReexportHost` (вкладка бэкенда), а `gguf-reexport.js` делает
+`GET /api/reexport/capabilities` через nginx: 200 → блок рисуется, 424/502/таймаут →
 **вкладки нет вообще** (флаг в `.env` был бы вторым источником правды). nginx: upstream —
 **переменная** (`set $reexport_upstream ...`): статический `proxy_pass` разрешается на старте
 и без контейнера роняет ВСЮ панель (R229); проверка — `webui/tests/reexport-nginx-proxy-r709.test.js`.
@@ -58,12 +57,14 @@ Go-парсер). Ошибки — `{"error":{"code","message","detail"}}`, §8.
 | 5. Проверить загрузку | «Проверить загрузку» | `POST /api/v1/backends/{id}/models` `{operation:"load"}`, статус — `/models/load/progress` |
 | 6. Собрать bundle (Ф4) | «Проверить набор» / «Собрать bundle» | `POST /api/reexport/jobs`, цель `image_bundle` (`dry_run` у проверки) |
 
-**«Проверить» — это `dry_run`, а не поле `mode`** (`DisallowUnknownFields`; лишнее поле дало бы 400).
-**Справка внутри блока (R745):** свёрнутый `<details id="rxHelp">` — цели из `capabilities` с
-доступностью и причиной, порядок шагов, лимиты, типовые отказы и путь к этому документу;
-свёрнут по умолчанию, чтобы пояснения не отодвигали шаги. **Два файла:** `gguf-reexport.js`
-(блок) и `gguf-reexport-jobs.js` (`window.GgufReexportJobs`; порядок тегов в `index.html`
-обязателен) — разделение требует страж R628 (1500 непустых строк на боевой файл).
+**«Проверить» — `dry_run`, а не поле `mode`** (`DisallowUnknownFields`; лишнее поле дало бы 400).
+**Где живёт блок (R746):** это ВКЛАДКА «Ре-экспорт» в панели выбранного слева бэкенда (рядом с
+«Модели»), а не блок над страницей: работа идёт с томом моделей узла, вкладка видна только при
+поднятом модуле. Модель выбирается радиокнопкой, выбор назван строкой «выбрано: файл»; шаг 5
+называет узел проверки. **Справка (R745):** свёрнутый `<details id="rxHelp">` — цели из
+`capabilities` с причиной недоступности, 5 шагов, лимиты, типовые отказы, путь к документу.
+**Три файла блока:** `gguf-reexport.js` (шаги), `-help.js` (справка/подписи), `-jobs.js` (задачи);
+порядок тегов в `index.html` обязателен — страж R628 (1500 непустых строк на файл).
 
 **Токен на запись подставляет nginx, не браузер (R743).** Панель с R222 не вшивает токен в страницу
 (браузер ходит сессией), поэтому `location /api/reexport/` добавляет `X-API-Token`. Источник один —
@@ -80,8 +81,7 @@ Compose: `profiles: ["reexport"]`, `${MODELS_DIR}:/app/models:rw`, том `reexp
 `GGUF_REEXPORT_WITH_TORCH`, `GGUF_REEXPORT_PORT_HOST`, `GGUF_REEXPORT_OUT_DIR` (legacy, §3),
 `GGUF_REEXPORT_SCAN_DEPTH`, `GGUF_REEXPORT_LOG_LEVEL`, `GGUF_REEXPORT_IMAGEWORKER_URL` (пусто —
 локальная проверка, `worker_checked=false`), `GGUF_REEXPORT_IMAGE_MODELS_DIR`.
-Версии: `release-all.ps1` знает `gguf-reexport` и пополняет манифест, `check-image-tags.ps1` сверяет
-тег и `llamaCommit`. **light** — python3 + stdlib + патч; **full** (`WITH_TORCH=1`) — конвертер, `conversion/`, `gguf-py` (+2.5 ГБ).
+Версии: `release-all.ps1` знает `gguf-reexport` и пополняет манифест, `check-image-tags.ps1` сверяет тег и `llamaCommit`; **light** — python3 + stdlib + патч, **full** (`WITH_TORCH=1`) — конвертер, `conversion/`, `gguf-py` (+2.5 ГБ).
 
 ## 6. Живой прогон (2026-11-23, CPU): `Inkling-2-Mini-UD-Q4_K_M.gguf`
 Файл 16 610 543 328 Б (15.47 ГиБ), 58 KV, 734 тензора, данные с байта 11 978 464.

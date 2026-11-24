@@ -1007,6 +1007,7 @@ M.refreshActiveQueriesPolling = function() {
             // оставалась заглушка «Загрузка…» до повторного клика по вкладке
             // (живой замер r690: 2 блока в заглушке, 0 фоновых запросов за 20 с).
             if (rebuilt) { restoreAsyncBlocks(node); }
+            mountReexportIfPaneR746();
             return rebuilt;
         }
         // Модуль защиты не загружен (усечённая сборка/тест): прежнее поведение.
@@ -1014,7 +1015,26 @@ M.refreshActiveQueriesPolling = function() {
         if (html === null || html === undefined) { return false; }
         node.innerHTML = String(html);
         restoreAsyncBlocks(node);
+        mountReexportIfPaneR746();
         return true;
+    }
+
+    /**
+     * mountReexportIfPaneR746 — смонтировать блок ре-экспорта после перерисовки
+     * панели, когда активна его вкладка.
+     *
+     * ЗАЧЕМ ЗДЕСЬ. Вкладка «Ре-экспорт» — это пустой #ggufReexportHost в контенте
+     * детали; панель пересобирается на каждый клик/авто-обновление, и без этого
+     * вызова блок оставался бы пустым до перезагрузки страницы. Модуль
+     * необязателен: нет GgufReexport — молча выходим (страница живёт без него).
+     */
+    function mountReexportIfPaneR746() {
+        if (typeof window === 'undefined') { return; }
+        var Re = window.GgufReexport;
+        if (!Re || typeof Re.mount !== 'function') { return; }
+        var st = M.state;
+        if (!st || st.detailPane !== 'reexport') { return; }
+        try { Re.mount(); } catch (e) { console.warn('[gguf] reexport mount failed:', e); }
     }
 
     /**

@@ -1498,6 +1498,7 @@ window.I18N_EN = {
   "gguf.tab_downloads": "Downloads",
   "gguf.tab_hf": "HuggingFace",
   "gguf.tab_settings": "Settings",
+  "gguf.tab_reexport": "Re-export",
   "gguf.tab_loaded": "Loaded",
   "gguf.tab_about": "About",
   "gguf.models_on_disk": "Models on disk",
@@ -2841,5 +2842,11 @@ window.I18N_EN = {
   "reexport.help_faq_2": "model_not_patchable — this is not a loop-export GGUF; use another target (full convert from an HF checkpoint, full image).",
   "reexport.help_faq_3": "Slow generation after re-export is a RAM/CPU limit (weights do not fit VRAM), not a schema issue: check offload_degraded and the GPU layer count.",
   "reexport.help_faq_4": "401 on the buttons — the panel uses sessions and nginx injects the write token at the boundary (CPPWORKER_API_TOKEN); the service log states whether write protection is enabled.",
-  "reexport.help_docs": "Details: docs/operations/gguf-reexport.ru.md (API contract, error codes, live run)."
+  "reexport.help_docs": "Details: docs/operations/gguf-reexport.ru.md (API contract, error codes, live run).",
+  "reexport.col_pick": "pick",
+  "reexport.selected_prefix": "selected:",
+  "reexport.selected_none": "no model selected - click a row in the table",
+  "reexport.load_node_pre": "check node: {name} (backend chosen on the left)",
+  "reexport.load_node_missing": "no backend selected - pick a node on the left, otherwise there is nowhere to check",
+  "reexport.scope_note": "This block works on the re-export service models volume (usually the same volume as the backend selected on the left). Targets inkling2_loop and hf_to_gguf are for GGUF models; image_bundle assembles an image model directory, visible on the Image tab after \"Rescan\".",
 };

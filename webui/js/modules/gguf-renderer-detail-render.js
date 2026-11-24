@@ -196,8 +196,18 @@
             { id: 'loaded',    icon: 'fas fa-brain',          label: _('gguf.tab_loaded') },
             { id: 'downloads', icon: 'fas fa-download',       label: _('gguf.tab_downloads') },
             { id: 'hf',        icon: 'fab fa-huggingface',    label: _('gguf.tab_hf') },
-            { id: 'settings',  icon: 'fas fa-cog',            label: _('gguf.tab_settings') }
-        ];
+            { id: 'settings',  icon: 'fas fa-cog',            label: _('gguf.tab_settings') },
+            // R746: ре-экспорт — ВКЛАДКА бэкенда, а не блок над страницей.
+            // Живая претензия: «нет ясности, что к чему относится» — модуль
+            // работает с томом моделей бэкенда, значит его место среди вкладок
+            // этого бэкенда (рядом с «Модели»), а не отдельным блоком сверху.
+            // Вкладка показывается только при загруженном модуле ре-экспорта
+            // (иначе пустая панель): наличие проверяет renderDetailPane.
+            { id: 'reexport',  icon: 'fas fa-recycle',        label: _('gguf.tab_reexport'), reexport: true }
+        ].filter(function (t) {
+            if (!t.reexport) return true;
+            return !!(typeof window !== 'undefined' && window.GgufReexport && window.GgufReexport.isAvailable());
+        });
         return '<div class="gguf-detail-tabs">' +
             tabs.map(function (t) {
                 return '<button class="gguf-detail-tab ' + (state.detailPane === t.id ? 'active' : '') + '" data-detail-tab="' + t.id + '">' +
@@ -237,6 +247,10 @@
             case 'downloads': return renderDownloadsPane();
             case 'hf':        return renderHuggingFacePane();
             case 'settings':  return renderSettingsPane();
+            // R746: хост опционального модуля. Пустой div: без профиля reexport
+            // страница выглядит как раньше (наполняет js/modules/gguf-reexport.js,
+            // и только при ответе /api/reexport/capabilities).
+            case 'reexport':  return '<div id="ggufReexportHost"></div>';
             default:          return renderAboutPane();
         }
     }

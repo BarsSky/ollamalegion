@@ -98,12 +98,19 @@ check('модуль подключён в index.html ДО рендерера с�
     assert.ok(mod < renderer, 'модуль должен грузиться ДО gguf-renderer.js (рендерер зовёт mount)');
 });
 
-check('хост блока создаётся рендерером пустым (без модуля страница не меняется)', function () {
+check('хост блока создаётся пустым во вкладке бэкенда (R746), страница зовёт probe', function () {
+    // R746: хост переехал из page-level разметки во вкладку «Ре-экспорт» панели
+    // бэкенда — блок должен быть привязан к выбранному узлу, а не висеть над всей
+    // страницей. Без модуля вкладка не появляется (фильтр по isAvailable), а
+    // пустой div внутри неё невидим; страница лишь пробует модуль (probe).
     const renderer = fs.readFileSync(path.join(ROOT, 'webui', 'js', 'modules', 'gguf-renderer.js'), 'utf8');
-    assert.ok(/id="ggufReexportHost"><\/div>/.test(renderer),
-        'нет пустого хоста #ggufReexportHost в разметке страницы моделей');
-    assert.ok(/window\.GgufReexport\.mount\(\)/.test(renderer),
-        'рендерер не вызывает GgufReexport.mount()');
+    const detail = fs.readFileSync(path.join(ROOT, 'webui', 'js', 'modules', 'gguf-renderer-detail-render.js'), 'utf8');
+    assert.ok(/id="ggufReexportHost"><\/div>/.test(detail),
+        'нет пустого хоста #ggufReexportHost в разметке вкладки reexport');
+    assert.ok(/window\.GgufReexport\.probe\(\)/.test(renderer),
+        'страница не пробует модуль ре-экспорта (probe) — вкладка не появится');
+    assert.ok(/mountReexportIfPaneR746/.test(fs.readFileSync(path.join(ROOT, 'webui', 'js', 'modules', 'gguf-renderer-refresh.js'), 'utf8')),
+        'панель не монтирует блок при активной вкладке reexport');
 });
 
 check('сервис объявлен в compose под ОТДЕЛЬНЫМ профилем reexport', function () {

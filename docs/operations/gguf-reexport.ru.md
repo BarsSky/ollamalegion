@@ -59,26 +59,27 @@ Go-парсер). Ошибки — `{"error":{"code","message","detail"}}`, §8.
 | 6. Собрать bundle (Ф4) | «Проверить набор» / «Собрать bundle» | `POST /api/reexport/jobs`, цель `image_bundle` (`dry_run` у проверки) |
 
 **«Проверить» — это `dry_run`, а не поле `mode`** (`DisallowUnknownFields`; лишнее поле дало бы 400).
-**Два файла:** `js/modules/gguf-reexport.js` (блок) и `gguf-reexport-jobs.js` (`window.GgufReexportJobs`;
-порядок тегов в `index.html` обязателен, без слоя шаги говорят `reexport.jobs_module_missing`) —
-разделение требует страж R628 (1500 непустых строк на боевой файл).
+**Справка внутри блока (R745):** свёрнутый `<details id="rxHelp">` — цели из `capabilities` с
+доступностью и причиной, порядок шагов, лимиты, типовые отказы и путь к этому документу;
+свёрнут по умолчанию, чтобы пояснения не отодвигали шаги. **Два файла:** `gguf-reexport.js`
+(блок) и `gguf-reexport-jobs.js` (`window.GgufReexportJobs`; порядок тегов в `index.html`
+обязателен) — разделение требует страж R628 (1500 непустых строк на боевой файл).
 
-**Токен на запись подставляет nginx, не браузер (R743).** Панель с R222 не вшивает токен в
-страницу (браузер ходит сессией), поэтому `location /api/reexport/` сам добавляет `X-API-Token`
-из `API_TOKEN`. Источник один — `CPPWORKER_API_TOKEN` в `deployments/.env` (из него же compose
-берёт `REEXPORT_API_TOKEN` модуля). Симптом рассинхрона: 401 только на «Проверить» при живом чтении.
+**Токен на запись подставляет nginx, не браузер (R743).** Панель с R222 не вшивает токен в страницу
+(браузер ходит сессией), поэтому `location /api/reexport/` добавляет `X-API-Token`. Источник один —
+`CPPWORKER_API_TOKEN` в `.env` (из него же `REEXPORT_API_TOKEN` модуля). Симптом: 401 на «Проверить».
 
 ## 5. Воркеры, профиль, версии, таргеты образа
 После успеха WebUI показывает «Пересканировать модели» → `POST /api/models/refresh` (R93) плюс
 сброс кэша фактов (воркер держит инвентарь с TTL). У image-воркера это
 `POST /api/image/models/scan` (Фаза 4: GET перечитывает реестр только при смене набора
 каталогов, поэтому запись `profile.json` в существующий каталог оставалась невидимой).
-Compose: `profiles: ["reexport"]`, `${MODELS_DIR}:/app/models:rw`, том `reexport_jobs`,
-healthcheck своим бинарём, порт только на `127.0.0.1`; без профиля ничего не создаётся.
-Переменные (`.env.example`): `GGUF_REEXPORT_TAG`, `GGUF_REEXPORT_BUILD_TARGET` (light|full),
+Compose: `profiles: ["reexport"]`, `${MODELS_DIR}:/app/models:rw`, том `reexport_jobs`, healthcheck
+своим бинарём, порт только на `127.0.0.1`; без профиля ничего не создаётся. Переменные
+(`.env.example`): `GGUF_REEXPORT_TAG`, `GGUF_REEXPORT_BUILD_TARGET` (light|full),
 `GGUF_REEXPORT_WITH_TORCH`, `GGUF_REEXPORT_PORT_HOST`, `GGUF_REEXPORT_OUT_DIR` (legacy, §3),
 `GGUF_REEXPORT_SCAN_DEPTH`, `GGUF_REEXPORT_LOG_LEVEL`, `GGUF_REEXPORT_IMAGEWORKER_URL` (пусто —
-проверка локальная, `worker_checked=false`), `GGUF_REEXPORT_IMAGE_MODELS_DIR`.
+локальная проверка, `worker_checked=false`), `GGUF_REEXPORT_IMAGE_MODELS_DIR`.
 Версии: `release-all.ps1` знает `gguf-reexport` и пополняет манифест, `check-image-tags.ps1` сверяет
 тег и `llamaCommit`. **light** — python3 + stdlib + патч; **full** (`WITH_TORCH=1`) — конвертер, `conversion/`, `gguf-py` (+2.5 ГБ).
 
@@ -116,5 +117,4 @@ healthcheck своим бинарём, порт только на `127.0.0.1`; �
 | `converter_failed`, `verify_failed`, `canceled`, `interrupted`, `queue_full` | упал конвертер / не сошлась схема / отмена или рестарт / очередь > 64 | причина в `log_tail`; перезапустить или дождаться (параллелизм 1); недописанный ФАЙЛ удаляется, неполный каталог bundle остаётся |
 
 ## 9. Что осталось
-1. **Реальный HF-чекпойнт не качался** (конверсия проверена на синтетическом — отложенный реестр); воркер старой сборки не умеет `scan` → честный `worker_stale_possible`.
-2. **Скорость чтения решает:** на bind-mount Windows 11–30 МиБ/с — держите модели на локальном томе.
+1. **Реальный HF-чекпойнт не качался** (конверсия проверена на синтетическом — отложенный реестр); воркер старой сборки не умеет `scan` → честный `worker_stale_possible`. Скорость чтения решает: bind-mount Windows 11–30 МиБ/с, держите модели на локальном томе.

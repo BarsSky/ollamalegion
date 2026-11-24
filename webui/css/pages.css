@@ -2268,6 +2268,37 @@
     flex-wrap: wrap;
     align-items: center;
 }
+/* R745: сворачиваемая справка блока ре-экспорта. Свёрнута по умолчанию -
+ * пояснения не должны отодвигать шаги; цвета только токенами темы. */
+.rx-help {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    margin-bottom: var(--space-3);
+}
+.rx-help-summary {
+    cursor: pointer;
+    padding: var(--space-2) var(--space-4);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+    color: var(--text-primary);
+    list-style: none;
+}
+.rx-help-summary::-webkit-details-marker { display: none; }
+.rx-help[open] > .rx-help-summary { border-bottom: 1px solid var(--border); }
+.rx-help-body {
+    padding: var(--space-2) var(--space-4) var(--space-3);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+}
+.rx-help-body p { margin: var(--space-2) 0; }
+.rx-help-title {
+    margin-top: var(--space-3);
+    font-weight: var(--font-weight-semibold);
+    color: var(--text-primary);
+}
+.rx-help-list { margin: var(--space-1) 0 0; padding-left: var(--space-5); }
+.rx-help-list > li { margin-bottom: var(--space-1); }
 .rx-status {
     font-size: var(--font-size-xs);
     color: var(--text-secondary);

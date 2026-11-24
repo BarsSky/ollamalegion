@@ -267,6 +267,46 @@
             '</div>';
     }
 
+    /**
+     * helpHTML — содержимое сворачиваемой справки (R745).
+     *
+     * ЗАЧЕМ В САМОМ БЛОКЕ, А НЕ ТОЛЬКО В ДОКЕ. Оператор попадает сюда с вопросом
+     * «что мне нажать и что станет с файлом», а документация лежит в репозитории.
+     * Справка отвечает на месте: что делает каждая цель СЕЙЧАС (список берётся из
+     * capabilities, поэтому врать про доступность не может), порядок шагов, лимиты
+     * и типовые причины отказа. Блок свёрнут по умолчанию (<details> без open):
+     * постоянные пояснения не должны отодвигать шаги вниз.
+     */
+    function helpHTML() {
+        var caps = state.caps || {};
+        var targets = (caps.targets || []);
+        var targetsHtml = targets.map(function (tg) {
+            var label = esc(tg.label || tg.id || '');
+            var mark = tg.available
+                ? '<span class="rx-badge rx-badge-patchable">' + esc(t('reexport.help_available')) + '</span>'
+                : '<span class="rx-badge rx-badge-unreadable">' + esc(t('reexport.help_unavailable')) + '</span>';
+            var reason = (!tg.available && tg.reason) ? '<div class="rx-step-hint">' + esc(tg.reason) + '</div>' : '';
+            return '<li>' + label + ' ' + mark + reason + '</li>';
+        }).join('');
+        var flow = [1, 2, 3, 4, 5].map(function (n) {
+            return '<li>' + esc(t('reexport.help_flow_' + n)) + '</li>';
+        }).join('');
+        var faq = [1, 2, 3, 4].map(function (n) {
+            return '<li>' + esc(t('reexport.help_faq_' + n)) + '</li>';
+        }).join('');
+        return '<div class="rx-help-body">' +
+            '<p>' + esc(t('reexport.help_what')) + '</p>' +
+            '<div class="rx-help-title">' + esc(t('reexport.help_targets_title')) + '</div>' +
+            '<ul class="rx-help-list" id="rxHelpTargets">' + targetsHtml + '</ul>' +
+            '<div class="rx-help-title">' + esc(t('reexport.help_flow_title')) + '</div>' +
+            '<ol class="rx-help-list" id="rxHelpFlow">' + flow + '</ol>' +
+            '<div class="rx-help-title">' + esc(t('reexport.help_limits_title')) + '</div>' +
+            '<p>' + esc(t('reexport.help_limits')) + '</p>' +
+            '<div class="rx-help-title">' + esc(t('reexport.help_faq_title')) + '</div>' +
+            '<ul class="rx-help-list" id="rxHelpFaq">' + faq + '</ul>' +
+            '<div class="rx-step-hint">' + esc(t('reexport.help_docs')) + '</div>' +
+            '</div>';
+    }
     /** buildHTML — разметка блока. Данные подставляются отдельными функциями. */
     function buildHTML() {
         return '' +
@@ -284,6 +324,14 @@
                     '<div id="rxArch" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;"></div>' +
                     '<div id="rxTargetNote" style="margin-bottom:12px;font-size:var(--font-size-xs);color:var(--text-muted);"></div>' +
                     '<div id="rxError" role="alert" style="display:none;margin-bottom:12px;padding:8px 10px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:var(--font-size-sm);"></div>' +
+                    // --- R745: сворачиваемая справка (свёрнута по умолчанию) ---
+                    '<details class="rx-help" id="rxHelp">' +
+                        '<summary class="rx-help-summary">' +
+                            '<i class="fas fa-circle-question" aria-hidden="true"></i> ' +
+                            esc(t('reexport.help_summary')) +
+                        '</summary>' +
+                        helpHTML() +
+                    '</details>' +
 
                     // --- шаг 1: модели и вердикт ---
                     '<div class="rx-step" data-step="model" id="rxStepModel">' +

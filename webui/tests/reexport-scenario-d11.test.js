@@ -621,6 +621,39 @@ checkAsync('слой задач не загружен: блок жив, шаги
     R._stopPolling();
 });
 
+// --- R745: сворачиваемая справка в блоке -----------------------------------
+checkAsync('R745: справка — сворачиваемый блок и свёрнута по умолчанию', async () => {
+    await mountWith(standardFetch());
+    const html = hostEl.innerHTML;
+    assert.ok(html.indexOf('<details class="rx-help" id="rxHelp">') >= 0,
+        'нет сворачиваемой справки (#rxHelp)');
+    assert.ok(html.indexOf('<details class="rx-help" id="rxHelp" open') < 0,
+        'справка не должна быть раскрыта по умолчанию: она отодвигает шаги вниз');
+    assert.ok(html.indexOf('Как это работает') >= 0, 'нет заголовка справки');
+});
+
+checkAsync('R745: справка перечисляет цели из capabilities с доступностью и причиной', async () => {
+    await mountWith(standardFetch());
+    const targets = (hostEl.innerHTML.match(/id="rxHelpTargets"[\s\S]*?<\/ul>/) || [''])[0];
+    assert.ok(targets, 'нет списка целей в справке');
+    assert.ok(targets.indexOf('Inkling-2 loop') >= 0, 'нет цели inkling2_loop');
+    assert.ok(targets.indexOf('HF-чекпойнт в GGUF') >= 0, 'нет цели hf_to_gguf');
+    assert.ok(targets.indexOf('доступна') >= 0, 'нет метки «доступна»');
+    assert.ok(targets.indexOf('недоступна') >= 0, 'нет метки «недоступна»');
+    assert.ok(targets.indexOf('образ собран без torch') >= 0,
+        'причина недоступности цели не показана — справка врёт про возможности');
+});
+
+checkAsync('R745: справка называет порядок шагов, лимит места и документацию', async () => {
+    await mountWith(standardFetch());
+    const html = hostEl.innerHTML;
+    const flow = (html.match(/id="rxHelpFlow"[\s\S]*?<\/ol>/) || [''])[0];
+    assert.ok(flow, 'нет списка шагов в справке');
+    assert.strictEqual((flow.match(/<li>/g) || []).length, 5, 'в справке должно быть 5 шагов');
+    assert.ok(html.indexOf('вход + 1 ГиБ') >= 0, 'нет лимита места («вход + 1 ГиБ»)');
+    assert.ok(html.indexOf('docs/operations/gguf-reexport.ru.md') >= 0,
+        'нет ссылки на документацию — оператор не найдёт подробности');
+});
 (async () => {
     for (const [name, fn] of asyncChecks) {
         try {

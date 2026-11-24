@@ -53,7 +53,7 @@
 
 ## Образ `full` ре-экспорта
 
-Собран и проверен: `ollama-legion/gguf-reexport:r261120-r731-full` — **1.66 ГБ**
+Собран и проверен: `ollama-legion/gguf-reexport:r261120-r733-full` (первым был `r731-full`) — **1.66 ГБ**
 против 198 МБ light, `capabilities` → `torch_state=present`, `torch 2.11.0+cpu`,
 `python 3.12.16`, `hf_to_gguf.available=true`. В `.env.example` по умолчанию
 остаётся light (модуль не должен тянуть 1.7 ГБ на стенд, которому конвертация не

@@ -546,7 +546,14 @@ jobs:
           # остались только PASS-строки хвоста и `FAIL <pkg>` — по такому логу
           # нельзя понять, что именно упало (ровно та проблема, ради которой
           # run_go_test.sh и написан, см. его заголовок).
-          scripts/run_go_test.sh "internal/balancer (-race)" -race -tags llama_stub -timeout 300s ./internal/balancer/
+          #
+          # R738 (2026-11-24): 300s → 900s. Набор вырос (R722–R737), и на
+          # ubuntu-latest позднего шага он упирается в тот же бюджет, что и в
+          # основном job: прогон 45322613959 (коммит 50fdc882) —
+          # 'panic: test timed out after 5m0s / FAIL internal/balancer 300.067s'.
+          # Локально с -race стабильно 213 с; shared-раннер в загруженный момент
+          # идёт в 2–3 раза медленнее. 900 с — запас ~2x, как и в test.yml.
+          scripts/run_go_test.sh "internal/balancer (-race)" -race -tags llama_stub -timeout 900s ./internal/balancer/
 
       - name: Test internal/config (no race)
         if: always()
@@ -644,7 +651,9 @@ jobs:
           # общий прогон должен быть детерминированным. Список строится через
           # go list, чтобы не перечислять пакеты руками.
           pkgs=$(go list ./internal/... | grep -v '/internal/sdbackend$')
-          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -p 1 -timeout 300s $pkgs
+          # R738: 300s → 900s. Тот же набор, что у шага internal/balancer выше,
+          # но с инструментацией покрытия — бюджет должен быть не меньше.
+          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -p 1 -timeout 900s $pkgs
           go tool cover -func=coverage.out | tail -1
 
       - name: Upload coverage artifact

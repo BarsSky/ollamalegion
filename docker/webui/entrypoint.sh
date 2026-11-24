@@ -135,7 +135,11 @@ export NGINX_PORT API_HOST API_PORT LB_PORT CPPWORKER_HOST CPPWORKER_PORT
 # R709: ре-экспорт GGUF — переменные тоже подставляются (список sed ниже обязан
 # совпадать с числом ${...} в шаблоне; это проверяет
 # webui/tests/reexport-nginx-proxy-r709.test.js).
-export REEXPORT_HOST REEXPORT_PORT
+#
+# R743: API_TOKEN подставляется ТОЖЕ — им nginx закрывает изменяющие запросы к
+# модулю ре-экспорта (location /api/reexport/). Токен попадает в nginx.conf
+# внутри контейнера, а не в отданную браузеру страницу (R222 сохраняется).
+export REEXPORT_HOST REEXPORT_PORT API_TOKEN
 
 # Экранирование значений для sed (значение может содержать & | \).
 escape_sed_repl() {
@@ -151,6 +155,7 @@ sed \
     -e "s|\${CPPWORKER_PORT}|$(escape_sed_repl "$CPPWORKER_PORT")|g" \
     -e "s|\${REEXPORT_HOST}|$(escape_sed_repl "$REEXPORT_HOST")|g" \
     -e "s|\${REEXPORT_PORT}|$(escape_sed_repl "$REEXPORT_PORT")|g" \
+    -e "s|\${API_TOKEN}|$(escape_sed_repl "$API_TOKEN")|g" \
     < "$NGINX_TEMPLATE" > "$NGINX_CONF"
 
 # 2. Генерация config.js для рантайм параметров

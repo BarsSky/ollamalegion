@@ -1,3 +1,32 @@
+## [0.7.486 - R743: токен модуля ре-экспорта подставляет граница (nginx), один источник на стек, 2026-11-25]
+
+**ЖИВОЙ ДЕФЕКТ.** В WebUI кнопки «Проверить» и «Нормализовать (loop-схема)» отвечали 401:
+
+```
+{"code":"unauthorized","message":"нужен заголовок X-API-Token (REEXPORT_API_TOKEN)"}
+```
+
+При этом блок ре-экспорта рисовался и список моделей читался — то есть панель модуль видит, а задачу создать не может.
+
+**ПОЧЕМУ.** Две линии защиты разошлись:
+
+1. С R222 панель **не вшивает API-токен в страницу**: браузер ходит сессией (`cookie` + `X-CSRF-Token`), `WEBUI_CONFIG.API_TOKEN` пуст, и `Api.getAuthHeaders()` (`webui/js/modules/api.js:1098`) добавляет `X-API-Token` только при «аварийном» входе по токену.
+2. `services/gguf-reexport/server.go:74` (`withAuth`) на **изменяющие** запросы требует `X-API-Token`, если задан `REEXPORT_API_TOKEN`; compose подаёт туда `CPPWORKER_API_TOKEN`. Чтение (`capabilities/models/jobs`) при этом остаётся без токена — поэтому «вижу, но не работает».
+
+**НОРМАЛИЗОВАНО — источник один, токен на границе:**
+
+- `webui/nginx.conf` (`location /api/reexport/`): `set $reexport_api_token "${API_TOKEN}"` и `proxy_set_header X-API-Token $reexport_api_token;` — внутренний токен добавляет **nginx панели**, браузер его не видит и не хранит;
+- `docker/webui/entrypoint.sh`: `API_TOKEN` экспортируется и подставляется в шаблон (девятая переменная); значение уже приходит в контейнер из compose (`API_TOKEN=${CPPWORKER_API_TOKEN:?…}`);
+- `deployments/docker-compose.stack.yml`: у модуля `REEXPORT_API_TOKEN=${CPPWORKER_API_TOKEN:-}` — **тот же** `CPPWORKER_API_TOKEN`, что и у панели, поэтому значения не могут разъехаться; отдельной переменной у модуля нет намеренно;
+- `deployments/.env.example`: `CPPWORKER_API_TOKEN` назван единым токеном стека (admin-API балансера + воркеры + граница модуля);
+- `services/gguf-reexport/main.go`: на старте пишет явно режим записи — «write requests protected with X-API-Token» с указанием, что токен подставляет nginx, либо «write requests are NOT protected» с эффектом;
+- `docs/operations/gguf-reexport.ru.md` — абзац «Токен на запись подставляет nginx, не браузер (R743)» и симптом рассинхрона; документ остался 120 строк.
+
+**R222 НЕ ОТКАЧЕН.** `config.js` по-прежнему генерируется с `API_TOKEN: ''` — в страницу токен не попадает; nginx-подстановка живёт только в конфиге контейнера.
+
+**ТЕСТЫ.** `webui/tests/reexport-token-boundary-r743.test.js` (5 проверок): nginx подставляет `X-API-Token`; entrypoint экспортирует и подставляет `${API_TOKEN}`; единый источник (`API_TOKEN` панели и `REEXPORT_API_TOKEN` модуля — из `CPPWORKER_API_TOKEN`); в страницу токен не вшивается; документация называет границу. Не-вакуумность: убрать `proxy_set_header X-API-Token` → красный с сообщением про 401. Обновлён ожидаемый список шаблонных переменных в `webui/tests/nginx-font-trailing-slash-r680.test.js` (+`API_TOKEN`, с объяснением).
+
+**Прогоны.** `node --test webui/tests/*.test.js` — 72/72; `run-webui-tests.js` — 167/167; `check_webui_assets` (141), `check_webui_i18n_keys`, `iife_exports` (193), `i18n_dead_keys` — зелёные; `go build -tags llama_stub ./...` — 0; `go test ./services/gguf-reexport/` — ok; `tests/` (R628/R734) — ok; `check_docs_claims.py` — 0.
 ## [0.7.485 - R736–R742: зелёный CI на всех джобах (мост, i18n, гонки, бюджеты), 2026-11-25]
 
 Продолжение 0.7.484: после первых правок выяснилось, что причин красного CI больше, чем казалось, и каждая следующая проявлялась только на следующем прогоне. Итог — **оба workflow зелёные на `99fa12ab`** (`test` и `CI`, все джобы: C-bridge, WebUI JS, i18n, lint, static, Windows self-hosted, ubuntu-fallback).

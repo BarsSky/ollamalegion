@@ -60,6 +60,19 @@ func main() {
 		"models_dir", cfg.ModelsDir, "out_dir", cfg.OutDir, "jobs_dir", cfg.JobsDir,
 		"python", cfg.PythonBin, "driver", cfg.DriverPath,
 		"llama_commit", id.LlamaCommit, "auth", cfg.APIToken != "")
+	// R743: одной строки «auth=true» мало для диагноза. Живой случай: панель
+	// получала 401 на «Проверить», потому что токен есть у сервиса, но не
+	// доезжал до запроса (R222: браузер ходит сессией). Поэтому режим записи
+	// называется явно, вместе с тем, ОТКУДА берётся значение заголовка.
+	if cfg.APIToken != "" {
+		log.Infow("write requests protected with X-API-Token",
+			"source", "REEXPORT_API_TOKEN",
+			"boundary", "панель подставляет токен в nginx (location /api/reexport/); браузер его не хранит")
+	} else {
+		log.Warnw("write requests are NOT protected",
+			"reason", "REEXPORT_API_TOKEN пуст",
+			"effect", "создавать/отменять задачи может любой, кто достучится до сервиса")
+	}
 	// Молча игнорировать настройку оператора нельзя: он ждёт результат в прежнем
 	// каталоге, а получит его в каталоге модели. Причина одна — запись за том
 	// моделей воркер не увидит (D10.2), поэтому переменная только приглушается.

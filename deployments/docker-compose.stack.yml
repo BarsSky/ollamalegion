@@ -1458,6 +1458,13 @@ services:
       - REEXPORT_OUT_DIR=${GGUF_REEXPORT_OUT_DIR:-}
       # Токен стека на изменяющие запросы. Чтение (capabilities/models/jobs) без
       # токена осознанно: WebUI ходит сессией (R222), а не вшитым токеном.
+      #
+      # R743: ИСТОЧНИК ОДИН. Это тот же CPPWORKER_API_TOKEN, который webui-контейнер
+      # получает как API_TOKEN и подставляет заголовком X-API-Token на границе
+      # (location /api/reexport/ в webui/nginx.conf). Браузер токен не видит;
+      # поэтому «Проверить»/«Нормализовать» больше не получают 401. Отдельной
+      # переменной у модуля НЕТ намеренно: два независимых значения — это ровно
+      # та рассинхронизация, из-за которой 401 и появлялся.
       - REEXPORT_API_TOKEN=${CPPWORKER_API_TOKEN:-}
       - REEXPORT_SCAN_DEPTH=${GGUF_REEXPORT_SCAN_DEPTH:-3}
       # Фаза 4: адрес API image-воркера для пересканирования каталога

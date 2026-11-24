@@ -313,8 +313,13 @@ check('R680/3: правка не добавила в шаблон новых ${V
     // R709: добавлены REEXPORT_HOST/REEXPORT_PORT (прокси опционального модуля
     // ре-экспорта GGUF). Их дефолты задаются в entrypoint, поэтому в шаблоне они
     // появляются только вместе с sed-подстановкой и никогда — литералами.
+    //
+    // R743: добавлен API_TOKEN — им location /api/reexport/ закрывает изменяющие
+    // запросы к модулю (X-API-Token). Это токен СТЕКОВОГО контейнера, а не
+    // значение из отданной страницы: R222 (токен не вшивается в config.js)
+    // остаётся в силе.
     const expected = ['NGINX_PORT', 'API_HOST', 'API_PORT', 'LB_PORT', 'CPPWORKER_HOST', 'CPPWORKER_PORT',
-        'REEXPORT_HOST', 'REEXPORT_PORT'];
+        'REEXPORT_HOST', 'REEXPORT_PORT', 'API_TOKEN'];
     const found = (stripComments(confSrc).match(/\$\{[A-Z0-9_]+\}/g) || [])
         .map(function (m) { return m.slice(2, -1); })
         .filter(function (v, i, arr) { return arr.indexOf(v) === i; })

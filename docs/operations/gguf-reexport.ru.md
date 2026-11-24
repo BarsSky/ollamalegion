@@ -3,15 +3,15 @@
 **Состав:** `services/gguf-reexport/` (Go-хост) + `py/reexport_job.py` (драйвер), образ
 `ollama-legion/gguf-reexport`, профиль compose `reexport`. **Статус:** метаданные/переупаковка
 проверены на живом 16.6 ГиБ файле (§6); Фаза 4 («набор файлов → image-bundle») — на живом
-наборе FLUX (§7); полный ре-экспорт (HF-чекпойнт) — таргет образа `full` (§5), не собран.
+наборе FLUX (§7); полный ре-экспорт собран (`full`, §5) и проверен на синтетическом чекпойнте.
 
 ## 1. Задача и почему отдельный сервис
 `Inkling-2-Mini` объявляет `architecture=inkling2` и `block_count=48` при 24 физических блоках —
 loop-экспорт; загрузчик ждёт ОТДЕЛЬНУЮ архитектуру `inkling2_loop`. `normalize` переупаковывает
 метаданные и раскладывает лежащие матрицы запросов, `convert` прогоняет HF-чекпойнт через
 `convert_hf_to_gguf.py`, цель `image_bundle` собирает каталог image-модели (роли по R696).
-Отдельный сервис, а не ручка в воркере: torch (+2.5 ГБ), 16.6 ГиБ ввода-вывода на одном диске,
-а однослотовый воркер занял бы слот инференса. Go держит HTTP/состояние/отмену, python — работу.
+Отдельный сервис, а не ручка в воркере: torch (+2.5 ГБ), 16.6 ГиБ I/O на одном диске, а
+однослотовый воркер занял бы слот инференса. Go — HTTP/состояние/отмена, python — работа.
 
 ## 2. Контракт API
 ```
@@ -25,10 +25,9 @@ GET    /api/reexport/jobs/{id}      → статус/прогресс/ошибк
 DELETE /api/reexport/jobs/{id}      → отмена: процесс убит, недописанный файл удалён
 ```
 `capabilities` — источник истины для WebUI: `inkling2_loop` (python + скрипт патча),
-`hf_to_gguf` (torch + конвертер; в light `available=false`), `image_bundle` (всегда доступна:
-роли читает Go-парсер заголовков). Ошибки — `{"error":{"code","message","detail"}}`, §8.
-Задачи — файлы в томе `reexport_jobs` (tmp+rename): состояние переживает пересоздание
-контейнера, задача из `running` после рестарта становится `interrupted`. Параллелизм 1.
+`hf_to_gguf` (torch + конвертер; в light `available=false`), `image_bundle` (всегда: роли читает
+Go-парсер). Ошибки — `{"error":{"code","message","detail"}}`, §8. Задачи — файлы в томе
+`reexport_jobs` (tmp+rename): переживают рестарт, `running` → `interrupted`; параллелизм 1.
 
 ## 3. Куда пишется результат, сколько нужно места, отмена
 **Выход всегда внутри `${MODELS_DIR}`.** Файловые цели: `out_path` — имя/подкаталог ВНУТРИ
@@ -38,11 +37,10 @@ DELETE /api/reexport/jobs/{id}      → отмена: процесс убит, �
 каталога — `path_not_allowed`. Пустое имя = имя каталога набора, совпадение с ним — «манифест
 на месте» (без копирования). `REEXPORT_OUT_DIR` — legacy-fallback и за том не выводит (иначе
 предупреждение на старте и `out_dir_ignored=true`). **Место — ДО старта** (`Statfs`/
-`GetDiskFreeSpaceEx`) с числами: `normalize` — вход + 1 ГиБ, `convert` — вход + выход,
-`image_bundle` — вход + выход (копия набора; «манифест на месте» не требует ничего); не хватает
-— `failed`/`insufficient_space`. **Прогресс** — `stage` = `reading → writing → validating` (на
-`image_bundle` — скопированные байты). **Отмена** удаляет недописанный файл; неполный КАТАЛОГ
-bundle остаётся (гигабайты уже скопированы — решает оператор), `profile.json` пишется последним.
+`GetDiskFreeSpaceEx`): `normalize` — вход + 1 ГиБ, `convert`/`image_bundle` — вход + выход
+(«манифест на месте» места не требует); не хватает — `insufficient_space`. **Прогресс** —
+`stage` = `reading → writing → validating` (у bundle — скопированные байты). **Отмена** удаляет
+недописанный файл; неполный КАТАЛОГ остаётся (гигабайты уже скопированы — решает оператор).
 
 ## 4. Как WebUI узнаёт о модуле и что вызывает
 Страница моделей создаёт пустой `#ggufReexportHost`, а `js/modules/gguf-reexport.js` делает
@@ -60,11 +58,15 @@ bundle остаётся (гигабайты уже скопированы — р
 | 5. Проверить загрузку | «Проверить загрузку» | `POST /api/v1/backends/{id}/models` `{operation:"load"}`, статус — `/models/load/progress` |
 | 6. Собрать bundle (Ф4) | «Проверить набор» / «Собрать bundle» | `POST /api/reexport/jobs`, цель `image_bundle` (`dry_run` у проверки) |
 
-**«Проверить» — это `dry_run`, а не поле `mode`** (`DisallowUnknownFields`; лишнее поле дало бы
-400). **Два файла:** блок — `js/modules/gguf-reexport.js`, транспорт задач
-(`window.GgufReexportJobs`) — `js/modules/gguf-reexport-jobs.js` (порядок тегов в
-`webui/index.html` обязателен; без слоя шаги говорят `reexport.jobs_module_missing`); причина
-разделения — страж R628 (боевой файл от 1500 непустых строк запрещён).
+**«Проверить» — это `dry_run`, а не поле `mode`** (`DisallowUnknownFields`; лишнее поле дало бы 400).
+**Два файла:** `js/modules/gguf-reexport.js` (блок) и `gguf-reexport-jobs.js` (`window.GgufReexportJobs`;
+порядок тегов в `index.html` обязателен, без слоя шаги говорят `reexport.jobs_module_missing`) —
+разделение требует страж R628 (1500 непустых строк на боевой файл).
+
+**Токен на запись подставляет nginx, не браузер (R743).** Панель с R222 не вшивает токен в
+страницу (браузер ходит сессией), поэтому `location /api/reexport/` сам добавляет `X-API-Token`
+из `API_TOKEN`. Источник один — `CPPWORKER_API_TOKEN` в `deployments/.env` (из него же compose
+берёт `REEXPORT_API_TOKEN` модуля). Симптом рассинхрона: 401 только на «Проверить» при живом чтении.
 
 ## 5. Воркеры, профиль, версии, таргеты образа
 После успеха WebUI показывает «Пересканировать модели» → `POST /api/models/refresh` (R93) плюс
@@ -76,10 +78,9 @@ healthcheck своим бинарём, порт только на `127.0.0.1`; �
 Переменные (`.env.example`): `GGUF_REEXPORT_TAG`, `GGUF_REEXPORT_BUILD_TARGET` (light|full),
 `GGUF_REEXPORT_WITH_TORCH`, `GGUF_REEXPORT_PORT_HOST`, `GGUF_REEXPORT_OUT_DIR` (legacy, §3),
 `GGUF_REEXPORT_SCAN_DEPTH`, `GGUF_REEXPORT_LOG_LEVEL`, `GGUF_REEXPORT_IMAGEWORKER_URL` (пусто —
-проверка локальная, задача пишет `worker_checked=false`), `GGUF_REEXPORT_IMAGE_MODELS_DIR`.
-Версии: `scripts/release-all.ps1` знает `gguf-reexport` и пополняет `release-manifest.json`;
-`scripts/check-image-tags.ps1` сверяет тег и `llamaCommit`. **light** (по умолчанию) — python3
-+ stdlib + скрипт патча; **full** (`WITH_TORCH=1`) — конвертер, `conversion/`, `gguf-py` (+2.5 ГБ).
+проверка локальная, `worker_checked=false`), `GGUF_REEXPORT_IMAGE_MODELS_DIR`.
+Версии: `release-all.ps1` знает `gguf-reexport` и пополняет манифест, `check-image-tags.ps1` сверяет
+тег и `llamaCommit`. **light** — python3 + stdlib + патч; **full** (`WITH_TORCH=1`) — конвертер, `conversion/`, `gguf-py` (+2.5 ГБ).
 
 ## 6. Живой прогон (2026-11-23, CPU): `Inkling-2-Mini-UD-Q4_K_M.gguf`
 Файл 16 610 543 328 Б (15.47 ГиБ), 58 KV, 734 тензора, данные с байта 11 978 464.
@@ -91,8 +92,8 @@ healthcheck своим бинарём, порт только на `127.0.0.1`; �
 | негатив (Qwen3-4B) и очередь | `failed` / `model_not_patchable` («ожидался architecture=inkling2, получено 'qwen3'»); три задачи строго по одной, остальные `queued` |
 | загрузка результата (локальный том) | `state=loaded` за **50 341 мс** (ctx 8192, 6/49 слоёв на GPU), 0.2 ток/с; ctx 32768 — 32 119 мс |
 
-## 7. Фаза 4 на живом наборе (2026-11-24): набор FLUX → bundle
-Набор `image/flux-schnell-q3-k`: 4 файла, 8 790 448 988 Б (копия жёсткими ссылками, оригинал не менялся).
+## 7. Фаза 4 на живом наборе (2026-11-24): FLUX → bundle
+Набор `image/flux-schnell-q3-k`: 4 файла, 8 790 448 988 Б (hardlink-копия, оригинал цел).
 
 | Проверка | Результат |
 |---|---|
@@ -115,6 +116,5 @@ healthcheck своим бинарём, порт только на `127.0.0.1`; �
 | `converter_failed`, `verify_failed`, `canceled`, `interrupted`, `queue_full` | упал конвертер / не сошлась схема / отмена или рестарт / очередь > 64 | причина в `log_tail`; перезапустить или дождаться (параллелизм 1); недописанный ФАЙЛ удаляется, неполный каталог bundle остаётся |
 
 ## 9. Что осталось
-1. **Скорость чтения решает:** на bind-mount Windows 11–30 МиБ/с — держите модели на локальном томе.
-2. **Образ `full` не собран:** `hf_to_gguf: available=false` с причиной (синтаксис таргета проверен `buildx --call=outline`).
-3. **Воркер старой сборки не умеет `scan`:** сервис откатывается на GET и помечает `worker_stale_possible`; пробная загрузка bundle — шаг 5 UI (в задаче — вердикт `ready`).
+1. **Реальный HF-чекпойнт не качался** (конверсия проверена на синтетическом — отложенный реестр); воркер старой сборки не умеет `scan` → честный `worker_stale_possible`.
+2. **Скорость чтения решает:** на bind-mount Windows 11–30 МиБ/с — держите модели на локальном томе.

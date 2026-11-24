@@ -1,7 +1,7 @@
 {
-    "tag":  "r261120-r733",
-    "builtAt":  "2026-11-24T01:21:37Z",
-    "gitCommit":  "4a1b3b72",
+    "tag":  "r261120-r735",
+    "builtAt":  "2026-11-24T02:43:14Z",
+    "gitCommit":  "7708420e",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
@@ -10,13 +10,26 @@
                        "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
                        "service":  "balancer",
-                       "imageTag":  "r261120-r733",
-                       "image":  "ollama-legion/balancer:r261120-r733",
-                       "imageId":  "sha256:eef4c06c7296ceb481a72dcdc799057839717f84bf2a4e688b9e545b3e397e30",
-                       "commit":  "4a1b3b72",
-                       "commitFull":  "4a1b3b72bc150abdcf05bc0d718c7787556df6db",
-                       "commitDate":  "2026-11-24T04:15:08+03:00",
-                       "buildDate":  "2026-11-24T01:15:14Z",
+                       "imageTag":  "r261120-r735",
+                       "image":  "ollama-legion/balancer:r261120-r735",
+                       "imageId":  "sha256:cf384662d23451aa3adbcec75e10b73b9a0e2e44f69d717ba58810b406e144b2",
+                       "commit":  "7708420e",
+                       "commitFull":  "7708420e66534801403da1a38be98721e7ce0e0b",
+                       "commitDate":  "2026-11-24T05:20:13+03:00",
+                       "buildDate":  "2026-11-24T02:41:50Z",
+                       "author":  "BarsSky"
+                   },
+                   {
+                       "alias":  "ollama-legion/webui:latest",
+                       "variable":  "WEBUI_TAG",
+                       "service":  "webui",
+                       "imageTag":  "r261120-r735",
+                       "image":  "ollama-legion/webui:r261120-r735",
+                       "imageId":  "sha256:0ae294a134b88cea327e51404860f45785dfffbf4c2d6423bdb657800e5c4589",
+                       "commit":  "7708420e",
+                       "commitFull":  "7708420e66534801403da1a38be98721e7ce0e0b",
+                       "commitDate":  "2026-11-24T05:20:13+03:00",
+                       "buildDate":  "2026-11-24T02:42:44Z",
                        "author":  "BarsSky"
                    },
                    {
@@ -34,19 +47,6 @@
                        "llamaCommit":  "5bacb7c868",
                        "llamaDate":  "2026-11-22",
                        "rpcProto":  "10.0.2"
-                   },
-                   {
-                       "alias":  "ollama-legion/webui:latest",
-                       "variable":  "WEBUI_TAG",
-                       "service":  "webui",
-                       "imageTag":  "r261120-r733",
-                       "image":  "ollama-legion/webui:r261120-r733",
-                       "imageId":  "sha256:1965ecdbf928d019e45ea092e0785508f0ec3ce2fdfe769c1a0ecff3a092f3d9",
-                       "commit":  "4a1b3b72",
-                       "commitFull":  "4a1b3b72bc150abdcf05bc0d718c7787556df6db",
-                       "commitDate":  "2026-11-24T04:15:08+03:00",
-                       "buildDate":  "2026-11-24T01:17:37Z",
-                       "author":  "BarsSky"
                    },
                    {
                        "alias":  "ollama-legion/imageworker:latest-cuda",
@@ -92,9 +92,6 @@
                ],
     "releasedServices":  [
                              "balancer",
-                             "cppworker",
-                             "gguf-reexport",
-                             "imageworker",
                              "webui"
                          ],
     "note":  "R493 (2026-11-11): P1 считает занятость от эффективной вместимости, привязка сессии стала предпочтением, этап 3b «загрузка на свободном узле вместо очереди» работает только при наличии прогретой копии (иначе перехватывал распределение — регресс поймал CI), VRAM-fit для узла под загрузку, узлы без метрик рассматриваются после P3. WebUI: logs.export в обоих пакетах + шаг CI check_webui_i18n_keys.py, таблица прокси-логов — ширина всех 10 колонок. Пересобраны balancer и webui; cppworker и imageworker не менялись. R493 (2026-11-11): занятость в P1 считается от эффективной вместимости, привязка сессии стала предпочтением, добавлен этап 3b «загрузка на свободном узле вместо очереди» (с гейтом автозагрузки и image-гейтом), VRAM-fit для узла под загрузку, узлы без метрик (FALLBACK) рассматриваются после P3. WebUI: ключ logs.export в обоих пакетах + шаг CI scripts/check_webui_i18n_keys.py; таблица прокси-логов получила ширину всех 10 колонок. Пересобраны только balancer и webui (cppworker и imageworker не менялись). R486: идентичность сборки ЗАПЕКАЕТСЯ в образ (pkg/version через -ldflags, /app/identity.json, OCI-метки, ru.ollamalegion.*), а не приходит из deployments/.env. Теперь идентичность несут ВСЕ четыре образа, включая webui (r261110-2130) и imageworker. Живой повод: образ был собран и проштампован ПРЕДЫДУЩИМ коммитом (в .env лежал BALANCER_GIT_COMMIT=850923d7 при HEAD 8b246ffe), и это не поймала ни одна проверка. Механизм: scripts/build-identity.ps1 — единственный вычислитель (git + сабмодуль c/llama.cpp + RPC_PROTO из ggml-rpc.h); Dockerfile-стража падает на пустом build-arg; на старте VerifyR486 сверяет бинарь с identity.json и НЕ ДАЁТ контейнеру подняться при расхождении; балансер видит релиз узла (workerVersion/workerCommit/workerReleaseMismatch) и версию протокола RPC, валидатор композиции (R486.2) сравнивает узлы группы по релизному коммиту и RPC-протоколу; check-image-tags.ps1 ловит возврат к env-штампам. Переменные BALANCER_GIT_COMMIT/BALANCER_BUILD_DATE/CPPWORKER_GIT_COMMIT/CPPWORKER_BUILD_DATE/WEBUI_GIT_COMMIT/WEBUI_BUILD_DATE/AGENT_GIT_COMMIT/AGENT_BUILD_DATE удалены. R486.1: два тайминговых теста переведены с секундомера на состояние. Ранее: R485 (удержание reasoning), R484 (транспорт), R483 (first_byte_ms), R482 (tool call в reasoning), R481 (WebUI), R480 (окно по варианту C), R479 (паритет типов), R478 (OpenWebUI), R477/R476 (диагностика). R541/R540 (2026-11-19): R2 читаемости закрыт — транспорт разложен по стадиям (proxyRequestLlamaCpp 2428 -> 147, цикл и финализация в llamaCppStreamState, не-потоковый путь 907 -> 510); пересобран balancer (r261119-r541), теги cppworker (gpu-r261119-r513a) и webui (r261119-r513a) актуализированы по фактическим образам стенда. R541/R540 (2026-11-19): R2 читаемости закрыт — транспорт разложен по стадиям (proxyRequestLlamaCpp 2428 -> 147, цикл и финализация в llamaCppStreamState, не-потоковый путь 907 -> 510); пересобран balancer (r261119-r541), теги cppworker (gpu-r261119-r513a) и webui (r261119-r513a) актуализированы по фактическим образам стенда. R542 (2026-11-19): не-потоковый транспорт уложен в funlen (907 -> 125 строк: awaitLoadedModelNonStream, answerNonStreamUpstreamError, answerEmptyNonStreamBody, writeNonStreamResponse); пересобран balancer (r261119-r542, коммит 2cf29fd7) и раскатан на стенд.",

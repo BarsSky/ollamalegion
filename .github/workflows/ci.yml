@@ -359,7 +359,14 @@ jobs:
           # от pre-existing tests (R52.4 known issue), они замедляют
           # test runner на 60-90s в linux native. 300s = matches
           # per-job timeout.
-          .\scripts\run_go_test.ps1 -Label "internal/... (-race)" -Args @("-race","-tags","llama_stub","-timeout","300s","./internal/...")
+          #
+          # R736 (2026-11-24): 300s → 600s. Набор вырос (R722–R735), и на
+          # self-hosted Windows он перестал влезать РОВНО на границе: прогон
+          # 45314468959 (коммит 1d2bb3e5) — 'FAIL ollama-loadbalancer/internal/balancer
+          # 301.744s', при том что предыдущий прогон того же кода (7708420e) был
+          # зелёным. Локально Windows с -race — 211.8s. Двойной запас вместо
+          # «угадывания границы»: 600s.
+          .\scripts\run_go_test.ps1 -Label "internal/... (-race)" -Args @("-race","-tags","llama_stub","-timeout","600s","./internal/...")
 
       - name: Test (cmd packages, -race)
         run: |
@@ -414,7 +421,8 @@ jobs:
           # краснеет на живом тесте. У пакета есть свой шаг «Test internal/sdbackend
           # (no race)», где он идёт один и зелёный.
           $pkgs = & $go list ./internal/... | Where-Object { $_ -notmatch '/internal/sdbackend$' }
-          & $go test -tags llama_stub "-coverprofile=coverage.out" -covermode=atomic -timeout 300s @pkgs
+          # R736: тот же бюджет, что у шага выше — тот же набор пакетов под -race.
+          & $go test -tags llama_stub "-coverprofile=coverage.out" -covermode=atomic -timeout 600s @pkgs
 
       - name: Coverage summary
         if: success()

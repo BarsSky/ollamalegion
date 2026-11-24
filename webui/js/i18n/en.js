@@ -1843,7 +1843,7 @@ window.I18N_EN = {
 
   // R-Image Phase 5 (2026-10-02): Image generation page (stable-diffusion.cpp).
   "header.image": "Image models",
-  "image.title": "Backend and model",
+  "image.title": "Model",
   "image.backend": "Image backend",
   "image.model": "Model",
   "image.models_title": "Image models",
@@ -2021,7 +2021,10 @@ window.I18N_EN = {
 
   // ==== R-Image Phase 9: "Image models" page (GGUF-style tabs) ====
   "imageModels.tab_overview": "Overview",
-  "imageModels.tab_hf": "HuggingFace",
+
+  "imageModels.no_backends": "No image backends",
+  "imageModels.backend_models": "models",
+  "imageModels.backend_vram_tpl": "VRAM {free}/{total} MB",  "imageModels.tab_hf": "HuggingFace",
   "imageModels.tab_models": "Models on disk",
   "imageModels.tab_loaded": "Loaded",
   "imageModels.tab_downloads": "Downloads",

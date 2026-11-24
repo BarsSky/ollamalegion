@@ -1874,7 +1874,7 @@ window.I18N_RU = {
 
   // R-Image Phase 5 (2026-10-02): страница генерации изображений (stable-diffusion.cpp).
   "header.image": "Image-модели",
-  "image.title": "Бэкенд и модель",
+  "image.title": "Модель",
   "image.backend": "Image-бэкенд",
   "image.model": "Модель",
   "image.models_title": "Image-модели",
@@ -2052,7 +2052,10 @@ window.I18N_RU = {
 
   // ==== R-Image Phase 9: страница «Image-модели» (табы в стиле «GGUF модели») ====
   "imageModels.tab_overview": "Обзор",
-  "imageModels.tab_hf": "HuggingFace",
+
+  "imageModels.no_backends": "Нет image-бэкендов",
+  "imageModels.backend_models": "моделей",
+  "imageModels.backend_vram_tpl": "VRAM {free}/{total} МБ",  "imageModels.tab_hf": "HuggingFace",
   "imageModels.tab_models": "Модели на диске",
   "imageModels.tab_loaded": "Загруженные",
   "imageModels.tab_downloads": "Загрузки",

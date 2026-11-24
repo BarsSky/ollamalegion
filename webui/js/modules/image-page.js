@@ -601,6 +601,54 @@
                 (b.id === state.selectedBackendId ? ' selected' : '') + '>' +
                 escapeHtml(info.label) + '</option>';
         }).join('');
+        // R747: левый список — то же состояние, что селект.
+        renderBackendList();
+    }
+
+    /**
+     * renderBackendList — ЛЕВЫЙ список бэкендов (мастер-панель, R747).
+     *
+     * ЗАЧЕМ. На странице GGUF бэкенды выбираются списком слева, а справа — табы
+     * выбранного узла; здесь выбор жил в селекте шапки, и было непонятно, к какому
+     * бэкенду относятся «Модели на диске», «Загрузки» и «Настройки». Список —
+     * ПРЕДСТАВЛЕНИЕ того же выбора: клик пишет в скрытый #imgBackendSelect и в
+     * state.selectedBackendId, поэтому остальные модули не меняются.
+     */
+    function renderBackendList() {
+        var box = el('imBackendList');
+        if (!box) return;
+        if (!state.backends.length) {
+            box.innerHTML = '<div class="im-backend-empty">' +
+                escapeHtml(t('imageModels.no_backends', 'Нет image-бэкендов')) + '</div>';
+            return;
+        }
+        var hostCounts = backendHostCounts(state.backends);
+        box.innerHTML = state.backends.map(function (b) {
+            var active = b.id === state.selectedBackendId;
+            var status = String(b.status || '');
+            var dotClass = status === 'healthy' ? 'ok' : (status ? 'bad' : 'unknown');
+            var info = backendOptionLabel(b, hostCounts);
+            var host = String(b.host || '') + (b.imagePort || b.port ? ':' + (b.imagePort || b.port) : '');
+            var vram = '';
+            if (b.gpuMemory && b.gpuMemory.totalMB) {
+                vram = t('imageModels.backend_vram_tpl', { free: Math.round(b.gpuMemory.freeMB || 0), total: Math.round(b.gpuMemory.totalMB) });
+            }
+            var modelsCount = Array.isArray(b.models) ? b.models.length : 0;
+            return '<button type="button" class="im-backend-item' + (active ? ' active' : '') + '"' +
+                ' data-im-backend-id="' + escapeHtml(b.id) + '"' +
+                (info.ambiguous ? ' title="' + escapeHtml(t('image.duplicate_host_warning', 'Another backend uses the same host')) + '"' : '') + '>' +
+                '<span class="im-backend-item-head">' +
+                    '<span class="im-backend-dot ' + dotClass + '" aria-hidden="true"></span>' +
+                    '<span class="im-backend-name">' + escapeHtml(b.name || b.id) + '</span>' +
+                '</span>' +
+                '<span class="im-backend-meta">' + escapeHtml(host) + (status ? ' · ' + escapeHtml(status) : '') + '</span>' +
+                (vram || modelsCount
+                    ? '<span class="im-backend-meta">' + escapeHtml(vram) +
+                        (modelsCount ? (vram ? ' · ' : '') + escapeHtml(String(modelsCount)) + ' ' + escapeHtml(t('imageModels.backend_models', 'моделей')) : '') +
+                      '</span>'
+                    : '') +
+            '</button>';
+        }).join('');
     }
 
     function renderModelSelect() {
@@ -1205,6 +1253,22 @@
         if (window.DataRefresh && typeof window.DataRefresh.register === 'function') {
             window.DataRefresh.register('image', function () { return refresh(); });
         }
+        // R747: клик по бэкенду в ЛЕВОМ списке = смена выбора (как селект шапки).
+        var backendList = el('imBackendList');
+        if (backendList) backendList.addEventListener('click', function (e) {
+            var item = e.target && e.target.closest ? e.target.closest('[data-im-backend-id]') : null;
+            if (!item) return;
+            var id = item.getAttribute('data-im-backend-id') || '';
+            if (!id) return;
+            state.selectedBackendId = id;
+            var sel = el('imgBackendSelect');
+            if (sel) sel.value = id;
+            stopLoadPolling();
+            loadModels();
+            renderBackendParamsState();
+            renderBackendSelect();
+        });
+
         var backendSel = el('imgBackendSelect');
         if (backendSel) backendSel.addEventListener('change', function () {
             state.selectedBackendId = this.value;

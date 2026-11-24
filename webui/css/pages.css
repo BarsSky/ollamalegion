@@ -2299,6 +2299,68 @@
 }
 .rx-help-list { margin: var(--space-1) 0 0; padding-left: var(--space-5); }
 .rx-help-list > li { margin-bottom: var(--space-1); }
+/* R747: страница Image - мастер-детейл как на GGUF: слева бэкенды, справа табы
+ * выбранного узла. Выбор бэкенда один: клик по списку пишет в скрытый
+ * #imgBackendSelect, поэтому остальные модули страницы не меняются. */
+.im-master-layout {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+    gap: var(--space-3);
+    align-items: start;
+    margin-top: var(--space-3);
+}
+.im-master-panel {
+    position: sticky;
+    top: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    padding: var(--space-3);
+}
+.im-master-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+    color: var(--text-primary);
+}
+.im-backend-list { display: flex; flex-direction: column; gap: 6px; }
+.im-backend-item {
+    text-align: left;
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.im-backend-item:hover { background: var(--bg-hover); }
+.im-backend-item.active {
+    border-color: var(--primary);
+    box-shadow: inset 3px 0 0 var(--primary);
+    background: var(--bg-card);
+}
+.im-backend-item-head { display: flex; align-items: center; gap: 6px; }
+.im-backend-dot {
+    width: 8px; height: 8px; border-radius: var(--radius-full); flex: 0 0 auto;
+    background: var(--text-muted);
+}
+.im-backend-dot.ok { background: var(--success); }
+.im-backend-dot.bad { background: var(--danger); }
+.im-backend-name { font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); }
+.im-backend-meta { font-size: var(--font-size-xs); color: var(--text-muted); }
+.im-backend-empty { font-size: var(--font-size-xs); color: var(--text-muted); padding: 6px 2px; }
+@media (max-width: 1000px) {
+    .im-master-layout { grid-template-columns: 1fr; }
+    .im-master-panel { position: static; }
+}
 /* R746: видимая ручка справки - шеврон крутится при раскрытии. */
 .rx-help-chevron { transition: transform 0.15s ease; font-size: var(--font-size-xs); }
 .rx-help[open] .rx-help-chevron { transform: rotate(90deg); }

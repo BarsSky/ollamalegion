@@ -103,6 +103,57 @@ func TestR734_BridgeTestSourcesCoverBridgeSources(t *testing.T) {
 	}
 }
 
+// TestR734_BridgeIncludeDirsParity — тестовый CMake объявляет те же каталоги
+// заголовков llama.cpp, что и боевой.
+//
+// ЖИВОЙ ДЕФЕКТ (прогон 45307667015). После того как `csrc/model_hparams.cpp`
+// добавили в списки целей, CI упал уже на КОМПИЛЯЦИИ:
+//
+//	model_hparams.cpp:31:10: fatal error: llama-model.h: No such file or directory
+//
+// Файл включает ПРИВАТНЫЙ заголовок `llama.cpp/src/llama-model.h`, а боевой
+// CMake каталог `src` объявляет, тестовый — нет (он знал только include/,
+// ggml/include и tools/mtmd). Тест сверяет каталоги по хвосту после `llama.cpp/`:
+// так сравнение не зависит от того, как каждая сторона строит абсолютный путь.
+func TestR734_BridgeIncludeDirsParity(t *testing.T) {
+	bridgeBody, err := os.ReadFile("../c/bridge/CMakeLists.txt")
+	if err != nil {
+		t.Fatalf("не читается c/bridge/CMakeLists.txt: %v", err)
+	}
+	testsBody, err := os.ReadFile("../c/bridge/tests/CMakeLists.txt")
+	if err != nil {
+		t.Fatalf("не читается c/bridge/tests/CMakeLists.txt: %v", err)
+	}
+	// Боевой CMake пишет пути через ${LLAMA_CPP_ROOT}, тестовый — через
+	// ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp. Приводим к одному виду, иначе
+	// сравнение хвостов не находит ничего и проверка вырождается.
+	bridgeText := strings.ReplaceAll(stripCMakeCommentsR734(string(bridgeBody)), "${LLAMA_CPP_ROOT}", "llama.cpp")
+	testsText := stripCMakeCommentsR734(string(testsBody))
+
+	// Хвосты вида "llama.cpp/src" из боевого CMake.
+	dirs := map[string]bool{}
+	for _, line := range strings.Split(bridgeText, "\n") {
+		i := strings.Index(line, "llama.cpp/")
+		if i < 0 {
+			continue
+		}
+		tail := strings.TrimSpace(line[i:])
+		tail = strings.TrimRight(tail, `")`)
+		if tail != "" {
+			dirs[tail] = true
+		}
+	}
+	if len(dirs) == 0 {
+		t.Fatal("в боевом CMake не нашлось каталогов llama.cpp — проверка вырождена")
+	}
+	for dir := range dirs {
+		if !strings.Contains(testsText, dir) {
+			t.Errorf("c/bridge/tests/CMakeLists.txt не объявляет каталог %q: "+
+				"тесты компилируют те же исходники, но без этого include-пути падают "+
+				"на приватных заголовках llama.cpp (так было с llama.cpp/src)", dir)
+		}
+	}
+}
 // TestR734_BridgeTestsCompileEveryCsrc — каждый `.cpp` из csrc/ назван в тестовом
 // CMake. Отдельно от списка выше: новый файл могут забыть добавить И в
 // BRIDGE_SOURCES, а тесты всё равно обязаны его видеть (иначе bridge.c снова

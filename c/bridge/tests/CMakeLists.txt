@@ -34,6 +34,13 @@ set(LLAMA_CPP_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/ggml/include
     # R248/B2: mtmd.h (mmproj passthrough) — нужен csrc/vision_mtmd.cpp.
     ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/tools/mtmd
+    # R705-fix (CI, 2026-11-24): приватные заголовки llama.cpp (src/llama-model.h,
+    # src/llama-hparams.h) нужны csrc/model_hparams.cpp — ровно как в
+    # c/bridge/CMakeLists.txt. Без этого шаг «Build c/bridge regression test»
+    # падал уже на КОМПИЛЯЦИИ (после того как файл добавили в списки целей):
+    #   model_hparams.cpp:31:10: fatal error: llama-model.h: No such file or directory
+    # (прогон 45307667015).
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/src
 )
 
 # bridge_link_llama — линковка теста, который дергает llama.cpp.

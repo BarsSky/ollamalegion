@@ -1,3 +1,22 @@
+## [0.7.485 - R736–R742: зелёный CI на всех джобах (мост, i18n, гонки, бюджеты), 2026-11-25]
+
+Продолжение 0.7.484: после первых правок выяснилось, что причин красного CI больше, чем казалось, и каждая следующая проявлялась только на следующем прогоне. Итог — **оба workflow зелёные на `99fa12ab`** (`test` и `CI`, все джобы: C-bridge, WebUI JS, i18n, lint, static, Windows self-hosted, ubuntu-fallback).
+
+**R736 — C-мост: тесты собирают тот же набор, что образ.** После добавления `csrc/model_hparams.cpp` в цели CI упал уже на компиляции `llama-model.h: No such file or directory` — тестовый CMake не объявлял приватный каталог `llama.cpp/src`. Теперь паритет и по исходникам, и по include-каталогам; страж `tests/c_bridge_sources_parity_test.go` (комментарии не считаются — первая версия была вакуумной, поймано мутацией).
+
+**R737 — i18n без `localStorage`/`navigator`.** `detectLanguage` читал их как глобалы; на Node 20 (раннер CI) их нет. `safeStorageGet/Set`, проверка `navigator`; страж `webui/tests/i18n-node20-env-r734.test.js` исполняет модуль в `vm` без этих глобалов (3 из 4 проверок краснели на старом коде).
+
+**R735 (из 0.7.484) + R737 — две гонки.**
+  * `lr_recentCtx` писал в пакетные переменные раз в 5 минут (значение при этом не менялось — `"norequest"`); состояние убрано, страж — параллельный вызов + статический запрет пакетных `var`;
+  * тесты планирования подменяли УКАЗАТЕЛЬ `p.modelCatalog` под читающим поллером (`WARNING: DATA RACE`, `refreshBackendModelCatalog`); теперь `modelCatalog.reset()` под внутренним RWMutex, `planProxyR96` проверяет результат `WaitStopped` (10 с) вместо игнорирования. Страж `model_catalog_reset_race_test.go`; не-вакуумность доказана скретч-тестом на старом паттерне (три `WARNING: DATA RACE`).
+
+**R738–R740 — бюджеты `-race`.** Один и тот же пакет гонялся в трёх шагах двух workflow: `test.yml` internal/..., `ci.yml` internal/... и `ci.yml` internal/balancer + coverage. Из-за разброса загруженного раннера шаги падали на 300 → 600 → 900 с, при локальных 213 с. В `ci.yml` бюджеты подняты до 900 с (запас ~2x, с номерами прогонов в комментариях); в `test.yml` `-race` с этого шага СНЯТ и job вернулся к 25 минутам — этот workflow по заголовку «минимальный smoke, 3–5 минут», а `-race` для тех же пакетов живёт в `ci.yml` (оба job'а) и в локальном прогоне перед релизом. Это осознанное сужение ДУБЛИРУЮЩЕЙ проверки, а не отключение гейта.
+
+**R741 — тест отложенного роста ждёт асинхронную перезагрузку.** `TestR679_PreflightPlansGrowthInsteadOfRunningIt` проверял счётчик перезагрузок мгновенно, хотя `triggerStreamGrowthR385` запускает её асинхронно (это и есть требование R664); на загруженном раннере под покрытием — «перезагрузок 0 после хода». `waitReloadsR679` (до 5 с, с причиной при недостижении) + фейковый воркер сначала пишет цель, потом счётчик.
+
+**R742 — sdbackend не ждёт чужой порт.** Тесты брали порт `127.0.0.1:0` → Close → отдавали супервизору; между этим порт мог занять другой тестовый процесс, и `waitPortFree` честно ждал `portFreeTimeout = 60 с` (`TestGenerateSync_EngineQueueFull 60.09s`). Добавлена явная ручка `SetPortFreeSkipForTests(bool)` для тестов, где порт не участвует в поведении; тесты, которые его ПРОВЕРЯЮТ (`TestSupervisor_Load_PortBusy`, `TestSupervisor_Load_WaitsForPortToFree`), ручку снимают. Страж `port_free_skip_test.go`: без ручки занятый порт по-прежнему даёт «still busy».
+
+**Прогоны (финальные).** `go build -tags llama_stub ./...` — 0; `go test -tags llama_stub ./tests/` — ok; `go test -tags llama_stub -race ./internal/balancer/` — ok (213 с); `go test -tags llama_stub ./internal/sdbackend/` — ok (6.1 с), с `-race` — ok (7.8 с); `node --test webui/tests/*.test.js` — 71/71; `run-webui-tests.js` — 166/166; `check_docs_claims.py` — 0. CI: `test` — success (все шаги), `CI` — success (все 7 джобов).
 ## [0.7.484 - R734/R735: CI снова зелёный — C-мост собирается как в образе, i18n без localStorage/navigator, гонка в lr_recentCtx, бюджет -race, 2026-11-25]
 
 Волна про КРАСНЫЙ CI: последний зелёный прогон был `40cfc8a5` (2026-11-22), после него 69 «failure» подряд. Найдено и починено четыре причины.

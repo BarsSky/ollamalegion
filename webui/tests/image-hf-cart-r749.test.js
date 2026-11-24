@@ -273,10 +273,19 @@ function modelsAllFiles() {
     };
 }
 let MODELS = modelsOnlyDiffusion();
+// R749: отказ узла — реестр не читается, корзина обязана сказать это честно и не
+// повторять запрос на каждый рендер.
+let modelsFail = false;
 
 global.fetch = function (url, init) {
     const rec = { url: String(url), method: (init && init.method) || 'GET', body: init && init.body };
     requests.push(rec);
+    if (modelsFail && rec.url.indexOf('/models') !== -1) {
+        return Promise.resolve({
+            ok: false, status: 503,
+            text: function () { return Promise.resolve(JSON.stringify({ error: 'node down' })); },
+        });
+    }
     const body = (function () {
         if (rec.url.indexOf('/hf/search') !== -1) {
             return { count: 1, results: [{ id: REPO, downloads: 100, likes: 5, lastModified: '2026-11-20' }] };
@@ -445,6 +454,10 @@ function countOccurrences(text, needle) {
         const payload = JSON.parse(calls[calls.length - 1].body);
         assert.strictEqual(payload.files.length, 3, 'в bundle ушли не все отмеченные файлы');
     });
+    // Опрос прогресса после startBundle остановлен: иначе его тик дописывает
+    // запрос реестра и мешает счёту попыток в следующей проверке.
+    Hf._actions.stopPolling();
+    await sleep(60);
 
     // --- 5. СТАТИКА: разметка, CSS, i18n ------------------------------------
     await check('9. разметка: корзина ПЕРВАЯ и выше поиска/файлов, файлы без кнопок', function () {
@@ -505,6 +518,36 @@ function countOccurrences(text, needle) {
             .forEach(function (tok) {
                 assert.ok(src.indexOf(tok) !== -1, 'в модуле нет ' + tok);
             });
+    });
+
+    await check('13. недоступный узел: одна попытка, честная надпись и «Перечитать узел»', async function () {
+        // Сбрасываем удачно прочитанный индекс и имитируем отказ узла (503).
+        Hf._state.backendFiles = null;
+        Hf._state.backendFilesBackendId = '';
+        Hf._state.backendFilesError = '';
+        modelsFail = true;
+        const before = modelRequests().length;
+        Hf._actions.renderSelectionSummary();
+        await sleep(40);
+        const after = modelRequests().length;
+        assert.strictEqual(after, before + 1,
+            'ожидалась ровно одна попытка чтения реестра, факт: ' + (after - before));
+        // Повторные рендеры (галочки, смена языка, перерисовка списка) НЕ должны
+        // повторять запрос к лежащему узлу: иначе это шторм запросов.
+        Hf._actions.renderSelectionSummary();
+        Hf._actions.renderSelectionSummary();
+        await sleep(60);
+        assert.strictEqual(modelRequests().length, after,
+            'недоступный узел опрашивается повторно без действия оператора');
+        assert.ok(totalsText().indexOf('Перечитать узел') !== -1,
+            'нет кнопки «Перечитать узел»: ' + totalsText());
+        assert.ok(totalsText().indexOf('не прочитан') !== -1,
+            'нет честной надписи о непрочитанном реестре: ' + totalsText());
+        assert.strictEqual(getEl('imHfDownloadMissing').disabled, true,
+            '«Скачать недостающее» активна без реестра узла');
+        // Возврат в рабочее состояние для следующего прогона/отладки.
+        modelsFail = false;
+        MODELS = modelsAllFiles();
     });
 
     // Опрос прогресса bundle (setInterval) держал бы процесс Node живым.

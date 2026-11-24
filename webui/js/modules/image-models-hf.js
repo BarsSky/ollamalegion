@@ -1244,9 +1244,13 @@
         }
         if (state.backendFilesBusy) return state.backendFilesBusy;
         state.backendFilesError = '';
+        // R749: запоминаем, ДЛЯ КАКОЙ машины идёт попытка, ещё до ответа. Иначе
+        // при недоступном узле backendFilesBackendId оставался бы пустым, смена
+        // бэкенда не сбрасывала бы ошибку, а ensureBackendFiles мог бы заново
+        // запускать чтение на каждом рендере (шторм запросов к лежащему узлу).
+        state.backendFilesBackendId = id;
         var p = request(backendUrl('models'), { timeoutMs: TIMEOUT_CONTROL_MS }).then(function (data) {
             state.backendFiles = buildBackendFileIndex(data);
-            state.backendFilesBackendId = id;
             return state.backendFiles;
         }).catch(function (e) {
             state.backendFilesError = (e && e.message) || String(e);
@@ -1262,12 +1266,25 @@
         return p;
     }
 
-    /** ensureBackendFiles — прочитать реестр, только если он ещё не прочитан. */
+    /**
+     * ensureBackendFiles — прочитать реестр, только если он ещё не прочитан.
+     *
+     * ОШИБКА НЕ ПОВТОРЯЕТСЯ САМА. После неудачи (узел недоступен) авточтение
+     * молчит: иначе каждый рендер корзины порождал бы новый запрос к лежащему
+     * узлу. Повтор — только действием оператора («Перечитать узел») или
+     * «Скачать недостающее» (оно перечитывает реестр перед решением).
+     */
     function ensureBackendFiles() {
         var id = backendId();
         if (!id) return;
         if (state.backendFiles && state.backendFilesBackendId === id) return;
         if (state.backendFilesBusy) return;
+        // Смена бэкенда: индекс и ошибка относятся к прежней машине.
+        if (state.backendFilesBackendId && state.backendFilesBackendId !== id) {
+            state.backendFiles = null;
+            state.backendFilesError = '';
+        }
+        if (state.backendFilesError) return;
         refreshBackendFiles();
     }
 
@@ -1476,6 +1493,13 @@
                 }
                 var html = escapeHtml(parts.join(' · '));
                 if (state.backendFilesError && state.backendFilesBusy === null) {
+                    // Старый индекс ещё показывает состояние, но прочитать свежий
+                    // реестр не удалось: говорим это прямо, а не молчим.
+                    if (!unknownCount) {
+                        html += ' · ' + escapeHtml(t('imageModels.cart_scan_failed',
+                            'Не удалось прочитать список файлов узла: {error}',
+                            { error: state.backendFilesError }));
+                    }
                     html += ' <button class="btn btn-sm btn-secondary" data-imh-action="scan-backend">' +
                         escapeHtml(t('imageModels.cart_scan', 'Перечитать узел')) + '</button>';
                 }

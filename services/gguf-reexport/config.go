@@ -25,15 +25,17 @@ type config struct {
 	Port string
 
 	// ModelsDir — корень моделей (тот же том, что у cppworker и imageworker).
+	// Это ЕДИНСТВЕННЫЙ корень, куда сервис пишет: результат, лёгший мимо тома
+	// моделей, воркер не увидит вовсе.
 	ModelsDir string
-	// OutDir — второй корень для результата. Пусто = писать рядом с источником
-	// внутри ModelsDir (обычный случай: воркер видит новый файл там же).
+	// OutDir — прежний глобальный каталог результата (REEXPORT_OUT_DIR).
 	//
-	// ЗАЧЕМ ВТОРОЙ КОРЕНЬ. Тома моделей бывают только для чтения (`:ro` — так
-	// стенд защищает веса от случайной записи), а результат 16 ГиБ не всегда
-	// влезает на тот же диск. Тогда оператор монтирует writable-том и задаёт
-	// REEXPORT_OUT_DIR: сервис проверяет, что итоговый путь лежит ВНУТРИ одного
-	// из двух корней, и отказывает всему остальному.
+	// РАНЬШЕ он был вторым разрешённым корнем и выбирал, куда писать: одна и та
+	// же задача могла лечь мимо тома моделей — и воркер её не видел. Теперь
+	// каталог результата задаёт каталог модели (см. resolveOutput), а переменная
+	// оставлена ТОЛЬКО как legacy-fallback для запросов из раскладок, где каталог
+	// модели оказался вне тома, и только если сам OutDir лежит внутри ModelsDir
+	// (см. legacyOutBase): выйти за ${MODELS_DIR} она не даёт.
 	OutDir string
 	// JobsDir — состояние задач (JSON-файл на задачу, без БД).
 	JobsDir string
@@ -90,12 +92,18 @@ func loadConfig() (config, error) {
 	if strings.TrimSpace(cfg.ModelsDir) == "" {
 		return cfg, fmt.Errorf("REEXPORT_MODELS_DIR пуст: нечего ре-экспортировать")
 	}
+	// Модельный корень приводим к абсолютному: все проверки «путь внутри тома» —
+	// это filepath.Rel(abs, abs), а относительный корень с абсолютным путём дал бы
+	// «..» на любом входе и отказ на ровном месте.
+	if abs, err := filepath.Abs(cfg.ModelsDir); err == nil {
+		cfg.ModelsDir = filepath.Clean(abs)
+	}
 	if cfg.OutDir != "" {
 		abs, err := filepath.Abs(cfg.OutDir)
 		if err != nil {
 			return cfg, fmt.Errorf("REEXPORT_OUT_DIR=%q: %w", cfg.OutDir, err)
 		}
-		cfg.OutDir = abs
+		cfg.OutDir = filepath.Clean(abs)
 	}
 	if cfg.ConverterPath == "" {
 		// Рядом с драйвером: Dockerfile кладёт конвертер llama.cpp в /app/llama/.
@@ -107,13 +115,30 @@ func loadConfig() (config, error) {
 // Addr — адрес прослушивания.
 func (c config) Addr() string { return net.JoinHostPort(c.Host, c.Port) }
 
-// outRoot — куда по умолчанию писать результат.
-func (c config) outRoot() string {
-	if c.OutDir != "" {
-		return c.OutDir
+// outRoot — корень, внутри которого сервис пишет результат.
+//
+// Это всегда ModelsDir: каталог результата выбирает каталог модели
+// (resolveOutput), а REEXPORT_OUT_DIR больше не «второй корень» — иначе задача
+// писала бы туда, где воркер её не найдёт.
+func (c config) outRoot() string { return c.ModelsDir }
+
+// legacyOutBase — прежний глобальный каталог результата, если он ещё пригоден.
+//
+// Пусто, когда переменная не задана ИЛИ когда она указывает за пределы тома
+// моделей: разрешить запись туда значило бы вернуть ровно тот дефект, из-за
+// которого каталог результата стал производным от каталога модели (D10.2).
+func (c config) legacyOutBase() string {
+	if c.OutDir == "" || !pathWithin(c.OutDir, c.ModelsDir) {
+		return ""
 	}
-	return c.ModelsDir
+	return c.OutDir
 }
+
+// legacyOutIgnored — переменная задана, но не может быть применена.
+//
+// Нужна для честного предупреждения на старте: молча игнорировать настройку
+// оператора нельзя, а применять её — значит писать мимо тома моделей.
+func (c config) legacyOutIgnored() bool { return c.OutDir != "" && c.legacyOutBase() == "" }
 
 func envOr(name, def string) string {
 	if v := strings.TrimSpace(os.Getenv(name)); v != "" {

@@ -60,7 +60,11 @@ type jobRunner interface {
 // Формат намеренно плоский: одна строка — одно событие. Так его можно читать
 // потока `docker logs` и видеть прогресс без разбора многогигабайтных дампов.
 type driverEvent struct {
-	Event      string                 `json:"event"`
+	Event string `json:"event"`
+	// Stage — стадия конвейера: reading | writing | validating (контракт §5
+	// плана). Именно по ней видно, что задача не «зависла на 0 %», а читает вход
+	// или сверяет результат.
+	Stage      string                 `json:"stage"`
 	Phase      string                 `json:"phase"`
 	Percent    float64                `json:"percent"`
 	BytesDone  int64                  `json:"bytes_done"`
@@ -74,6 +78,38 @@ type driverEvent struct {
 	Facts      map[string]interface{} `json:"facts"`
 	Changes    []string               `json:"changes"`
 	Verify     map[string]interface{} `json:"verify"`
+}
+
+// stageByPhase и phaseByStage — перевод между стадией конвейера (reading |
+// writing | validating) и меткой, которую уже показывает WebUI (plan | copy |
+// verify).
+//
+// ДВА ИМЕНИ НА ОДНУ СТАДИЮ — не дублирование, а граница ответственности: стадия
+// приходит от драйвера и не меняется вместе с интерфейсом, метка — слово для
+// человека в панели. Драйвер печатает обе; если пришла только одна (старые
+// образы печатали `phase`), вторая выводится здесь.
+var stageByPhase = map[string]string{
+	"plan":   "reading",
+	"copy":   "writing",
+	"verify": "validating",
+}
+
+var phaseByStage = map[string]string{
+	"reading":    "plan",
+	"writing":    "copy",
+	"validating": "verify",
+}
+
+// progressFromDriver переводит событие драйвера в прогресс задачи.
+func progressFromDriver(ev driverEvent) jobProgress {
+	p := jobProgress{
+		Percent:    ev.Percent,
+		BytesDone:  ev.BytesDone,
+		BytesTotal: ev.BytesTotal,
+	}
+	p.Stage = firstNonEmptyStr(ev.Stage, stageByPhase[ev.Phase])
+	p.Phase = firstNonEmptyStr(ev.Phase, phaseByStage[ev.Stage])
+	return p
 }
 
 // pythonRunner — исполнитель через python-драйвер.
@@ -163,31 +199,37 @@ func (r *pythonRunner) consumeStdout(rd io.Reader, sink func(runEvent)) {
 	sc := bufio.NewScanner(rd)
 	sc.Buffer(make([]byte, 64<<10), 8<<20)
 	for sc.Scan() {
-		line := sc.Text()
-		if !strings.HasPrefix(strings.TrimSpace(line), "{") {
-			sink(runEvent{Type: "log", Line: line})
-			continue
-		}
-		var ev driverEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			sink(runEvent{Type: "log", Line: line})
-			continue
-		}
-		switch ev.Event {
-		case "progress":
-			sink(runEvent{Type: "progress", Progress: jobProgress{
-				Phase: ev.Phase, Percent: ev.Percent, BytesDone: ev.BytesDone, BytesTotal: ev.BytesTotal}})
-		case "result":
-			sink(runEvent{Type: "result", Result: &jobResult{
-				DurationMS: ev.DurationMS, SrcBytes: ev.SrcBytes, DstBytes: ev.DstBytes,
-				Facts: ev.Facts, Changes: ev.Changes, Verify: ev.Verify}})
-		case "error":
-			sink(runEvent{Type: "error", Error: &jobError{Code: ev.Code, Message: ev.Message, Detail: ev.Detail}})
-		case "log":
-			sink(runEvent{Type: "log", Line: ev.Message})
-		default:
-			sink(runEvent{Type: "log", Line: line})
-		}
+		sink(driverLineEvent(sc.Text()))
+	}
+}
+
+// driverLineEvent — одна строка драйвера → событие задачи.
+//
+// Вынесено из consumeStdout отдельной функцией: это единственное место, где
+// формат драйвера превращается в состояние задачи, и проверять его надо без
+// процесса, pipe и таймеров. Всё, что не JSON, — строка лога: падать из-за
+// печати python нельзя, иначе одна отладочная строка «съест» весь прогресс.
+func driverLineEvent(line string) runEvent {
+	if !strings.HasPrefix(strings.TrimSpace(line), "{") {
+		return runEvent{Type: "log", Line: line}
+	}
+	var ev driverEvent
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return runEvent{Type: "log", Line: line}
+	}
+	switch ev.Event {
+	case "progress":
+		return runEvent{Type: "progress", Progress: progressFromDriver(ev)}
+	case "result":
+		return runEvent{Type: "result", Result: &jobResult{
+			DurationMS: ev.DurationMS, SrcBytes: ev.SrcBytes, DstBytes: ev.DstBytes,
+			Facts: ev.Facts, Changes: ev.Changes, Verify: ev.Verify}}
+	case "error":
+		return runEvent{Type: "error", Error: &jobError{Code: ev.Code, Message: ev.Message, Detail: ev.Detail}}
+	case "log":
+		return runEvent{Type: "log", Line: ev.Message}
+	default:
+		return runEvent{Type: "log", Line: line}
 	}
 }
 

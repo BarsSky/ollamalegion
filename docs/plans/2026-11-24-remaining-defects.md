@@ -14,11 +14,11 @@
 | D3 | закрыт | Бандл для image-воркеров (`cmd/sdworker/debug_bundle.go`), версии сервисов в `summary.json` (`internal/api/diag_services.go`), агрегация повторяющихся WARN (`pkg/logger/aggregate.go`, `cmd/balancer/log_buffer.go`) — R724/R725; вложенные backticks в raw-строке README чинились отдельно (иначе `go vet ./internal/api/` падал на `illegal character`) |
 | D4 | частично закрыт | **D4.3** (`-feasible` не врёт про «нет свободной VRAM») — R717; **D4.1** (слагаемые бюджета ожидания в `queue_stats`) — R727, проверено на живом `balancer r727`; **D4.2** (`totalRequests=0` при `recentClients.requestCount=42`) — открыт: это разные окна/источники счётчиков, нужен замер под нагрузкой, чтобы отличить «не инкрементится» от «разные окна» |
 | D5 | закрыт | Решение: R303-спасение ОСТАВЛЕНО (готовая копия важнее ожидания ресурсов), но обход жёсткого гейта теперь НАЗВАН в событии (`resource_gate_bypassed=true`, `bypass_policy=r303_rescue_loaded_copy`) — R723; отдельный флаг отключения не вводили (кандидат, если понадобится политика «никогда не обходить») |
-| D6 | открыт | gemma-4 в CPU-образе (SIGSEGV при flash_attn) |
+| D6 | закрыт | **Не наш параметр, а сборка — доказано замером (R730).** На CPU-образе с пином `b1b770d90d` запрос `POST /api/models/load {gemma-4-E4B-it-Q4_K_M, ctx=4096, gpuLayers=0, flashAttn=1, kvCacheType=q4_0}` падает ровно как в симптоме: `graph_reserve: reserving a graph for ubatch with n_tokens = 1, n_seqs = 1 …` → `SIGSEGV: segmentation violation` / `signal arrived during cgo execution`, контейнер `Exited (2)`. Тот же запрос на CPU-образах с пином `b12642` (`diag-cpu-new`, `diag-cpu-new2`): `state=loaded` (16 с / 82 с), генерация 5–7 токенов **1.8 ток/с**, а при `ctx=32768` и промпте 1609 токенов — 88 с, без падения; на GPU-пути всё это время работало. Значит дефект llama.cpp в gemma-4 (расчёт графа выходил за лимит split-inputs сборки) закрыт обновлением пинa, а не нашим выбором KV — поэтому «авто-выбор f16 вместо q8_0 на CPU» НЕ вводился: рабочие параметры на CPU проверены (см. числа). Что сделано, чтобы это не вернулось: `tests/cppworker_build_parity_r730_test.go` — CPU- и GPU-Dockerfile обязаны нести `-DGGML_SCHED_MAX_SPLIT_INPUTS=128` и `-DLLAMA_BUILD_COMMIT="${LLAMA_BUILD}"` (красный при понижении лимита: проверено мутацией `128→64`); R700 добавил флаг в CPU-сборку именно для паритета, и его примечание «флаг не вылечил» подтвердилось: лечил пин |
 | D7 | закрыт | **R708** (`49e8dc27`): CPU-ветка `lazyload_calc` считает KV по плану с консервативным fallback + **R719** вернул забытый тест `handlers_model_dir_kv_plan_r708`; `internal/composition` сознательно оставлен на явных числах (`KVCacheBytes(m Model)` получает `KVLayers/KVHeads/KVHeadDim` из спецификации, а не из GGUF) — это зафиксировано здесь как решение, не долг |
 | D8 | закрыт | **R707/R708**: `/api/models` публикует `head_dim_swa`, `head_dim_swa_v`, `n_kv_heads_swa` (`kv_layers.go:281-282`), WebUI показывает раскладку KV в карточке модели |
 | D9 | закрыт | **D9.4** подсказка роли обновляется при смене выбора — R720 (тест-сторож); **D9.2** HF-логики в `image-page.js` больше нет — проверил: все три упоминания `/api/hf/` там только в комментариях (строки 45, 472, 757), код перенесён в `image-models-hf.js` в R710, тест `image-page-dom` это и требует; **D9.3** инлайн-размеры в `health.html` — ноль вхождений `font-size: Npx` после R695; **D9.1** смешанный нейминг (`headDimK` camelCase у старых полей против `head_dim_source`/`head_dim_k` snake_case у новых) — РЕШЕНИЕ: не ломать существующий контракт ради единого стиля; новые поля плана читаются поллером и профилем (R707), список `/api/models` остаётся legacy-camelCase. Унификация — только вместе с мажорным контрактом API |
-| D10 | частично | **D10.6 закрыт замером**: пропатченный Inkling-2 грузится (`state=loaded`, 50341 мс при ctx 8192, 6/49 слоёв на GPU) и генерирует 0.2 ток/с — `docs/features/inkling2-loop.md`; остались: Go-проверка места до старта, `REEXPORT_OUT_DIR`, прогресс на normalize/convert, очистка после отмены, образ `full` |
+| D10 | закрыт (кроме образа `full`) | **D10.1–D10.5** сделаны: место проверяется в Go ДО старта (`insufficient_space` с числами «нужно/свободно»), выход только внутри `${MODELS_DIR}` (400 `path_not_allowed`), стадии `reading/writing/validating`, очистка после отмены, документ 120 строк. **D10.6 закрыт замером**: пропатченный Inkling-2 грузится (`state=loaded`, 50341 мс при ctx 8192, 6/49 слоёв на GPU) и генерирует 0.2 ток/с — `docs/features/inkling2-loop.md`; осталось: образ `full` не собран (таргет разобран `docker buildx build --call=outline`, `hf_to_gguf` честно `available=false` с причиной) |
 | D11 | частично | UI-сценарий ре-экспорта и пересборка образов новым тегом — после D10 |
 | D12 | закрыт | **D12.1** em-dash в CSS — R713; **D12.2** гиганты/baseline — R713 + R714 (сплит `proxy.go`); **D12.3** ссылки 63→0 — R716, остаток «голых» имён `x_rNNN.go` — R721 (в проверяемой зоне 0, история в `plans/releases/refactoring-plan` оставлена по политике гейта, правило `BARE_RE` включено с негативными тестами); **D12.4** флейк R81 — под наблюдением (в прогонах не проявился) |
 | D13 | отложен | второй узел (RPC 10.0.2) — по решению «обновление пока подождёт»; диск/лимиты требуют доступа к узлу |
@@ -102,13 +102,34 @@
 
 ---
 
-## D6. P1. `gemma-4-E4B` не грузится в CPU-образе
+## D6. P1. `gemma-4-E4B` не грузится в CPU-образе — ЗАКРЫТО замером (R730)
 
-**Симптом.** В CPU-сборке: с `flash_attn=enabled` — `SIGSEGV` в `graph_reserve` (`signal arrived during cgo execution`), с `flashAttn=0` — «quantized V cache requires flash_attn to be enabled» (воркер просит kv q8_0). Воспроизводится на пинах b1b770d90d и b12642, GPU-путь не затронут.
+**Что было в симптоме.** «В CPU-сборке с `flash_attn=enabled` — `SIGSEGV` в `graph_reserve`,
+с `flashAttn=0` — `quantized V cache requires flash_attn to be enabled`; воспроизводится на
+пинах b1b770d90d и b12642».
 
-**Что делать.** 1) Воспроизвести и снять стек с символами (сборка с `-g`, `ggml` без `NDEBUG`); 2) проверить, не наш ли это `backend_vram`/`n_ctx` (передаём несовместимые параметры CPU); 3) если это баг CPU-бэкенда llama.cpp — зафиксировать как known-issue, а для нас: не предлагать q8_0 KV на CPU (авто-выбор `f16`/`q4_0`), вывести понятную ошибку вместо SIGSEGV.
+**Замер (2026-11-24, три CPU-образа одного Dockerfile'а, один и тот же запрос).**
+`POST /api/models/load {name: gemma-4-E4B-it-Q4_K_M, contextSize: 4096, gpuLayers: 0,
+flashAttn: 1, kvCacheType: q4_0}`, модели — том `D:/ollama-legion-models` (ro):
 
-**Проверка.** CPU-образ загружает gemma-4 с рабочими параметрами (или честно отказывает с указанием «CPU: kv q8_0 не поддерживается без flash_attn»); нет SIGSEGV; тест на выбор kv-типа по бэкенду.
+| образ | пин llama.cpp | результат |
+|---|---|---|
+| `cppworker:diag-cpu-old` | `b1b770d90d` | `graph_reserve: reserving a graph for ubatch with n_tokens = 1, n_seqs = 1` → `SIGSEGV: segmentation violation` / `signal arrived during cgo execution`, контейнер `Exited (2)` — симптом воспроизведён |
+| `cppworker:diag-cpu-new` | `b12642` | `state=loaded` за 16 с; генерация 7 токенов за 3.8 с (1.84 ток/с) |
+| `cppworker:diag-cpu-new2` | `b12642` | `state=loaded` за 82 с; повторная загрузка 18 с; `kvCacheType=q8_0` — тоже `loaded` и 1.8 ток/с; `ctx=32768` + промпт 1609 токенов — 88 с, 9 токенов, без падения |
+
+**Вывод.** Дефект принадлежит сборке llama.cpp на старом пине (расчёт графа gemma-4 выходил за
+лимит split-inputs, портя память), а не нашим параметрам: ни `backend_vram`, ни `n_ctx` не
+при чём — те же числа работают на новом пине, и GPU-путь не был затронут. Поэтому «авто-выбор
+f16/q4_0 на CPU» из плана **не вводился**: он бы запретил рабочую комбинацию. Пункт «вывести
+понятную ошибку вместо SIGSEGV» тоже не нужен: SIGSEGV больше нет, а конфликт «flash off +
+квантованный KV» и раньше давал 400 по R367.
+
+**Чтобы не вернулось.** `tests/cppworker_build_parity_r730_test.go` — CPU- и GPU-Dockerfile
+обязаны нести `-DGGML_SCHED_MAX_SPLIT_INPUTS=128` (в ggml-backend.cpp это и размер массива
+`prefetched[...]`) и `-DLLAMA_BUILD_COMMIT="${LLAMA_BUILD}"`; понижение лимита — красный
+(проверено мутацией `128→64`: оба теста падают с сообщением про D6). Примечание R700 «флаг не
+вылечил падение» подтвердилось буквально: лечил пин, а флаг — выравнивание профиля сборки.
 
 ---
 
@@ -145,13 +166,27 @@
 
 ## D10. P2. Долги сервиса ре-экспорта
 
-**Известно из отчёта R709:**
-1. проверка свободного места — в Python, а не в Go (нужна до старта задачи, с числами «нужно/есть»);
-2. `REEXPORT_OUT_DIR` глобальный (должен быть относительным к каталогу модели);
-3. прогресс есть только на копировании (нужен и на `normalize`, и на `convert`);
-4. отмена не докачивает/не докатывает частичный файл (нужна очистка);
-5. образ `full` (torch) не собран и не проверен — `hf_to_gguf` честно `available=false`;
-6. документ 133 строки вместо целевых 120 (косметика).
+**ЗАКРЫТО (R729), кроме образа `full`.** Пункты отчёта R709 (`services/gguf-reexport/`,
+`docs/operations/gguf-reexport.ru.md`):
+1. свободное место — в Go ДО `queued→running` (`space.go` + `checkSpace` в `jobs.go`):
+   `normalize` — «вход + 1 ГиБ», `convert` — «вход + выход (≈ вход) + 1 ГиБ»; не хватает —
+   `failed`/`insufficient_space` с «нужно X ГиБ, свободно Y ГиБ» и слагаемыми, исполнитель не
+   запускается (нет `started_at`). Python-проверка оставлена второй линией: между стартом и
+   первой записью место мог занять кто-то ещё;
+2. `REEXPORT_OUT_DIR` — только legacy-fallback: выход всегда внутри `${MODELS_DIR}`/каталога
+   модели (проверка `filepath.Rel`), абсолютный путь — лишь внутри тома; выйти за том — 400
+   `path_not_allowed`; непригодная переменная приглушается с предупреждением на старте и
+   `out_dir_ignored=true` в `capabilities`;
+3. прогресс — стадии `reading → writing → validating` в `progress.stage`; на `normalize`
+   проценты по скопированным байтам, на `convert` — по размеру растущего результата;
+4. отмена — `removePartial` вызывается и в ветке `canceled`: недописанный `.gguf` в каталоге
+   моделей не остаётся (тест `TestCancelRunningJobRemovesPartialResult`);
+5. образ `full` — **не собран** (шла другая длинная сборка), но Dockerfile разобран
+   `docker buildx build --call=outline`: таргет `full` синтаксически валиден, аргументы
+   подставляются; `capabilities` отдаёт `hf_to_gguf: available=false` с причиной «образ собран
+   без torch» — кнопка не врёт. Живая проверка — при наличии HF-чекпойнта;
+6. документ — 120 строк (было 133): таблица чисел живого прогона и «что делать при отказе» на
+   месте, дублирование убрано.
 
 **Главный кейс — ЗАКРЫТ (D10.6, замер на одноразовом linux-томе).** Пропатченный
 по loop-схеме файл (`--fuse-loop-queries`, 744 тензора, `arch=inkling2_loop`,
@@ -161,9 +196,7 @@
 `loaded` за 32119 мс, 7/49 слоёв, пик cgroup 19.66 ГБ. Душила не схема, а
 скорость bind-mount (19 МБ/с на чтение): с локального тома чтение 414 МБ/с и
 загрузка укладывается в 50 с. Таблица чисел, команда патча и ожидаемый
-`print_info` — `docs/features/inkling2-loop.md`. Остальное по D10 не закрыто:
-проверка места до старта, `REEXPORT_OUT_DIR`, прогресс на normalize/convert,
-очистка после отмены, образ `full`.
+`print_info` — `docs/features/inkling2-loop.md`.
 
 ---
 

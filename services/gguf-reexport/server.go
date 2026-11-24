@@ -122,7 +122,11 @@ func (s *server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	info := s.info.Get(r.Context())
 	caps := buildCapabilities(info)
 	caps.Limits.ModelsDir = s.cfg.ModelsDir
-	caps.Limits.OutDir = s.cfg.OutDir
+	// Отдаём действующий legacy-каталог (пусто, если переменная указывает за том):
+	// ответ «out_dir: /второй/диск» при фактической записи в каталог модели был бы
+	// ложью ровно о том, что чинит D10.2.
+	caps.Limits.OutDir = s.cfg.legacyOutBase()
+	caps.Limits.OutDirIgnored = s.cfg.legacyOutIgnored()
 	caps.Limits.JobsDir = s.cfg.JobsDir
 	caps.Limits.ScanDepth = s.cfg.ScanDepth
 	caps.Limits.MaxListed = s.cfg.ScanMaxFiles
@@ -236,7 +240,11 @@ func writeJobErr(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case "dst_exists", "job_finished":
 		status = http.StatusConflict
-	case "unknown_target", "target_unavailable", "out_of_models_dir", "out_path_denied",
+	// 400 — запрос назвал явно недопустимый путь: это ошибка запроса, а не
+	// состояния задачи, поэтому не 422 (там «понят, но невозможно»).
+	case "path_not_allowed":
+		status = http.StatusBadRequest
+	case "unknown_target", "target_unavailable", "out_of_models_dir",
 		"model_not_patchable", "input_missing":
 		status = http.StatusUnprocessableEntity
 	case "insufficient_space":

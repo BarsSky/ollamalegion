@@ -2221,3 +2221,97 @@
 #imTabHf > .card {
     overflow: visible;
 }
+
+/* ===== R709/D11: блок «Ре-экспорт GGUF» (js/modules/gguf-reexport.js) =====
+ * Сценарий из пяти шагов: модель и вердикт схемы, проверка, нормализация,
+ * пересканирование, проверка загрузки. Блок существует только когда сервис
+ * ответил на /api/reexport/capabilities, поэтому стили не влияют на страницу без
+ * модуля. Цвета берутся токенами темы: жёстких hex здесь нет, иначе светлая тема
+ * теряла бы контраст. */
+.rx-step {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-4);
+    margin-bottom: var(--space-3);
+    background: var(--bg-card);
+}
+.rx-step-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+}
+.rx-step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--radius-full);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+.rx-step-title {
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+}
+.rx-step-hint {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    margin-bottom: var(--space-2);
+}
+.rx-step-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    align-items: center;
+}
+.rx-status {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    margin-top: var(--space-2);
+    min-height: 1em;
+}
+.rx-result {
+    margin-top: var(--space-2);
+    font-size: var(--font-size-sm);
+}
+.rx-progress {
+    margin-top: var(--space-2);
+}
+.rx-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+}
+.rx-badge-patchable {
+    color: var(--warning);
+    border-color: var(--warning);
+}
+.rx-badge-normalized {
+    color: var(--success);
+    border-color: var(--success);
+}
+.rx-badge-unreadable {
+    color: var(--danger);
+    border-color: var(--danger);
+}
+.rx-warn {
+    margin-top: var(--space-2);
+}
+.rx-warn-text {
+    font-size: var(--font-size-xs);
+    color: var(--warning);
+}
+.rx-plan {
+    margin: 2px 0 0 18px;
+    padding: 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+}

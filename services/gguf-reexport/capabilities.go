@@ -307,7 +307,14 @@ type archSpec struct {
 type limitsInfo struct {
 	MaxConcurrent int    `json:"max_concurrent"`
 	ModelsDir     string `json:"models_dir"`
-	OutDir        string `json:"out_dir,omitempty"`
+	// OutDir — legacy-каталог результата (REEXPORT_OUT_DIR), если он пригоден:
+	// внутри тома моделей. Пусто — переменная не задана или не применяется
+	// (тогда out_dir_ignored=true): писать за том моделей сервис не имеет права.
+	OutDir string `json:"out_dir,omitempty"`
+	// OutDirIgnored — переменная задана, но лежит вне тома моделей и потому
+	// приглушена. Флаг нужен, чтобы панель/оператор видели это из ответа, а не
+	// искали причину в логах контейнера.
+	OutDirIgnored bool   `json:"out_dir_ignored,omitempty"`
 	JobsDir       string `json:"jobs_dir"`
 	ScanDepth     int    `json:"scan_depth"`
 	MaxListed     int    `json:"max_listed_models"`

@@ -60,6 +60,14 @@ func main() {
 		"models_dir", cfg.ModelsDir, "out_dir", cfg.OutDir, "jobs_dir", cfg.JobsDir,
 		"python", cfg.PythonBin, "driver", cfg.DriverPath,
 		"llama_commit", id.LlamaCommit, "auth", cfg.APIToken != "")
+	// Молча игнорировать настройку оператора нельзя: он ждёт результат в прежнем
+	// каталоге, а получит его в каталоге модели. Причина одна — запись за том
+	// моделей воркер не увидит (D10.2), поэтому переменная только приглушается.
+	if cfg.legacyOutIgnored() {
+		log.Warnw("REEXPORT_OUT_DIR вне тома моделей — не применяется",
+			"out_dir", cfg.OutDir, "models_dir", cfg.ModelsDir,
+			"hint", "результат пишется в каталог модели; legacy-fallback работает только внутри тома моделей")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

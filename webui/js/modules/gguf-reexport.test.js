@@ -102,6 +102,9 @@ function jsonResponse(status, body) {
     });
 }
 
+// D11/R628: страница грузит два файла — сначала фабрику слоя задач, затем
+// главный модуль блока (webui/index.html). Тест делает то же самое.
+require('./gguf-reexport-jobs.js');
 require('./gguf-reexport.js');
 const R = global.window.GgufReexport;
 
@@ -161,28 +164,46 @@ check('модуль ответил → блок отрисован данным�
         'архитектуры не взяты из возможностей сервиса: ' + node('#rxArch').innerHTML);
     assert.ok(node('#rxConverter').textContent.indexOf('llama.cpp 5bacb7c868') >= 0,
         'версия конвертера не показана: ' + node('#rxConverter').textContent);
-    assert.ok(hostEl.innerHTML.indexOf('id="rxForm"') >= 0, 'формы создания задачи нет');
+    // D11: вместо формы «создать задачу» — пять шагов сценария.
+    assert.ok(hostEl.innerHTML.indexOf('data-step="model"') >= 0, 'нет шага «модель и вердикт»');
+    assert.ok(hostEl.innerHTML.indexOf('data-step="inspect"') >= 0, 'нет шага «проверить»');
+    assert.ok(hostEl.innerHTML.indexOf('data-step="normalize"') >= 0, 'нет шага «нормализовать»');
+    assert.ok(hostEl.innerHTML.indexOf('data-step="rescan"') >= 0, 'нет шага «пересканировать»');
+    assert.ok(hostEl.innerHTML.indexOf('data-step="load"') >= 0, 'нет шага «проверить загрузку»');
     assert.ok(hostEl.innerHTML.indexOf('id="rxRescan"') >= 0, 'кнопки «Пересканировать модели» нет');
     R._stopPolling();
 });
 
-check('тело задачи: fuse по умолчанию, dry_run только по галочке', function () {
+check('список моделей: строка на модель с вердиктом схемы', async () => {
+    R._state.models = MODELS.models;
     R._state.selectedModel = 'Inkling-2-Mini-UD-Q4_K_M.gguf';
-    node('#rxTarget').value = 'inkling2_loop';
+    R._renderModels(hostEl);
+    const html = node('#rxModelsBody').innerHTML;
+    assert.ok(html.indexOf('Inkling-2-Mini-UD-Q4_K_M.gguf') >= 0, 'модели нет в списке: ' + html);
+    assert.ok(html.indexOf('Qwen3-4B.gguf') >= 0, 'второй модели нет в списке');
+    assert.ok(html.indexOf('reexport.verdict_patchable') >= 0, 'нет ярлыка patchable у loop-экспорта');
+    assert.ok(html.indexOf('reexport.verdict_plain') >= 0, 'нет ярлыка «ре-экспорт не нужен»');
+});
+
+check('тело задачи: fuse по умолчанию, dry_run только в режиме проверки', function () {
+    R._state.selectedModel = 'Inkling-2-Mini-UD-Q4_K_M.gguf';
     node('#rxFuse').checked = true;
-    node('#rxDryRun').checked = false;
     node('#rxOut').value = '';
-    const body = R._buildJobBody(hostEl);
+    const body = R._buildJobBody(hostEl, 'normalize');
     assert.strictEqual(body.model_dir, 'Inkling-2-Mini-UD-Q4_K_M.gguf');
     assert.strictEqual(body.target, 'inkling2_loop');
     assert.strictEqual(body.options.fuse_loop_queries, true);
     assert.strictEqual(body.options.dry_run, undefined);
     assert.strictEqual(body.options.out_path, undefined);
+    // Проверка — это та же цель с dry_run: отдельного поля mode у сервиса нет
+    // (createRequest разбирается с DisallowUnknownFields, mode дал бы 400).
+    const probe = R._buildJobBody(hostEl, 'inspect');
+    assert.strictEqual(probe.options.dry_run, true);
+    assert.strictEqual(probe.target, 'inkling2_loop');
 });
 
-check('задача уходит в POST /api/reexport/jobs ровно с контрактными полями', async () => {
+check('кнопка «Нормализовать» уходит в POST /api/reexport/jobs с контрактными полями', async () => {
     calls.length = 0;
-    node('#rxCreate').disabled = false;
     const created = { ...JOB, id: 'rj-2', status: 'queued' };
     fetchImpl = (call) => {
         if (call.url.indexOf('/capabilities') >= 0) return jsonResponse(200, CAPS);
@@ -190,18 +211,19 @@ check('задача уходит в POST /api/reexport/jobs ровно с кон
         if (call.url.indexOf('/jobs') >= 0) return jsonResponse(200, { jobs: [created] });
         return jsonResponse(200, MODELS);
     };
-    // Пересобираем форму, чтобы обработчик submit был привязан к свежему DOM.
-    node('#rxForm')._listeners = {};
+    // Пересобираем разметку, чтобы обработчик клика был привязан к свежему DOM.
+    node('#rxNormalize')._listeners = {};
     R._state.available = true;
     R._state.caps = CAPS;
     await R.mount();
-    const submit = (node('#rxForm')._listeners.submit || [])[0];
-    assert.ok(typeof submit === 'function', 'на форме нет обработчика submit');
+    const click = (node('#rxNormalize')._listeners.click || [])[0];
+    assert.ok(typeof click === 'function', 'на кнопке «Нормализовать» нет обработчика');
     node('#rxFuse').checked = true;
     R._state.selectedModel = 'Inkling-2-Mini-UD-Q4_K_M.gguf';
-    node('#rxTarget').value = 'inkling2_loop';
-    submit({ preventDefault() {} });
     await new Promise((r) => setTimeout(r, 30));
+    R._state.selectedModel = 'Inkling-2-Mini-UD-Q4_K_M.gguf';
+    click({});
+    await new Promise((r) => setTimeout(r, 40));
     const post = calls.filter((c) => c.opts.method === 'POST')[0];
     assert.ok(post, 'POST задачи не отправлен');
     assert.ok(post.url.indexOf('/api/reexport/jobs') >= 0, 'не тот адрес: ' + post.url);
@@ -243,16 +265,20 @@ check('ошибка сервиса доходит до оператора с п�
         if (call.url.indexOf('/jobs') >= 0) return jsonResponse(200, { jobs: [] });
         return jsonResponse(200, MODELS);
     };
+    node('#rxNormalize')._listeners = {};
+    R._state.models = MODELS.models;
     R._state.selectedModel = 'Qwen3-4B.gguf';
-    node('#rxTarget').value = 'inkling2_loop';
-    node('#rxFuse').checked = false;
-    const submit = (node('#rxForm')._listeners.submit || [])[0];
-    submit({ preventDefault() {} });
+    await R.mount();
     await new Promise((r) => setTimeout(r, 30));
-    const err = node('#rxError');
-    assert.strictEqual(err.style.display, '', 'блок ошибки не показан');
-    assert.ok(String(err.textContent).indexOf('файл не подходит под патч') >= 0,
-        'причина ошибки потеряна: ' + err.textContent);
+    R._state.selectedModel = 'Qwen3-4B.gguf';
+    node('#rxFuse').checked = false;
+    const click = (node('#rxNormalize')._listeners.click || [])[0];
+    assert.ok(typeof click === 'function', 'нет обработчика на кнопке «Нормализовать»');
+    click({});
+    await new Promise((r) => setTimeout(r, 40));
+    const status = node('#rxNormalizeStatus');
+    assert.ok(String(status.textContent).indexOf('файл не подходит под патч') >= 0,
+        'причина ошибки потеряна: ' + status.textContent);
     R._stopPolling();
 });
 
@@ -260,20 +286,20 @@ check('подсказка о схеме модели отвечает «нуже
     R._state.models = MODELS.models;
     R._state.selectedModel = 'Inkling-2-Mini-UD-Q4_K_M.gguf';
     R._state.modelsError = '';
-    const mod = R._state;
-    // renderModelHint не экспортирован — проверяем через состояние и публичный
-    // формат: подсказка строится из фактов сервиса (см. renderModelHint).
-    const m = mod.models[0];
-    assert.strictEqual(m.scheme, 'inkling2_loop_export');
-    assert.strictEqual(m.patchable, true);
-    assert.strictEqual(m.block_count, 48);
-    assert.strictEqual(m.physical_blocks, 24);
+    // Вердикт строится из фактов сервиса и говорит «patchable» с числами.
+    const v = R._verdictFor(R._state.models[0]);
+    assert.strictEqual(v.kind, 'patchable');
+    assert.strictEqual(R._state.models[0].scheme, 'inkling2_loop_export');
+    assert.strictEqual(R._state.models[0].patchable, true);
+    assert.strictEqual(R._state.models[0].block_count, 48);
+    assert.strictEqual(R._state.models[0].physical_blocks, 24);
 });
 
 check('форматирование размеров и статусов не выдумывает значения', function () {
     assert.strictEqual(R._formatBytes(16610543328), '15.5 GiB');
     assert.strictEqual(R._formatBytes(103769856), '99 MiB');
     assert.strictEqual(R._formatBytes(0), '0');
+    assert.strictEqual(R._formatBytes(5152), '5.0 KiB');
     assert.strictEqual(R._statusLabel('succeeded'), 'reexport.status_succeeded');
     assert.strictEqual(R._statusLabel('canceled'), 'reexport.status_canceled');
     assert.strictEqual(R._formatDuration(65000), '1m 5s');

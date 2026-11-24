@@ -2883,6 +2883,12 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          Грузится ДО gguf-renderer.js: рендерер страницы зовёт
          window.GgufReexport.mount() после сборки разметки. Модуль не падает при
          отсутствии сервиса — он просто не рисует блок. -->
+    <!-- D11 (2026-11-25): слой задач вынесен отдельным файлом (страж R628:
+         боевой файл >= 1500 непустых строк запрещён). Порядок обязателен:
+         сначала фабрика window.GgufReexportJobs, затем главный модуль — он берёт
+         её лениво и, если файла в сборке нет, честно отказывает шагам проверки и
+         нормализации вместо ReferenceError (тот же класс, что R668/R669). -->
+    <script defer src="js/modules/gguf-reexport-jobs.js?v=R709"></script>
     <script defer src="js/modules/gguf-reexport.js?v=R709"></script>
     <script defer src="js/modules/gguf-renderer.js?v=R425"></script>
     <script defer src="js/modules/settings-ui.js?v=R425"></script>

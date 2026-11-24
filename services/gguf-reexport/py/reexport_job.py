@@ -7,10 +7,17 @@
 событий (одна строка — один JSON-объект). Драйвер — единственное место, где
 меняется представление «задача → конвертер»:
 
-    {"event":"progress","phase":"copy","percent":42.0,"bytes_done":..,"bytes_total":..}
+    {"event":"progress","stage":"reading|writing|validating","phase":"plan|copy|verify",
+     "percent":42.0,"bytes_done":..,"bytes_total":..}
     {"event":"log","message":"..."}
     {"event":"result","duration_ms":..,"src_bytes":..,"dst_bytes":..,"facts":{...}}
     {"event":"error","code":"model_not_patchable","message":"..."}
+
+ПОЧЕМУ ДВЕ КЛИЧКИ СТАДИИ (stage И phase). `stage` — стадия конвейера из
+контракта (reading → writing → validating): по ней Go и тесты понимают, где
+задача, и она не меняется вместе с переводами интерфейса. `phase` — короткая
+метка, которую панель уже показывает словами (план/копирование/сверка); она
+оставлена, чтобы WebUI не пришлось переучивать ради переименования.
 
 ПОЧЕМУ СОБЫТИЯ, А НЕ ПАРСИНГ ЧЕЛОВЕЧЕСКОГО ТЕКСТА. Скрипт патча печатает
 прогресс через `\\r` («копирование данных: 42.0%») — это для человека. Разбирать
@@ -42,6 +49,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
 
@@ -125,14 +133,69 @@ def _progress_hook(impl):
     Модуль печатает прогресс сам (`_write_progress`), и функция вызывается по
     имени из `write_patched`, поэтому подмена атрибута модуля — штатный шов, а не
     хак: она не меняет ни одного байта логики патча и не дублирует её.
+
+    Проценты — по скопированным байтам (их печатает сам патч): это единственная
+    метрика, которая не врёт на 16-гигабайтном файле. 100 % здесь не печатаем:
+    после копирования идёт сверка результата (stage=validating), и «100 %» до неё
+    было бы обещанием, которого ещё нет.
     """
 
     def hook(done: int, total: int, last=[0.0]) -> None:
-        percent = (100.0 * done / total) if total else 100.0
-        emit("progress", phase="copy", percent=round(percent, 2),
+        percent = (100.0 * done / total) if total else 99.0
+        emit("progress", stage="writing", phase="copy", percent=round(min(percent, 99.0), 2),
              bytes_done=int(done), bytes_total=int(total))
 
     impl._write_progress = hook  # type: ignore[attr-defined]
+
+
+def _dir_bytes(path: str) -> int:
+    """Суммарный размер файлов каталога (для оценки «выход ≈ вход»)."""
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                p = os.path.join(root, name)
+                if os.path.isfile(p):
+                    total += os.path.getsize(p)
+            except OSError:
+                continue
+    return total
+
+
+class _ConvertProgress(threading.Thread):
+    """Проценты записи для hf_to_gguf: конвертер пишет один файл.
+
+    ЧЕСТНО О ГРАНИЦАХ. convert_hf_to_gguf.py собирает тензоры в памяти и пишет
+    файл в конце, поэтому «процентов чтения» по байтам у него нет: до записи
+    прогресс — стадия `reading` без процентов (её видно по стадии, а не по числу).
+    Зато у записи процент есть: размер готового файла против оценки «выход ≈ вход»
+    — той же оценки, по которой Go проверяет место. Опрос печатает не чаще
+    одного события в секунду и не больше 99 %: 100 % печатает драйвер после
+    проверки результата.
+    """
+
+    def __init__(self, dst: str, expected_bytes: int, stop: threading.Event, interval: float = 2.0):
+        super().__init__(daemon=True)
+        self._dst = dst
+        self._expected = expected_bytes
+        self._stop = stop
+        self._interval = interval
+        self._last = -1.0
+
+    def run(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                size = os.path.getsize(self._dst)
+            except OSError:
+                continue
+            if self._expected <= 0 or size <= 0:
+                continue
+            percent = min(99.0, 100.0 * size / self._expected)
+            if percent - self._last < 1.0 and percent < 99.0:
+                continue
+            self._last = percent
+            emit("progress", stage="writing", phase="copy", percent=round(percent, 2),
+                 bytes_done=int(size), bytes_total=int(self._expected))
 
 
 def target_inkling2_loop(args) -> int:
@@ -147,6 +210,7 @@ def target_inkling2_loop(args) -> int:
         return EXIT_BAD_INPUT
 
     started = time.time()
+    emit("progress", stage="reading", phase="plan", percent=0.0)
     try:
         hdr = impl._read_src_header(args.src)
         plan = impl.make_plan(hdr, args.fuse_loop_queries)
@@ -159,7 +223,6 @@ def target_inkling2_loop(args) -> int:
     facts["physical_blocks"] = plan.physical
     facts["fuse"] = bool(plan.fuse)
     facts["visits"] = plan.facts.get("visits")
-    emit("progress", phase="plan", percent=0.0)
     for line in plan.kv_changes:
         emit_log("изменение метаданных: " + line)
     emit_log("контроллеры: переименовано %d тензоров" % len(plan.ctrl_renames))
@@ -205,14 +268,18 @@ def target_inkling2_loop(args) -> int:
         return EXIT_BAD_INPUT
 
     verify = {}
+    final_stage, final_phase = "writing", "copy"
     if args.verify:
-        emit("progress", phase="verify", percent=99.0)
+        final_stage, final_phase = "validating", "verify"
+        emit("progress", stage=final_stage, phase=final_phase, percent=99.0)
         try:
             verify = impl.verify_patched(args.dst, args.src, plan)
         except impl.PatchError as e:
             emit_error("verify_failed", "результат не сошёлся с ожидаемой схемой: %s" % e)
             return EXIT_BAD_INPUT
-    emit("progress", phase="copy", percent=100.0)
+    # 100 % — только здесь: копирование упирается в 99 %, а «готово» имеет право
+    # сказать тот, кто уже сверил результат (или осознанно выключил сверку).
+    emit("progress", stage=final_stage, phase=final_phase, percent=100.0)
 
     result = {
         "duration_ms": int((time.time() - started) * 1000),
@@ -254,8 +321,15 @@ def target_hf_to_gguf(args) -> int:
     outtype = args.outtype or "q8_0"
     argv = [sys.executable, conv, args.src, "--outfile", args.dst, "--outtype", outtype]
     emit_log("конвертер: %s (outtype=%s)" % (" ".join(argv[:1] + argv[1:2]), outtype))
-    emit("progress", phase="convert", percent=0.0)
+    # Стадия `reading` идёт всё время, пока конвертер читает чекпойнт: по байтам её
+    # не измерить (вход читается целиком в память), поэтому процент здесь не врём,
+    # а показываем стадию. Проценты появятся, когда конвертер начнёт писать файл.
+    emit("progress", stage="reading", phase="plan", percent=0.0)
+    expected_out = _dir_bytes(args.src)
+    stop = threading.Event()
+    ticker = _ConvertProgress(args.dst, expected_out, stop)
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    ticker.start()
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
@@ -264,12 +338,16 @@ def target_hf_to_gguf(args) -> int:
                 emit_log(line)
     finally:
         code = proc.wait()
+        stop.set()
+        ticker.join(timeout=5)
     if code != 0:
         emit_error("converter_failed", "convert_hf_to_gguf.py завершился с кодом %d" % code)
         return EXIT_BAD_INPUT
-    emit("progress", phase="convert", percent=100.0)
+    emit("progress", stage="validating", phase="verify", percent=99.0)
+    dst_bytes = os.path.getsize(args.dst) if os.path.exists(args.dst) else 0
+    emit("progress", stage="validating", phase="verify", percent=100.0)
     emit("result", duration_ms=int((time.time() - started) * 1000),
-         src_bytes=0, dst_bytes=os.path.getsize(args.dst) if os.path.exists(args.dst) else 0,
+         src_bytes=expected_out, dst_bytes=dst_bytes,
          facts={"outtype": outtype}, changes=["создан GGUF из HF-чекпойнта"], verify={})
     return 0
 

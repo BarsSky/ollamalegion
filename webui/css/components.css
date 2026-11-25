@@ -188,6 +188,80 @@
     pointer-events: none;
     box-shadow: 0 0 0 2px var(--bg-primary, #0f1419);
 }
+
+/* R758 (2026-11-25): постоянная панель предупреждений над контентом страницы.
+   Живая жалоба: ресурсный отказ (мало места на диске) был виден ТОЛЬКО в
+   выпадающем колокольчике и исчезал из глаз, как только список закрывался.
+   Панель в потоке (не fixed): она отнимает высоту, но именно этого и требует
+   «видно, пока не устранено»; без предупреждений её нет вовсе (hidden). */
+.notice-bar {
+    margin: 0 0 var(--space-3, 12px) 0;
+    border: 1px solid var(--warning, #fbbf24);
+    border-radius: var(--radius-md, 8px);
+    background: color-mix(in srgb, var(--warning, #fbbf24) 10%, transparent);
+    font-size: var(--font-size-sm);
+}
+
+.notice-bar-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2, 8px);
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+.notice-bar-title {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.notice-bar-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2, 8px);
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+.notice-bar-row:last-child {
+    border-bottom: none;
+}
+
+.notice-bar-row.critical,
+.notice-bar-row.error {
+    background: color-mix(in srgb, var(--danger, #f87171) 8%, transparent);
+}
+
+.notice-bar-icon {
+    flex: 0 0 auto;
+    margin-top: 2px;
+    color: var(--warning, #fbbf24);
+}
+
+.notice-bar-row.critical .notice-bar-icon,
+.notice-bar-row.error .notice-bar-icon {
+    color: var(--danger, #f87171);
+}
+
+.notice-bar-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+
+.notice-bar-meta {
+    flex: 0 0 auto;
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+    white-space: nowrap;
+}
+
+.notice-bar-dismiss {
+    flex: 0 0 auto;
+}
+
 .notifications-wrapper {
     position: relative;
     display: inline-block;

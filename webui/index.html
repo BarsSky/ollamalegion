@@ -220,6 +220,14 @@
             </header>
 
             <!-- Dashboard Page -->
+            <!-- R758 (2026-11-25): ПОСТОЯННАЯ ПАНЕЛЬ ПРЕДУПРЕЖДЕНИЙ.
+                 Живая жалоба: «проблема была в малом месте на диске, но это
+                 удалось поймать только в строке уведомлений у колокольчика,
+                 никаких больше упоминаний не увидел». Колокольчик — выпадающий
+                 список: сообщение исчезает из глаз, как только он закрыт. Критичное
+                 (нет места на диске → загрузка и запись не идут) обязано висеть до
+                 явного «Понятно». Логика — js/modules/notice-bar.js. -->
+            <div id="noticeBar" class="notice-bar" role="status" aria-live="polite" hidden></div>
             <!-- R596 (2026-11-19): хост карточки первого запуска. Карточка
                  появляется здесь, пока на сервере `initialized=false`; заменяет
                  мастер setup-wizard.js (739 строк, 4 шага). -->
@@ -2954,7 +2962,11 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
 <script defer src="js/modules/first-run-card.js?v=R596"></script>
     <script defer src="js/modules/cppworker-params.js?v=R691"></script>
     <script defer src="js/modules/bulk-models.js?v=R425"></script>
-    <script defer src="js/modules/notifications.js?v=R425"></script>
+    <script defer src="js/modules/notifications.js?v=R758"></script>
+    <!-- R758: постоянная панель предупреждений (warning+) — грузится ПОСЛЕ
+         notifications.js: берёт события из того же менеджера, своего транспорта
+         не заводит. -->
+    <script defer src="js/modules/notice-bar.js?v=R758"></script>
     <script defer src="js/modules/logs-stream.js?v=R425"></script>
     <!-- R476: страница диагностики (сводка + архив для разбора). -->
     <script defer src="js/modules/diagnostics.js?v=R476"></script>

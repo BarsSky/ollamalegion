@@ -120,6 +120,44 @@
             return this.buffer.slice();
         }
 
+        // R758 (2026-11-25): подписка для постоянной панели предупреждений.
+        //
+        // ЗАЧЕМ ОТДЕЛЬНО ОТ init({onNew}). init() умеет ПОДКЛЮЧИТЬ SSE, и второй
+        // вызов создал бы второе EventSource (двойные уведомления в колокольчике).
+        // Здесь — только подписка на уже приходящие события, без сети: панель
+        // (js/modules/notice-bar.js) приходит позже app.js и не должна трогать
+        // транспорт.
+        subscribe(fn) {
+            if (typeof fn !== 'function') return function () {};
+            this.callbacks.onNew.push(fn);
+            return () => {
+                const i = this.callbacks.onNew.indexOf(fn);
+                if (i >= 0) this.callbacks.onNew.splice(i, 1);
+            };
+        }
+
+        // markAsRead(id) — пометить ОДНО уведомление прочитанным.
+        //
+        // Нужно панели: «Понятно» на конкретной строке не должен гасить остальные
+        // и не должен ждать «прочитать все». Идентификатор тот же, что в
+        // markAllAsRead (`ev.id` или timestamp+message), поэтому перезагрузка
+        // страницы не возвращает скрытое сообщение.
+        markAsRead(id) {
+            if (!id) return;
+            if (!this.readIds.has(id)) {
+                this.readIds.add(id);
+                if (this.unreadCount > 0) this.unreadCount--;
+            }
+            this._saveToStorage();
+            this._renderBadge();
+            this.callbacks.onClear.forEach(cb => { try { cb(); } catch (e) { console.error(e); } });
+        }
+
+        // isRead(id) — прочитано ли уведомление (для панели).
+        isRead(id) {
+            return !!(id && this.readIds.has(id));
+        }
+
         _connect(token) {
             if (this._closed) return;
 

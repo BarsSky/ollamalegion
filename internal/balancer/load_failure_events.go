@@ -248,6 +248,20 @@ func loadFailureEventMessage(lf *types.LoadFailureInfo) string {
 	case "insufficient_resources":
 		return "Не хватило памяти для " + model +
 			": уменьшите n_ctx или используйте меньшую модель."
+	// R758 (2026-11-25): НЕХВАТКА МЕСТА НА ДИСКЕ — отдельная формулировка.
+	//
+	// Живой разбор первого стенда: загрузка не стартовала при 2.6 ГБ свободного
+	// места (порог resources.disk.minFreeMB = 10 ГБ), а единственное, что видел
+	// оператор, — строка в колокольчике. Текст «не хватило памяти» отправлял его
+	// уменьшать n_ctx, хотя лечится освобождением места. Здесь называем РЕСУРС
+	// (диск), ЧИСЛА (если пришли) и действие.
+	case "insufficient_disk":
+		msg := "Недостаточно места на диске узла для " + model +
+			": освободите место (удалите неиспользуемые GGUF-файлы) — пока места нет, повтор загрузки не поможет."
+		if d := diagNumbersText(diag); d != "" {
+			msg += " " + d
+		}
+		return msg
 	case "gguf_incompatible":
 		return "Файл модели " + model + " не принят llama.cpp (формат/архитектура)."
 	// R697 (2026-11-24): «сборка не знает архитектуру» — отдельная формулировка с
@@ -305,6 +319,25 @@ func loadFailureEventMessage(lf *types.LoadFailureInfo) string {
 		return "Алиас " + model + " указывает на отсутствующий файл."
 	}
 	return "Модель " + model + " не загрузилась: " + lf.Error
+}
+
+// diagNumbersText — числа из Diagnostics одной строкой («свободно N МБ, нужно M МБ»).
+//
+// R758: нужно ровно там, где причина — ресурс с числом (диск/память). Значения
+// приходят через JSON (agent → балансер), поэтому в map лежит float64; печатаем
+// только те, что есть, — придумывать ноль вместо «не сообщено» нельзя.
+func diagNumbersText(diag map[string]interface{}) string {
+	parts := make([]string, 0, 2)
+	if v := diagnosticsCount(diag, "disk_free_mb"); v != "" {
+		parts = append(parts, "свободно "+v+" МБ")
+	}
+	if v := diagnosticsCount(diag, "disk_need_mb"); v != "" {
+		parts = append(parts, "требуется "+v+" МБ")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Диск узла: " + strings.Join(parts, ", ") + "."
 }
 
 // diagnosticsCount — положительное целое из Diagnostics в виде строки.

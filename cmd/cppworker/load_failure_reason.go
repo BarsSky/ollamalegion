@@ -19,6 +19,8 @@ package main
 import (
 	"errors"
 	"strings"
+
+	"ollama-loadbalancer/pkg/logger"
 )
 
 // Коды причин провала загрузки. Строки стабильны — на них опираются agent,
@@ -55,6 +57,16 @@ const (
 	// GGUF, а не поиском файла — поэтому и код отдельный. См.
 	// model_schema_unsupported.go.
 	LoadFailureModelSchemaUnsupported = "model_schema_unsupported"
+	// LoadFailureInsufficientDisk — НА ДИСКЕ узла нет места (R758, 2026-11-25).
+	//
+	// ЗАЧЕМ ОТДЕЛЬНЫЙ КОД. До R758 «no space left on device» попадало либо в
+	// insufficient_resources (и оператору говорили «не хватило ПАМЯТИ» — он шёл
+	// уменьшать n_ctx), либо в unknown с сырым текстом. Живой разбор первого
+	// стенда: загрузка не стартовала из-за 2.6 ГБ свободного места при пороге
+	// 10 ГБ, и это было видно ТОЛЬКО одной строкой в колокольчике WebUI.
+	// Диск и память — разные ресурсы с разными действиями: место освобождают
+	// (удаляют неиспользуемые GGUF), память — уменьшением окна/слоёв.
+	LoadFailureInsufficientDisk = "insufficient_disk"
 	// LoadFailureBackendNotReady — бэкенд/менеджер моделей не инициализирован.
 	LoadFailureBackendNotReady = "backend_not_ready"
 	// LoadFailureTimeout — загрузка не уложилась в отведённое время.
@@ -84,6 +96,16 @@ func classifyLoadFailureReason(err error, errText string) LoadFailureReason {
 	var irErr *InsufficientResourcesError
 	if errors.As(err, &irErr) {
 		return LoadFailureInsufficientResources
+	}
+
+	// R758: ДИСК проверяем ПЕРВЫМ среди текстовых признаков.
+	//
+	// Почему до ветки insufficient_resources: там маркер `strings.Contains(text,
+	// "insufficient")`, и системный текст «insufficient disk space» попадал в неё,
+	// то есть оператору сообщали про нехватку ПАМЯТИ. Почему до ветки gguf/
+	// failed to load model: llama.cpp/ОС в таких случаях пишут оба текста.
+	if isInsufficientDiskText(text) {
+		return LoadFailureInsufficientDisk
 	}
 
 	// R697: ПЕРВОЙ текстовой проверкой — вердикт движка про архитектуру.
@@ -154,6 +176,61 @@ func classifyLoadFailureReason(err error, errText string) LoadFailureReason {
 	return LoadFailureUnknown
 }
 
+// isInsufficientDiskText — «это отказ из-за нехватки МЕСТА НА ДИСКЕ?».
+//
+// Маркеры — системные тексты ENOSPC и то, что печатают загрузчики при записи
+// файла: Linux `no space left on device`, Windows `There is not enough space on
+// the disk`, glibc `ENOSPC`, а также наши собственные формулировки
+// («insufficient disk space», «не хватает места на диске»).
+//
+// Список узкий намеренно: широкий маркер «space» ловил бы «context space» и
+// обычные сообщения про окно контекста.
+func isInsufficientDiskText(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, m := range []string{
+		"no space left on device",
+		"no space left",
+		"enospc",
+		"disk full",
+		"disk is full",
+		"insufficient disk space",
+		"not enough space on the disk",
+		"not enough disk space",
+		"недостаточно места на диске",
+		"нет места на диске",
+		"мало места на диске",
+	} {
+		if strings.Contains(text, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// logDiskLoadFailureR758 — отдельная строка в логе воркера при нехватке места.
+//
+// ЖИВАЯ ЖАЛОБА: «проблема была в малом месте на диске, но это удалось поймать
+// только в строке уведомлений у колокольчика, никаких больше упоминаний не
+// увидел». В логе воркера оставался только сырой текст llama.cpp («failed to
+// load model»), по которому ресурс не опознать. Теперь причина, ресурс и текст —
+// одной записью Error (не WARN: пока места нет, загрузка не пойдёт, это
+// состояние, а не событие).
+//
+// Отдельная функция, а не код в load_failures.go: тот файл намеренно не тянет
+// логгер (там только реестр), и добавление импорта сдвигало бы структуры,
+// которые проверяет fieldalignment.
+func logDiskLoadFailureR758(model, reason, errText string) {
+	if reason != LoadFailureInsufficientDisk || logger.Get() == nil {
+		return
+	}
+	logger.Get().Errorw("R758: загрузка невозможна — на диске узла НЕТ МЕСТА",
+		"model", model, "reason", reason, "error", errText,
+		"meaning", "это не нехватка памяти и не битый файл: место на диске узла",
+		"next_step", "освободите место (удалите неиспользуемые GGUF) или ослабьте resources.disk.minFreeMB, если запас действительно есть")
+}
+
 // isLoadFailureReason валиден ли код (для клиентов, которые присылают его назад
 // в запросах — например, при подтверждении «показывал уведомление»).
 func isLoadFailureReason(reason string) bool {
@@ -162,7 +239,8 @@ func isLoadFailureReason(reason string) bool {
 		LoadFailureInsufficientResources, LoadFailureGGUFIncompatible,
 		LoadFailureBackendNotReady, LoadFailureTimeout,
 		LoadFailureAliasBroken, LoadFailureUnknown,
-		LoadFailureModelUnsupported, LoadFailureModelSchemaUnsupported:
+		LoadFailureModelUnsupported, LoadFailureModelSchemaUnsupported,
+		LoadFailureInsufficientDisk:
 		return true
 	}
 	return false
@@ -175,6 +253,10 @@ func isLoadFailureReason(reason string) bool {
 func loadFailureSeverity(reason LoadFailureReason) string {
 	switch reason {
 	case LoadFailureConfigOutOfBounds, LoadFailureInsufficientResources:
+		return "error"
+	// R758: место на диске — не «память». Оператор действует иначе (освободить
+	// место / удалить старые GGUF), поэтому error, а не warning.
+	case LoadFailureInsufficientDisk:
 		return "error"
 	// R697: не «файл сломан», а «сборка не знает эту архитектуру» — оператору
 	// действовать (обновить сабмодуль/образ), поэтому error, а не warning.

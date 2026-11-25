@@ -134,6 +134,13 @@ func (t *traceRecorderHijackR476) Hijack() (net.Conn, *bufio.ReadWriter, error) 
 	return h.Hijack()
 }
 
+// slowFirstByteWarnMsR758 — порог «клиент мог отвалиться по таймауту».
+//
+// 60 с: у Cline/DSH/OpenWebUI штатные таймауты запроса лежат в диапазоне
+// 60-180 с, и живой архив второго стенда показывает 68-153 с до первого байта —
+// то есть ровно те случаи, когда клиент повторял ход (и получал похожий ответ).
+const slowFirstByteWarnMsR758 = int64(60000)
+
 // startRequestTraceR476 — включить трассировку запроса.
 //
 // Возвращает обёрнутый ResponseWriter (его и надо передавать дальше) и функцию,
@@ -194,6 +201,29 @@ func startRequestTraceR476(w http.ResponseWriter, r *http.Request, rid string) (
 			"transport", TransportR484(r.Context()),
 			"backend", backend, "client", traceClientAddrR476(r),
 			"stage", stage, "stage_final", stageFinal, "stage_ms", stageMs)
+		// R758 (2026-11-25): МЕДЛЕННЫЙ ПЕРВЫЙ БАЙТ — отдельная строка с причиной.
+		//
+		// Живая жалоба: «модель отвечает одно и то же несколько раз». Разбор архива
+		// второго стенда: запросы шли по 68-153 с до первого байта, и клиент
+		// (Cline/DSH) успевал отвалиться по своему таймауту и повторить ход — то
+		// есть оператор видел «второй такой же ответ», хотя это была вторая
+		// генерация по тому же промпту (см. request_repeat_r758.go).
+		//
+		// Здесь это видно БЕЗ разбора: числа ожидания + модель + узел и подсказка,
+		// что именно смотреть (слои на GPU, окно, очередь).
+		if firstByteMs >= slowFirstByteWarnMsR758 {
+			model := ""
+			if m, ok := r.Context().Value(modelContextKey).(string); ok {
+				model = m
+			}
+			logger.Get().Warnw("R758: первый байт пришёл поздно — клиент может отвалиться по таймауту и повторить ход",
+				"request_id", rid, "path", r.URL.Path, "backend", backend, "model", model,
+				"first_byte_ms", firstByteMs,
+				"duration_ms", time.Since(start).Milliseconds(),
+				"status", status, "stage", stage, "stage_ms", stageMs,
+				"meaning", "ожидание клиента складывается из очереди/загрузки/медленной генерации; повтор хода даёт похожий ответ модели",
+				"next_step", "смотрите why_queued (очередь/гейты), gpu_layers в /api/models воркера и n_ctx: частичный offload на 24/48 слоёв даёт десятки секунд до первого токена")
+		}
 		if abort != "" {
 			logger.Get().Warnw("request trace: доставка оборвана",
 				"request_id", rid, "path", r.URL.Path, "stage", stage,

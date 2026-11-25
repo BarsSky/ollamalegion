@@ -306,6 +306,10 @@ window.I18N_EN = {
 
   // Notifications
   "notifications.title": "Notifications",
+  // R758 (2026-11-25): persistent warning bar above the page content.
+  "notice.title": "Needs attention",
+  "notice.dismiss": "Got it",
+  "notice.dismiss_all": "Hide all",
   "notifications.bell_title": "Notifications",
   "notifications.mark_read": "Mark all read",
   "notifications.clear_all": "Clear",

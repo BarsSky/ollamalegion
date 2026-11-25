@@ -59,6 +59,13 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		return nil
 	}
 
+	// R758 (2026-11-25): «модель отвечает одно и то же несколько раз» начинается
+	// здесь. Если клиент присылает ТО ЖЕ тело запроса той же сессии повторно, это
+	// не цикл модели, а вторая генерация по тому же промпту — и ответ обязан
+	// быть похожим. Считаем и называем это в логе с числами; поведение не меняем
+	// (первопричину ожидания убирают таймауты/очередь/скорость, а не блокировка).
+	p.noteRequestRepeatR758(RequestSessionKey(r, bodyBuf), c.modelFromCtx, backendID, r.URL.Path, bodyBuf, 0)
+
 	// R540 (R2 читаемости): preflight окна n_ctx и учёт нагрузки — стадия
 	// preflight. true — ответ клиенту (413/404/503) уже отправлен вердиктом.
 	if c.awaitAdmissionAndLoad() {

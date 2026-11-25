@@ -86,6 +86,9 @@ func (r *loadFailureRegistry) recordDetailed(name, reason string, err error, dia
 		Err:         errText,
 		Diagnostics: diag,
 	}
+	// R758: нехватка места на диске — отдельная строка в логе (сам текст и
+	// обоснование — в logDiskLoadFailureR758, чтобы этот файл не тянул logger).
+	logDiskLoadFailureR758(name, reason, errText)
 }
 
 // record — прежний вход без причины и диагностики (совместимость с R66d).

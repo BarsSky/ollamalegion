@@ -543,9 +543,23 @@ func (mm *ModelManager) executeLlamaCppDelete(host string, port int, backendID s
 	return mm.sendCppWorkerRequest("POST", url, backendID, req, body)
 }
 
-// sendCppWorkerRequest — отправка запроса к cppworker (load/unload и пр.).
+// sendCppWorkerRequest — отправка запроса к cppworker (delete и пр.).
+//
+// R758 (2026-11-25): ТОКЕН АДМИНСКОЙ РУЧКИ ОБЯЗАТЕЛЕН.
+//
+// ЖИВОЙ ДЕФЕКТ (первый стенд): удаление модели из WebUI («GGUF-модели» →
+// «Удалить») всегда падало с `Delete failed: cppworker error (HTTP 401):
+// invalid or missing API token`. Причина не в кнопке и не в правах оператора:
+// `/api/models/delete` у воркера закрыт authMiddleware, а этот путь шёл через
+// `sendRawRequest` — БЕЗ токена. R307 закрыл токеном load (applyWorkerAdminTokenR307)
+// и unload (sendRawRequestWithTokenR307), а delete остался без него: файл на
+// диске удалить из панели было нельзя вообще, только вручную через docker exec.
+//
+// Пустая строка токена означает «у бэкенда токена нет» — заголовок не ставится,
+// и воркер без авторизации такой запрос пропускает (та же семантика, что у
+// unload: поведение обеих разрушительных операций обязано совпадать).
 func (mm *ModelManager) sendCppWorkerRequest(method, url, backendID string, req ModelOpRequest, body map[string]interface{}) *ModelOpResult {
-	resp, err := mm.sendRawRequest(method, url, body)
+	resp, err := mm.sendRawRequestWithTokenR307(method, url, body, mm.workerAdminToken(backendID))
 	if err != nil {
 		return &ModelOpResult{
 			Success:   false,

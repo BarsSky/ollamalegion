@@ -532,13 +532,20 @@ func (m *HFManager) DeleteModelFile(bundle, filename string) (*ModelFileDelete, 
 		}
 	}
 
-	m.registerMu.Lock()
-	defer m.registerMu.Unlock()
-	profilePath := filepath.Join(dir, ProfileFileName)
-	if _, statErr := os.Stat(profilePath); statErr == nil {
+	// Правка профиля — под registerMu, но БЕЗ вызова dropRegistrationIfEmpty
+	// внутри блокировки: тот сам берёт registerMu (иначе дедлок).
+	var profileErr error
+	func() {
+		m.registerMu.Lock()
+		defer m.registerMu.Unlock()
+		profilePath := filepath.Join(dir, ProfileFileName)
+		if _, statErr := os.Stat(profilePath); statErr != nil {
+			return
+		}
 		profile, perr := m.loadBundleProfile(bundle, dir)
 		if perr != nil {
-			return out, fmt.Errorf("read profile after delete: %w", perr)
+			profileErr = fmt.Errorf("read profile after delete: %w", perr)
+			return
 		}
 		kept := make([]types.ImageModelFile, 0, len(profile.Files))
 		removedRoles := make([]string, 0, 1)
@@ -549,21 +556,33 @@ func (m *HFManager) DeleteModelFile(bundle, filename string) (*ModelFileDelete, 
 			}
 			kept = append(kept, f)
 		}
-		if len(removedRoles) > 0 {
-			profile.Files = kept
-			if out.Status == "noop" {
-				out.Status = "deleted"
-			}
-			profile.Notes = strings.TrimSpace(strings.TrimSpace(profile.Notes+
-				" файл "+rel+" удалён с узла."))
-			if werr := persistBundleProfile(dir, profile); werr != nil {
-				return out, fmt.Errorf("write profile: %w", werr)
-			}
-			out.ProfileChange = true
-			out.RemovedRoles = removedRoles
+		if len(removedRoles) == 0 {
+			return
 		}
+		profile.Files = kept
+		if out.Status == "noop" {
+			out.Status = "deleted"
+		}
+		profile.Notes = strings.TrimSpace(strings.TrimSpace(profile.Notes+
+			" файл "+rel+" удалён с узла."))
+		if werr := persistBundleProfile(dir, profile); werr != nil {
+			profileErr = fmt.Errorf("write profile: %w", werr)
+			return
+		}
+		out.ProfileChange = true
+		out.RemovedRoles = removedRoles
+	}()
+	if profileErr != nil {
+		return out, profileErr
 	}
+
 	if out.Status == "deleted" {
+		// Последний файл унесли — снимаем регистрацию, как это делает
+		// /api/hf/cleanup (dropRegistrationIfEmpty): иначе реестр синтезировал бы
+		// «сломанный» профиль без файлов и модель нельзя было бы ни загрузить,
+		// ни удалить осмысленно. Каталог переименовывается, файлы остаются на
+		// диске (ошибочное удаление восстановимо без повторной загрузки).
+		m.dropRegistrationIfEmpty(dir)
 		if err := m.registry.Load(); err != nil {
 			return out, fmt.Errorf("registry reload after file delete: %w", err)
 		}

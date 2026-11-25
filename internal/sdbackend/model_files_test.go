@@ -23,6 +23,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,7 +230,51 @@ func TestStartModelFileInstall_AddsAndReplaces_R751(t *testing.T) {
 	}
 }
 
-// TestDeleteModelFile_RemovesFileAndProfileEntry_R751 — удаление файла с узла.
+// TestDeleteModelFile_LastFileUnregistersBundle_R751 — удаление последнего файла
+// снимает регистрацию, а не оставляет «сломанный» профиль без файлов.
+func TestDeleteModelFile_LastFileUnregistersBundle_R751(t *testing.T) {
+	mock := NewHFMockServer(t)
+	hf, reg, modelsDir := newHFTestManager(t, mock)
+	dir := filepath.Join(modelsDir, "solo-group")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeBundleFile(t, dir, "solo.gguf", []byte("GGUFsolo"))
+	writeProfileForTest(t, dir, "solo-group", "other", []types.ImageModelFile{{
+		Role: types.ImageFileRoleDiffusion, Repo: "acme/solo", Filename: "solo.gguf",
+	}})
+	if err := reg.Load(); err != nil {
+		t.Fatalf("registry load: %v", err)
+	}
+	res, err := hf.DeleteModelFile("solo-group", "solo.gguf")
+	if err != nil {
+		t.Fatalf("DeleteModelFile: %v", err)
+	}
+	if res.Status != "deleted" {
+		t.Fatalf("status = %q, want deleted", res.Status)
+	}
+	// Каталог переименован в .unregistered-…, а не остался моделью без файлов.
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Fatalf("каталог удалённой группы остался на месте: %v", statErr)
+	}
+	entries, _ := os.ReadDir(modelsDir)
+	found := false
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), ".unregistered-") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("нет каталога .unregistered-* после удаления последнего файла")
+	}
+	if err := reg.Load(); err != nil {
+		t.Fatalf("registry load после снятия регистрации: %v", err)
+	}
+	if _, ok := reg.Profile("solo-group"); ok {
+		t.Fatal("модель без файлов осталась в реестре")
+	}
+}
+
 func TestDeleteModelFile_RemovesFileAndProfileEntry_R751(t *testing.T) {
 	mock := NewHFMockServer(t)
 	const repo = "acme/qwen-image"

@@ -127,6 +127,14 @@ const R700_DISK_HINT_STUBS =
     'function updateDiskGuardBounds(){}\n' +
     'function refreshDiskGuardHint(){}\n';
 
+// R757 (2026-11-25): рядом встал порог температуры GPU
+// (updateGpuTempBounds/refreshGpuTempHint в app-settings.js). Заглушки по той же
+// причине: предмет набора — guard формы, а подсказка о температуре целиком
+// проверяется отдельным набором webui/tests/settings-gpu-temp-r757.test.js.
+const R757_GPU_TEMP_HINT_STUBS =
+    'function updateGpuTempBounds(){}\n' +
+    'function refreshGpuTempHint(){}\n';
+
 function runApplyServerConfig(editing) {
     const fn = extractFnIndented(settingsJs, 'applyServerConfig');
     const requested = [];
@@ -158,6 +166,7 @@ function runApplyServerConfig(editing) {
     const runner = new Function('serverConfig', 'window', 'document', 'console', 'localStorage', 'getCurrentPage',
         helpersSource('writeValue', 'writeChecked', 'updateLlamaCppOverridesPanel') +
         R700_DISK_HINT_STUBS +
+        R757_GPU_TEMP_HINT_STUBS +
         fn.body + '\nreturn null;');
     let error = null;
     try {
@@ -452,6 +461,7 @@ function buildApplyServerConfigStack(dom) {
         'Utils', 'I18N',
         helpersSource('writeValue', 'writeChecked', 'updateLlamaCppOverridesPanel') +
         R700_DISK_HINT_STUBS +
+        R757_GPU_TEMP_HINT_STUBS +
         fn.body + '\nreturn null;');
     return {
         window: sandbox.window,

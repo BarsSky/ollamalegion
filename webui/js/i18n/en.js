@@ -428,6 +428,16 @@ window.I18N_EN = {
   "monitor.alert.backendFull": "Backend {backend} is full ({active}/{max} active).",
   "monitor.alert.queueFull": "Queue is {pct}% full ({size}/{max}).",
   "monitor.alert.vramFull": "Cluster VRAM is {pct}% full ({used}/{total} GB).",
+  // R757 (2026-11-25): GPU temperature and throttling. The threshold is a soft
+  // one (it does not block); the card decides hardware throttling itself.
+  "monitor.alert.gpuHot": "Backend {backend}: GPU temperature {temp} °C is above the {threshold} °C threshold. The threshold is soft - the balancer keeps working, but the card is close to hardware throttling (usually 90-95 °C). Change it in Settings (\"GPU Max Temperature\").",
+  "monitor.alert.gpuThrottle": "Backend {backend}: the card reports throttling ({reasons}) at {temp} °C - the hardware is reducing clocks, this is not a balancer warning.",
+  "monitor.gpu.temp": "GPU temperature",
+  "monitor.gpu.tempThreshold": "Balancer threshold",
+  "monitor.gpu.tempUnknown": "GPU temperature is not reported",
+  "monitor.gpu.throttleReasons": "Throttling",
+  "monitor.gpu.throttleNone": "No throttling",
+  "monitor.gpu.throttleUnknown": "Throttle reasons are not measured",
   "monitor.alert.parallelismUnused": "Backend {backend}: the worker holds {slots} parallel slots while the balancer admits {effective} — the parallelism potential is not fully used. The balancer changes nothing on its own: if you want it, set maxConcurrentRequests={slots} for this backend or enable LB_CAPACITY_FROM_MODEL_SLOTS=true — the decision is yours.",
   "monitor.alert.rebalance": "Force Rebalance",
   // R696 (2026-11-23): the alert dock is out of flow (does not take height away
@@ -1107,6 +1117,13 @@ window.I18N_EN = {
   "settings.min_free_disk.invalid": "Min Free Disk: an integer number of MB from {min} to {max} is required.",
   "settings.min_free_disk.invalid_short": "Disk threshold not saved: invalid value.",
   "settings.min_free_disk.default_btn": "Reset to 10240 MB",
+  // R757 (2026-11-25): GPU temperature threshold - same shape as the disk one.
+  "settings.gpu_max_temp": "GPU Max Temperature (°C)",
+  "settings.gpu_max_temp.soft": "The threshold is soft: above {threshold} °C the balancer marks the node as hot and logs a warning, but does not block requests. Hardware throttling is enabled by the card itself - usually around 90-95 °C - and does not depend on this value.",
+  "settings.gpu_max_temp.current": "Current nodes - {backends} (threshold {threshold} °C).",
+  "settings.gpu_max_temp.no_data": "Nodes have not reported GPU temperature yet - there is nothing to compare the threshold with.",
+  "settings.gpu_max_temp.hot": "Node {backend} ({temp} °C) is currently above the {threshold} °C threshold.",
+  "settings.gpu_max_temp.invalid": "GPU Max Temperature: an integer number of °C from {min} to {max} is required.",
   "settings.section.agent": "Agent Settings",
   "settings.section.security": "Security",
   // R544 (F10/W6): the empty "API Token" field is replaced by the source of fact.
@@ -2137,7 +2154,15 @@ window.I18N_EN = {
   "imageModels.files_redownload": "Re-download",
   "imageModels.files_delete": "Delete from node",
   "imageModels.files_download_missing": "Download missing",
-  "imageModels.files_nothing_missing": "Nothing to download: every missing file has a known source and all files are on the node",
+  "imageModels.files_nothing_missing": "Nothing to download: there are no files that can be downloaded.",
+  // R757 (2026-11-25): WHY there is nothing to download. The button used to be
+  // disabled with the explanation only in a title, and the most common case is
+  // not about files at all: missing roles live in the compat verdict and are
+  // added as catalog components (R710).
+  "imageModels.files_download_missing_none": "Nothing to download",
+  "imageModels.files_note_missing_roles": "Missing roles: {roles}. The profile has no files for them, so there is nothing to download - add them with the component buttons in the model row, then come back here.",
+  "imageModels.files_note_unknown_source": "{n} missing files have no known source (no repo in profile.json) - they cannot be downloaded; add them as a component.",
+  "imageModels.files_note_all_present": "Nothing to download: all profile files are already on the node.",
   "imageModels.files_confirm_redownload": "Re-download {file}? The current file will be deleted and downloaded again.",
   "imageModels.files_confirm_delete": "Delete {file} from the node? The file will be removed permanently.",
   "imageModels.files_deleted": "Deleted: {file} ({size})",

@@ -62,6 +62,7 @@ Run, update and debug a live cluster.
 | **Donor VRAM lifecycle** | [EN](operations/rpc-donor-vram-lifecycle.md) | [RU](operations/rpc-donor-vram-lifecycle.ru.md) | When VRAM is released on layout nodes and what stays occupied. |
 | **Troubleshooting** | [EN](operations/troubleshooting.md) | [RU](operations/troubleshooting.ru.md) | Symptoms, causes and fixes collected from live incidents. |
 | **Deployment incidents** | [EN](operations/deployment-troubleshooting.md) | [RU](operations/deployment-troubleshooting.ru.md) | Deployment traps and incident write-ups. |
+| **GPU temperature / throttling** | — | [RU](operations/gpu-temperature-r757.ru.md) | The balancer's soft temperature limit vs the card's hardware throttling: where both are visible and what to set. |
 | **Tools/tool_calls runbook** | [EN](operations/runbook-tools.md) | [RU](operations/runbook-tools.ru.md) | Step-by-step debugging of tool-call resets (scenarios A-G). |
 
 ## API and reference

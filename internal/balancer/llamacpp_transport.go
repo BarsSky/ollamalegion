@@ -147,7 +147,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		toolAccum:             make(map[int]*accumulatedToolCall),
 		toolAcc:               newToolCallAccumulator(),
 		toolRepair:            &toolRepairState{},
-		egressFilter:          &reasoningEgressState{},
+		egressFilter:          &reasoningEgressState{modelLabel: c.modelFromCtx},
 	}
 
 	// ==== R251/R252 (2026-10-28): живой стрим должен быть ВИДЕН в сессиях и мониторе ====

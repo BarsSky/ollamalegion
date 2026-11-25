@@ -78,7 +78,8 @@ func (p *Proxy) runOpenAISSEStreamR493(run sseStreamRunR493, resp *http.Response
 		line []byte
 	}
 	// R243/R256: состояние фильтра на весь стрим (размышления → reasoning_content).
-	egressFilter := &reasoningEgressState{}
+	// R757: подпись модели — для диагностики «цикл формата» в логе финализации.
+	egressFilter := &reasoningEgressState{modelLabel: run.model}
 	dataCh := make(chan readResult, 1)
 	go func() {
 		reader := bufio.NewReader(resp.Body)

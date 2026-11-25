@@ -251,6 +251,111 @@ func (p *Proxy) modelHasOnDiskSomewhereR493(model string, allowedTypes []types.B
 	return false
 }
 
+// Коды причины переезда R757 (для лога и тестов).
+const (
+	// reasonFileAbsentEverywhereR757 — файла модели нет нигде: переезжать некуда.
+	reasonFileAbsentEverywhereR757 = "file_absent_everywhere_in_catalog"
+	// reasonMovedToFileNodeR757 — файл есть на другом узле: поехали туда.
+	reasonMovedToFileNodeR757 = "selected_backend_file_absent"
+)
+
+// relocateToFileNodeR757 — если на выбранном узле НЕТ файла модели, а на другом
+// узле он есть, вернуть этот другой узел.
+//
+// ЖИВАЯ ЖАЛОБА (архив второго стенда, 06:10): «она не стартанула с запроса от
+// пользователя, а поднятая вручную работала». Разбор: выбор отдал A10-126, где
+// ФАЙЛА модели нет (каталог это знал — `R696: привязка сессии не создана ...
+// reason=model_absent_on_backend`), а сам файл лежал на
+// cppworker-gpu-bundled-agent. Гейт автозагрузки честно попытался поднять модель
+// на A10-126, воркер ответил `model ... not found in ./models`, и клиент получил
+// терминальный 404 (R325.2). Ручная загрузка на узле с файлом подняла модель за
+// 8.2 с.
+//
+// ПОЧЕМУ ЭТОГО НЕ ЛОВИЛИ РАНЬШЕ. R303 спасает только когда модель УЖЕ загружена
+// на другом узле (живая копия). Здесь живых копий не было: модель только что
+// выгрузили или пересобрали, и «правильный» узел определялся наличием ФАЙЛА на
+// диске, а не содержимым VRAM. R552 учит смотреть в каталог выбор ПОД ЗАГРУЗКУ
+// (этапы очереди), но к уже выбранному узлу это не применялось.
+//
+// Условия намеренно узкие, чтобы не переписывать обычное распределение:
+//   - каталог выбранного узла ПРОЧИТАН (known) и без ошибки чтения (dirErr);
+//   - файла там НЕТ;
+//   - модель на этом узле НЕ загружена (иначе каталог устарел, а копия в памяти
+//     рабочая и переезд только что-то сломает);
+//   - файл есть хотя бы на одном другом узле.
+//
+// Возвращает ("", "") когда делать нечего (каталог неизвестен/файл на месте) и
+// ("", reasonFileAbsentEverywhereR757) когда файла нет нигде — это отдельный факт
+// для лога: ожидание загрузки не поможет, надо копировать GGUF.
+func (p *Proxy) relocateToFileNodeR757(currentBackend, model string, allowedTypes []types.BackendType) (string, string) {
+	if p == nil || currentBackend == "" || model == "" {
+		return "", ""
+	}
+	if p.backendHasModelByID(currentBackend, model) {
+		// Модель уже в памяти этого узла: каталог разошёлся с реальностью (файл
+		// унесли после загрузки) либо кэш метрик отстал. Переезд не нужен.
+		return "", ""
+	}
+	hasFile, known, _, dirErr, _ := p.backendCatalogPresenceR493(currentBackend, model)
+	if !known || dirErr != "" {
+		// Каталог не опрошен или его чтение падало: «файла нет» здесь было бы
+		// догадкой, а догадка ломает обычное распределение (регресс R493).
+		return "", ""
+	}
+	if hasFile {
+		return "", ""
+	}
+	// Сначала — узел, который МОЖЕТ принять заявку сейчас (слот, ресурсы, VRAM,
+	// файл по каталогу). Это лучший исход: модель поднимется без ожидания.
+	if alt := p.pickLoadableFreeBackendR493(model, allowedTypes); alt != "" && alt != currentBackend {
+		return alt, reasonMovedToFileNodeR757
+	}
+	// Свободного узла с файлом нет — годится любой наименее загруженный узел с
+	// файлом: даже если он занят, это узел, где загрузка ВОЗМОЖНА, а выбранный
+	// гарантированно даёт 404 model_not_found.
+	if alt := p.findLeastLoadedBackendWithModelOnDisk(model, allowedTypes); alt != "" && alt != currentBackend {
+		return alt, reasonMovedToFileNodeR757
+	}
+	return "", reasonFileAbsentEverywhereR757
+}
+
+// backendsWithModelOnDiskR757 — узлы, где файл модели ЛЕЖИТ на диске (по каталогу).
+//
+// ЗАЧЕМ. Терминальный 404 `model_not_found` (R325.2) раньше не говорил оператору
+// НИЧЕГО о том, устранимо ли это: «модели нет» на выбранном узле и «модели нет в
+// кластере» — разные ситуации. Живой разбор второго стенда: файл лежал на другом
+// узле, а клиент получил 404 и оператор пошёл искать причину в логи воркера.
+// Теперь ответ называет узлы, где файл есть, чтобы вопрос «куда переехать» решался
+// по ответу API.
+//
+// Отдаются только узлы, каталог которых ПРОЧИТАН и без ошибки каталога: «файл,
+// возможно, есть» здесь было бы ложью, а такие узлы уже отсекаются в остальных
+// проверках.
+func (p *Proxy) backendsWithModelOnDiskR757(model string) []string {
+	if p == nil || model == "" || p.modelCatalog == nil {
+		return nil
+	}
+	p.mu.RLock()
+	ids := make([]string, 0, len(p.backends))
+	for id, state := range p.backends {
+		if state == nil || state.Backend == nil {
+			continue
+		}
+		if isDisabledBackendState(state) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	p.mu.RUnlock()
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if has, known, _, dirErr, _ := p.backendCatalogPresenceR493(id, model); known && dirErr == "" && has {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func (p *Proxy) pickLoadableFreeBackendR493(model string, allowedTypes []types.BackendType) string {
 	if p == nil {
 		return ""

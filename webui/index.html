@@ -1759,6 +1759,17 @@
                                     </div>
                                 </div>
                                 <div class="form-group">
+                                    <label for="gpuMaxTemp" data-i18n="settings.gpu_max_temp">GPU Max Temperature (°C)</label>
+                                    <input type="number" id="gpuMaxTemp" class="form-control" value="85"
+                                           min="50" max="120" step="1" aria-describedby="gpuMaxTempHint">
+                                    <!-- R757: порог температуры GPU. Балансер использовал его как
+                                         soft-WARN (`temperature=88 threshold=85` в логе), но в WebUI
+                                         значения не было — оператор видел температуру 88 °C и не знал,
+                                         критично ли это. Подсказка объясняет разницу между «нашим
+                                         порогом» и аппаратным троттлингом карты. -->
+                                    <div class="form-hint" id="gpuMaxTempHint"></div>
+                                </div>
+                                <div class="form-group">
                                     <label for="minFreeDisk" data-i18n="settings.min_free_disk">Min Free Disk (MB)</label>
                                     <input type="number" id="minFreeDisk" class="form-control" value="10240"
                                            min="0" max="1048576" step="1" aria-describedby="minFreeDiskHint">

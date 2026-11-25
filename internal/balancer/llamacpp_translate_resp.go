@@ -59,6 +59,10 @@ func stripReasoningTags(content string) string {
 		// последовательно, stripWithBoundary не защищает от prefix'а
 		// более длинного тега, начинающегося с того же префикса).
 		"<|channel>",
+		// R757: блок рассуждений Inkling-2 в конверте сообщения
+		// (<|message_model|><|content_thinking|>…<|end_message|>): тело блока —
+		// размышления, в видимом ответе его быть не должно.
+		"<|content_thinking|>",
 	}
 	closeTags := []string{
 		"</think>", "</thinking>", "</reasoning>", "</analysis>",
@@ -68,6 +72,7 @@ func stripReasoningTags(content string) string {
 		"<think|>",
 		"",           // <|message|> — не используется как парный close
 		"<channel|>", // bare <|channel> → <channel|>
+		"<|end_message|>",
 	}
 	// sharedClose: true = НЕ делать ReplaceAll на close после pair-strip
 	// (close используется несколькими open — нужно сохранить для следующего iter).
@@ -80,6 +85,7 @@ func stripReasoningTags(content string) string {
 		false, // <think|> is unique
 		false, // <|message|> has no close
 		true,  // <channel|> is shared with thought/analysis pairs
+		false,
 	}
 
 	for i, open := range openTags {
@@ -113,6 +119,11 @@ func stripReasoningTags(content string) string {
 		if close != "" && !sharedClose[i] {
 			content = stripWithBoundary(content, close)
 		}
+	}
+	// R757: нейтральные маркеры конверта Inkling-2 — не размышления и не части
+	// видимого ответа. Вырезаем их после обработки пар.
+	for _, marker := range []string{"<|message_model|>", "<|content_text|>"} {
+		content = strings.ReplaceAll(content, marker, "")
 	}
 	// Round 32 #20 (2026-08-11): НЕ делаем collapse "\n\n" → "\n" и НЕ trim'аем
 	// leading newlines. Round 31 #4 (2026-08-09) добавил эти операции для

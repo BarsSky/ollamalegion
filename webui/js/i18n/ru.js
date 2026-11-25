@@ -427,6 +427,14 @@ window.I18N_RU = {
   "settings.min_free_disk.invalid": "Min Free Disk: нужно целое число МБ от {min} до {max}.",
   "settings.min_free_disk.invalid_short": "Порог диска не сохранён: недопустимое значение.",
   "settings.min_free_disk.default_btn": "Сбросить к 10240 МБ",
+  // R757 (2026-11-25): порог температуры GPU — та же схема, что у порога диска:
+  // подпись, смысл порога, текущие значения на узлах, ошибка ввода.
+  "settings.gpu_max_temp": "GPU Max Temperature (°C)",
+  "settings.gpu_max_temp.soft": "Порог мягкий: выше {threshold} °C балансер помечает узел как перегретый и пишет предупреждение, но не блокирует запросы. Аппаратный троттлинг карта включает сама — обычно около 90-95 °C, и он не зависит от этого значения.",
+  "settings.gpu_max_temp.current": "Сейчас на узлах — {backends} (порог {threshold} °C).",
+  "settings.gpu_max_temp.no_data": "Узлы ещё не прислали температуру GPU — сравнивать порог не с чем.",
+  "settings.gpu_max_temp.hot": "Узел {backend} ({temp} °C) сейчас выше порога {threshold} °C.",
+  "settings.gpu_max_temp.invalid": "GPU Max Temperature: нужно целое число °C от {min} до {max}.",
   "settings.section.security": "Безопасность",
   // R544 (F10/W6): вместо пустого поля «API Токен» — источник факта (R65d: сервер
   // не принимает токен в PUT, а в GET его не отдаёт).
@@ -594,6 +602,19 @@ window.I18N_RU = {
   "monitor.alert.backendFull": "Бэкенд {backend} полностью загружен ({active}/{max} активных).",
   "monitor.alert.queueFull": "Очередь заполнена на {pct}% ({size}/{max}).",
   "monitor.alert.vramFull": "VRAM кластера заполнена на {pct}% ({used}/{total} ГБ).",
+  // R757 (2026-11-25): температура GPU и троттлинг. Живая жалоба: «в балансере
+  // постоянно фигурировала информация о возможном троттлинге из-за температуры
+  // выше пороговой, но явно об этом не сообщалось в WebUI и не понятно, какая на
+  // самом деле температура критична для видеокарты». Порог — soft (не блокирует),
+  // аппаратный троттлинг карта включает сама.
+  "monitor.alert.gpuHot": "Бэкенд {backend}: температура GPU {temp} °C выше порога {threshold} °C. Порог мягкий — балансер продолжает работу, но карта близка к аппаратному троттлингу (обычно 90-95 °C). Порог меняется в Настройках («GPU Max Temperature»).",
+  "monitor.alert.gpuThrottle": "Бэкенд {backend}: карта сообщает троттлинг ({reasons}) при {temp} °C — это уже снижение частот самим железом, а не предупреждение балансера.",
+  "monitor.gpu.temp": "Температура GPU",
+  "monitor.gpu.tempThreshold": "Порог балансера",
+  "monitor.gpu.tempUnknown": "Температура GPU не сообщается",
+  "monitor.gpu.throttleReasons": "Троттлинг",
+  "monitor.gpu.throttleNone": "Троттлинга нет",
+  "monitor.gpu.throttleUnknown": "Причины троттлинга не измеряются",
   "monitor.alert.parallelismUnused": "Бэкенд {backend}: воркер держит {slots} параллельных слотов, а балансер пропускает {effective} — потенциал раскрыт не полностью. Балансер сам ничего не меняет: если это нужно, выставьте maxConcurrentRequests={slots} для этого бэкенда или включите LB_CAPACITY_FROM_MODEL_SLOTS=true — решение за вами.",
   "monitor.alert.rebalance": "Принудительное перераспределение",
   // R696 (2026-11-23): док предупреждений вынесен из потока (не отнимает высоту
@@ -2175,7 +2196,16 @@ window.I18N_RU = {
   "imageModels.files_redownload": "Перекачать",
   "imageModels.files_delete": "Удалить с узла",
   "imageModels.files_download_missing": "Докачать недостающее",
-  "imageModels.files_nothing_missing": "Докачивать нечего: у всех отсутствующих файлов известен источник, файлы на узле",
+  "imageModels.files_nothing_missing": "Докачивать нечего: файлов, которые можно докачать, нет.",
+  // R757 (2026-11-25): ПОЧЕМУ нечего докачивать. Живая жалоба: «кнопка докачать
+  // необходимое никак не реагировала». Она была disabled с объяснением только в
+  // title, а самый частый случай вообще не про файлы: не хватающие для запуска
+  // роли есть в вердикте совместимости, но файлов для них в профиле нет - их
+  // добавляют компонентами из каталога (R710).
+  "imageModels.files_download_missing_none": "Докачивать нечего",
+  "imageModels.files_note_missing_roles": "Не хватает ролей: {roles}. Файлов для них в профиле нет, поэтому докачивать нечего - добавьте их кнопками компонентов в строке модели, затем вернитесь сюда.",
+  "imageModels.files_note_unknown_source": "У {n} отсутствующих файлов неизвестен источник (в profile.json нет repo) - такие файлы докачать нельзя, добавьте их как компонент.",
+  "imageModels.files_note_all_present": "Докачивать нечего: все файлы профиля уже на узле.",
   "imageModels.files_confirm_redownload": "Перекачать {file}? Текущий файл будет удалён и скачан заново.",
   "imageModels.files_confirm_delete": "Удалить {file} с узла? Файл будет удалён безвозвратно.",
   "imageModels.files_deleted": "Удалено: {file} ({size})",

@@ -47,6 +47,9 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		BackendEngine:     p.getBackendEngine(),
 		BackendTypeCounts: p.countBackendsByType(),
 		Backends:          make([]types.BackendMetrics, 0, len(backendsCopy)),
+		// R757: порог температуры GPU — в состояние кластера, чтобы панель
+		// показывала тот же порог, по которому балансер пишет soft-WARN.
+		GPUMaxTemp: p.config.Resources.GPU.MaxTemperature,
 	}
 
 	state.TotalRequests = atomic.LoadInt64(&p.totalRequests)

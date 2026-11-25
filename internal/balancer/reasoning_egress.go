@@ -37,12 +37,22 @@ import (
 )
 
 // reasoningEgressState — состояние ОДНОГО стрима для фильтра выхода.
+//
+// ПОРЯДОК ПОЛЕЙ (R757, govet/fieldalignment): сначала «широкие» поля (срезы,
+// строки — 16/24 байта), затем int, затем bool/Once. Иначе компилятор вставляет
+// выравнивание, и структура занимает на 8-16 байт больше нужного; линт
+// fieldalignment в CI валит именно это.
 type reasoningEgressState struct {
+	// R757: подпись модели для диагностического лога (необязательная).
+	modelLabel string
+	// heldFinish — finish-кадр, удержанный до конца стрима. Нужен, чтобы
+	// сообщение о пустом ответе пришло ДО finish_reason (строгие клиенты не
+	// читают контент после finish).
+	heldFinish []byte
 	// markerState — прежний фильтр маркеров/служебных токенов (R243).
 	markerState reasoningStreamState
 	// split — текущий канал и удержанный хвост маркера.
 	split reasoningSplitState
-	diag  sync.Once
 	// cut — сколько кадров фильтр реально изменил (для тестов/диагностики).
 	cut int
 
@@ -60,11 +70,11 @@ type reasoningEgressState struct {
 	// молчаливую пустоту.
 	visibleChars   int
 	reasoningChars int
-	// heldFinish — finish-кадр, удержанный до конца стрима. Нужен, чтобы
-	// сообщение о пустом ответе пришло ДО finish_reason (строгие клиенты не
-	// читают контент после finish).
-	heldFinish []byte
-	finalized  bool
+	// diag и finalized — в конце: sync.Once (12 байт) и bool (1 байт) вместе
+	// дают 13 байт в хвосте без выравнивания, тогда как между int-полями они
+	// добавили бы 8-байтовый padding (проверено fieldalignment).
+	diag      sync.Once
+	finalized bool
 }
 
 // logReasoningCutOnce — диагностика «фильтр сработал» один раз на стрим.
@@ -77,9 +87,26 @@ func (st *reasoningEgressState) logReasoningCutOnce() {
 }
 
 // reasoningSplitState — «сейчас в размышлениях?» + удержанный хвост маркера.
+//
+// Порядок полей — под fieldalignment (см. комментарий у reasoningEgressState):
+// строка «шире» int/bool, поэтому идёт первой.
 type reasoningSplitState struct {
-	inReasoning bool
 	pending     string
+	inReasoning bool
+	// R757 (2026-11-25): СКОЛЬКО РАЗ ЗА СТРИМ ОТКРЫВАЛСЯ КАНАЛ РАЗМЫШЛЕНИЙ.
+	//
+	// ЖИВАЯ ЖАЛОБА: «есть подозрение, не обязательно по этой модели, а по
+	// остальным тоже, что зацикливание при генерации осталось». Нормальный ответ
+	// открывает блок размышлений ОДИН раз (`<|content_thinking|>`, `</think>`,
+	// `<|channel|>analysis`). Если маркер начала встретился 3+ раз, модель
+	// переоткрывает блок — это форматный цикл: она снова и снова начинает
+	// «думать», и снаружи это выглядит как бесконечная генерация.
+	//
+	// Здесь только СЧЁТЧИК: поведение стрима не меняется. Лог с числами даёт
+	// однозначный признак «цикл формата» вместо догадок по длине ответа — по нему
+	// видно, что дело в шаблоне/стоп-строках, а не в температуре или KV-cache.
+	startHits int
+	endHits   int
 }
 
 // reasoningStartMarkers — открывают канал размышлений (переводят текст в
@@ -93,6 +120,9 @@ var reasoningStartMarkers = []string{
 	"<|channel|>reasoning\n", "<|channel|>reasoning",
 	"<|channel>analysis\n", "<|channel>analysis",
 	"<|channel>thought\n", "<|channel>thought",
+	// R757: Inkling-2 (architecture=inkling2_loop) — блок рассуждений в конверте
+	// сообщения: <|message_model|><|content_thinking|>…<|end_message|>.
+	"<|content_thinking|>\n", "<|content_thinking|>",
 	"<|begin_of_thought|>",
 	"<|thought|>",
 	"<thinking>", "<analysis>", "<reasoning>", "<thought>", "<think>",
@@ -111,6 +141,9 @@ var reasoningEndMarkers = []string{
 	"<｜end▁of▁thinking｜>",
 	"<|end_of_thought|>",
 	"<|/thought|>",
+	// R757: конец сообщения Inkling-2 закрывает и блок рассуждений, и блок
+	// видимого текста. Для размышлений он и есть close-tag.
+	"<|end_message|>",
 	"</thinking>", "</analysis>", "</reasoning>", "</thought>", "</think>",
 	"<think|>",
 	"<channel|>",
@@ -126,6 +159,9 @@ var reasoningEndMarkers = []string{
 // как токен — сам JSON остаётся и распознаётся штатным детектором вызовов.
 var reasoningNeutralTokens = []string{
 	"<|message|>",
+	// R757: маркеры конверта Inkling-2 — не размышления и не видимый текст.
+	"<|message_model|>",
+	"<|content_text|>",
 	"<|constrain|>",
 	"<|tool_call|>", "<|/tool_call|>", "<|tool_call_end|>",
 	"<|tool|>", "<|/tool|>", "<|tool_end|>",
@@ -179,6 +215,20 @@ func findReasoningMarker(s string, from int) reasoningMarkerMatch {
 
 // trailingMarkerPrefixLen — длина хвоста s, который может быть началом маркера
 // (маркер разрезан между чанками). Возвращает 0, если такого хвоста нет.
+//
+// R757 (2026-11-25): ЦЕЛЫЙ ЧАНОК-ПРЕФИКС ТОЖЕ УДЕРЖИВАЕТСЯ.
+//
+// Живой факт из архива второго стенда (Inkling-2): маркеры конверта
+// (`<|content_thinking|>`, `<|end_message|>`) в чате клиента оставались
+// неразобранными. Одна из причин — здесь: цикл начинался с `maxLen-1`, где
+// `maxLen` уже урезан до длины строки, поэтому строка, ЦЕЛИКОМ состоящая из
+// префикса маркера (`<|content_thin`), не удерживалась и уезжала в видимый
+// текст. При потокенной генерации это обычное дело: токен кончается ровно
+// посередине маркера.
+//
+// Безопасность: после цикла разбора в `rest` НЕ ОСТАЁТСЯ полного маркера,
+// поэтому «удержать весь rest» может скрыть только неполный маркер — он будет
+// отдан следующим кадром или финализацией (st.pending), не теряясь.
 func trailingMarkerPrefixLen(s string) int {
 	maxLen := 0
 	for _, group := range [][]string{reasoningStartMarkers, reasoningEndMarkers, reasoningNeutralTokens} {
@@ -192,7 +242,7 @@ func trailingMarkerPrefixLen(s string) int {
 		maxLen = len(s)
 	}
 	lower := strings.ToLower(s)
-	for n := maxLen - 1; n >= 1; n-- {
+	for n := maxLen; n >= 1; n-- {
 		suffix := lower[len(lower)-n:]
 		for _, group := range [][]string{reasoningStartMarkers, reasoningEndMarkers, reasoningNeutralTokens} {
 			for _, m := range group {
@@ -239,8 +289,10 @@ func splitReasoningText(s string, st *reasoningSplitState) (string, string) {
 		switch m.effect {
 		case +1:
 			st.inReasoning = true
+			st.startHits++ // R757: счётчик переоткрытий канала размышлений
 		case -1:
 			st.inReasoning = false
+			st.endHits++ // R757: счётчик закрытий (для пары в логе)
 		}
 	}
 	// Хвост, который может быть началом разрезанного маркера, удерживаем.

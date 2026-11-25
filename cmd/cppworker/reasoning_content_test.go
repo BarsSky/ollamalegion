@@ -476,3 +476,50 @@ func TestHasOpenThink(t *testing.T) {
 		t.Error("open with body no close should be unclosed")
 	}
 }
+
+// ============================================================
+// R757 (2026-11-25): Inkling-2 (architecture=inkling2_loop)
+// ============================================================
+//
+// ЖИВОЙ ДЕФЕКТ (архив второго стенда, r735): ответ модели начинался с
+// `<|message_model|><|content_thinking|>` и все рассуждения уезжали в
+// message.content; балансер логировал reasoning_chars=0, клиент показывал
+// служебные маркеры. Ниже — точная форма из живого ответа.
+
+func TestSplitReasoningContent_Inkling2Envelope_R757(t *testing.T) {
+	in := "<|message_model|><|content_thinking|>The user wants a vocabulary exercise." +
+		"<|end_message|><|message_model|><|content_text|>Sure - here's a blank: The scientist ____ the results." +
+		"<|end_message|>"
+	r, c, has := SplitReasoningContent(in)
+	wantR := "The user wants a vocabulary exercise."
+	wantC := "Sure - here's a blank: The scientist ____ the results."
+	if !has || r != wantR || c != wantC {
+		t.Fatalf("inkling2 envelope → got (%q, %q, %v), want (%q, %q, true)", r, c, has, wantR, wantC)
+	}
+	if strings.Contains(c, "<|") {
+		t.Fatalf("в видимом ответе остались маркеры Inkling-2: %q", c)
+	}
+}
+
+func TestReasoningStreamState_Inkling2SplitChunks_R757(t *testing.T) {
+	st := NewReasoningStreamState()
+	// В llama.cpp спец-токены Inkling-2 приходят ЦЕЛИКОМ (по одному токену);
+	// режем поток именно по границам токенов, как в живом стриме.
+	chunks := []string{
+		"<|message_model|>", "<|content_thinking|>", "план", " ответа",
+		"<|end_message|>", "<|message_model|>", "<|content_text|>", "готовый", " ответ",
+		"<|end_message|>",
+	}
+	var reasoning, content string
+	for _, ch := range chunks {
+		rd, cd := st.Feed(ch)
+		reasoning += rd
+		content += cd
+	}
+	if strings.TrimSpace(reasoning) != "план ответа" {
+		t.Fatalf("reasoning = %q, want «план ответа»", reasoning)
+	}
+	if strings.TrimSpace(content) != "готовый ответ" {
+		t.Fatalf("content = %q, want «готовый ответ»", content)
+	}
+}

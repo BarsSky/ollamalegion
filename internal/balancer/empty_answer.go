@@ -188,9 +188,41 @@ func (st *reasoningEgressState) finalizeFrames() [][]byte {
 			"finish_reason", finishReason,
 			"notice_sent", noticeSent,
 			"held_finish", heldFinish,
-			"frames_cut", st.cut)
+			"frames_cut", st.cut,
+			// R757: сколько раз за ответ открывался канал размышлений.
+			"reasoning_starts", st.split.startHits,
+			"reasoning_ends", st.split.endHits)
+		// R757 (2026-11-25): ЦИКЛ ФОРМАТА, А НЕ «длинный ответ».
+		//
+		// Живая жалоба: «зацикливание при генерации осталось». По длине ответа
+		// отличить цикл от подробного рассуждения нельзя, а по числу
+		// переоткрытий канала — можно: нормальный ответ открывает блок
+		// размышлений один раз. 3+ открытия означают, что модель снова и снова
+		// начинает «думать» — это шаблон/стоп-строки, а не температура.
+		if st.split.startHits >= 3 {
+			logger.Get().Warnw("R757: модель переоткрывает блок размышлений — похоже на цикл формата",
+				"reasoning_starts", st.split.startHits,
+				"reasoning_ends", st.split.endHits,
+				"visible_chars", st.visibleChars,
+				"reasoning_chars", st.reasoningChars,
+				"finish_reason", finishReason,
+				"model", modelLabelOfEgressR757(st),
+				"meaning", "ответ содержит несколько блоков размышлений: модель не остановилась на <|end_message|>/</think> и начала заново",
+				"next_step", "проверьте стоп-строки семейства модели (modelfamily) и шаблон чата; это не перегрев и не KV-cache")
+		}
 	}
 	return frames
+}
+
+// modelLabelOfEgressR757 — имя модели для лога, если состояние его знает.
+//
+// Поле необязательное: у части путей (NDJSON-конвейер) состояние создаётся без
+// имени модели, и выдумывать его в логе нельзя — пустая строка честнее.
+func modelLabelOfEgressR757(st *reasoningEgressState) string {
+	if st == nil {
+		return ""
+	}
+	return st.modelLabel
 }
 
 // applyEmptyAnswerNotice — то же правило для СОБРАННОГО (non-stream) ответа.

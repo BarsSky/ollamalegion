@@ -592,6 +592,9 @@
     // Сохраняем backendEngine глобально для использования в бейджах и топологии
     MA.backendEngine = data.cluster.backendEngine || 'ollama_api';
     MA.effectiveBackendType = data.cluster.effectiveBackendType || '';
+    // R757: порог температуры GPU — из того же ответа /api/v1/cluster, что и
+    // строки таблицы. Без него температура рисовалась бы без оценки «горячо ли».
+    clusterGpuMaxTemp = Number(data.cluster.gpuMaxTemp) || 0;
     var q = data.queueDetails || {};
     var rawSs = (data.sessions && data.sessions.sessions) || [];
     var recentClients = data.cluster.recentClients || [];
@@ -977,6 +980,33 @@
       // показывал 25% при полной занятости).
       var m = backendCapacityOf(b), l = backendLoadRatio(b);
       if (l >= 1.0) pushAlert(alerts, { level: 'red', text: T('monitor.alert.backendFull', { backend: b.id, active: b.activeRequests || 0, max: m }) }, 'backendFull:' + b.id);
+      // R757 (2026-11-25): перегрев и троттлинг GPU — в док предупреждений.
+      //
+      // До правки это было ТОЛЬКО в логе балансера: за живой сессией
+      // `backend GPU горячее заданного предела (soft, не блокирует)
+      // temperature=88 threshold=85` повторилось 14 раз, а оператор видел лишь
+      // GPU% и баннера не получал. Порог берём из состояния кластера (тот же,
+      // по которому балансер пишет WARN), вопросы «критично ли 88 °C» —
+      // закрывает текст подсказки в Настройках.
+      var gpuM = b.gpu || {};
+      var gpuT = Number(gpuM.temperature);
+      var gpuReasons = Array.isArray(gpuM.throttleReasonsList) ? gpuM.throttleReasonsList : [];
+      // Троттлинг — факт, а не предсказание: отдельный, более высокий уровень.
+      if (gpuReasons.length) {
+        pushAlert(alerts, {
+          level: 'red',
+          text: T('monitor.alert.gpuThrottle', {
+            backend: b.id,
+            reasons: gpuReasons.join(', '),
+            temp: (Number.isFinite(gpuT) && gpuT > 0) ? gpuT : '?'
+          })
+        }, 'gpuThrottle:' + b.id);
+      } else if (clusterGpuMaxTemp > 0 && Number.isFinite(gpuT) && gpuT > clusterGpuMaxTemp) {
+        pushAlert(alerts, {
+          level: 'yellow',
+          text: T('monitor.alert.gpuHot', { backend: b.id, temp: gpuT, threshold: clusterGpuMaxTemp })
+        }, 'gpuHot:' + b.id);
+      }
     });
     // R494 (2026-11-12, по архиву стенда A10 ×2): «одна модель — разные окна».
     //
@@ -1234,6 +1264,54 @@
     });
   }
 
+  // R757 (2026-11-25): порог температуры GPU из состояния кластера
+  // (types.ClusterState.GPUMaxTemp). Модульная переменная, потому что
+  // renderBackends() получает только список бэкендов, а порог лежит рядом с ним
+  // в data.cluster. 0 = «не задан» — тогда температуру показываем без оценки.
+  var clusterGpuMaxTemp = 0;
+
+  // gpuTempBadgeHtml — температура GPU рядом с GPU% и подсказка «горячо ли это».
+  //
+  // ЖИВАЯ ЖАЛОБА (R757): «в балансере постоянно фигурировала информация о
+  // возможном троттлинге из-за температуры выше пороговой, но явно об этом не
+  // сообщалось в WebUI и не понятно, какая на самом деле температура критична для
+  // видеокарты». В таблице были только GPU% / VRAM% / CPU% / RAM%: температура и
+  // порог существовали лишь в логе балансера (`temperature=88 threshold=85`).
+  //
+  // Цвет: красный — выше порога ИЛИ карта сама сообщает thermal-троттлинг (это
+  // уже факт снижения частот); жёлтый — в пределах 10 °C до порога (приближение);
+  // обычный — далеко от порога. Причина троттлинга приходит из NVML
+  // (gpu.throttleReasonsList), «нет данных» отличается от «нет троттлинга» по
+  // gpu.throttleKnown.
+  function gpuTempBadgeHtml(b) {
+    var g = b.gpu || {};
+    var t = Number(g.temperature);
+    var thr = clusterGpuMaxTemp;
+    var reasons = Array.isArray(g.throttleReasonsList) ? g.throttleReasonsList : [];
+    var thermal = reasons.some(function (r) {
+      return String(r || '').toLowerCase().indexOf('thermal') >= 0;
+    });
+    if (!Number.isFinite(t) || t <= 0) {
+      if (!reasons.length) return '';
+      return ' <span class="badge badge-orange" title="' +
+        MA.esc(T('monitor.gpu.tempUnknown') + ' | ' + T('monitor.gpu.throttleReasons') + ': ' + reasons.join(', ')) +
+        '">🔥</span>';
+    }
+    var style = 'background:rgba(148,163,184,0.14);color:var(--text-secondary);border-color:var(--border)';
+    if (thermal || (thr > 0 && t > thr)) {
+      style = 'background:rgba(239,68,68,0.15);color:var(--danger);border-color:rgba(239,68,68,0.35)';
+    } else if (thr > 0 && t > thr - 10) {
+      style = 'background:rgba(240,173,78,0.15);color:var(--warning);border-color:rgba(240,173,78,0.35)';
+    }
+    var parts = [T('monitor.gpu.temp') + ': ' + t + ' °C'];
+    if (thr > 0) parts.push(T('monitor.gpu.tempThreshold') + ': ' + thr + ' °C');
+    if (reasons.length) parts.push(T('monitor.gpu.throttleReasons') + ': ' + reasons.join(', '));
+    else if (g.throttleKnown) parts.push(T('monitor.gpu.throttleNone'));
+    else parts.push(T('monitor.gpu.throttleUnknown'));
+    return ' <span class="badge" style="' + style + ';font-size:var(--font-size-xs)" title="' +
+      MA.esc(parts.join(' | ')) + '">' + t + ' °C' + (reasons.length ? ' 🔥' : '') + '</span>';
+  }
+
   function renderBackends(bk, modelOps) {
     document.getElementById('backendCount').textContent = bk.length;
     var tb = document.querySelector('#backendsTable tbody');
@@ -1403,7 +1481,7 @@
       // управление раскладкой было только в API/.env — в панели его не было.
       var layoutCell = (window.MonitorLayout && typeof window.MonitorLayout.rowLayoutCell === 'function')
         ? window.MonitorLayout.rowLayoutCell(b) : '<td></td>';
-      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + imageBadges + typeBadge + '</td>' + layoutCell + '<td><span class="badge ' + scs + '">' + MA.esc(backendStatusLabel(b.status)) + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:var(--font-size-xs)">' + loadingCell + '</td><td>' + modelsCell + '</td>' + imgReqCells + '<td class="col-right">' + up + '</td></tr>';
+      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + imageBadges + typeBadge + '</td>' + layoutCell + '<td><span class="badge ' + scs + '">' + MA.esc(backendStatusLabel(b.status)) + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + gpuTempBadgeHtml(b) + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:var(--font-size-xs)">' + loadingCell + '</td><td>' + modelsCell + '</td>' + imgReqCells + '<td class="col-right">' + up + '</td></tr>';
     }).join('');
     // R118.4: селекторы роли в свежеотрисованных строках + обновление панели
     // раскладки (роли/состояние приходят из /api/v1/backends, а не из cluster/state).

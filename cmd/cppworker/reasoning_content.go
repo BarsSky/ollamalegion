@@ -306,6 +306,27 @@ var thinkTagPairs = []struct {
 	// раньше в списке. Добавляем в конец, чтобы более специфичные теги
 	// проверялись первыми.
 	{"<|channel>", "<channel|>"},
+	// R757 (2026-11-25): Inkling-2 (architecture=inkling2_loop) оборачивает
+	// ответ в СООБЩЕНИЕ из двух блоков:
+	//
+	//	<|message_model|><|content_thinking|>…рассуждение…<|end_message|>
+	//	<|message_model|><|content_text|>…ответ…<|end_message|>
+	//
+	// Без этой пары клиент видел все маркеры и рассуждения в content (живой
+	// скриншот: ответ начинался с `<|message_model|><|content_thinking|>`, а
+	// `reasoning_chars` в логе балансера был 0). Открывающий маркер — блок
+	// рассуждений, закрывающий — конец сообщения; маркеры конверта
+	// (`<|message_model|>`, `<|content_text|>`) вырезаются как нейтральные.
+	{"<|content_thinking|>\n", "<|end_message|>"},
+	{"<|content_thinking|>", "<|end_message|>"},
+}
+
+// reasoningNeutralTags — маркеры конверта сообщения Inkling-2: они не открывают
+// и не закрывают размышления, но в видимом ответе клиенту не нужны.
+var reasoningNeutralTags = []string{
+	"<|message_model|>",
+	"<|content_text|>",
+	"<|end_message|>",
 }
 
 // thinkStart/thinkEnd — backward-compat aliases (используются в тестах и ниже).
@@ -473,6 +494,11 @@ func stripReasoningMarkers(s string) string {
 		}
 		if pair.close != "" {
 			s = strings.ReplaceAll(s, pair.close, "")
+		}
+	}
+	for _, tag := range reasoningNeutralTags {
+		if tag != "" {
+			s = strings.ReplaceAll(s, tag, "")
 		}
 	}
 	return s

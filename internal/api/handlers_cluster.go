@@ -32,6 +32,26 @@ const minFreeDiskMaxMBR700 = 1048576
 // не угадывало число.
 const minFreeDiskDefaultMBR700 = 10240
 
+// R757 (2026-11-25): границы порога температуры GPU.
+//
+// ЗАЧЕМ ГРАНИЦЫ. Балансер использует MaxTemperature как SOFT-порог: выше него
+// он пишет WARN «GPU горячее заданного предела» и продолжает работу, поэтому
+// мусорное значение (0 из пустого `<input type=number>`, отрицательное, 500)
+// не роняет кластер, а делает предупреждение либо всегда-истинным, либо
+// никогда-истинным — то есть невидимо ломает диагностику. Ровно это уже было с
+// minFreeDisk (R700), поэтому здесь та же защита: явный 400 с границами.
+//
+// Диапазон: 50 °C — ниже любой рабочей температуры под нагрузкой (порог стал бы
+// постоянным шумом); 120 °C — выше аппаратного лимита всех потребительских и
+// датацентровых карт (NVML-троттлинг обычно начинается около 90-95 °C, аварийное
+// выключение — 105-110 °C), то есть значение выше 120 не может быть «строже
+// железа» и только маскирует проблему.
+const (
+	gpuMaxTempMinR757     = 50
+	gpuMaxTempMaxR757     = 120
+	gpuMaxTempDefaultR757 = 85
+)
+
 // configDefaults хранит значения по умолчанию для полного сброса конфига
 func configDefaults(cfg *types.LoadBalancerConfig) {
 	// LoadBalancer defaults
@@ -252,7 +272,16 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			// (кнопка «по умолчанию» и подсказка диапазона берут их отсюда).
 			"minFreeDiskDefault": minFreeDiskDefaultMBR700,
 			"minFreeDiskMax":     minFreeDiskMaxMBR700,
-			"operatingMode":       s.config.Balancing.OperatingMode,
+			// R757 (2026-11-25): порог температуры GPU. Панель Monitor рисует
+			// температуру и подсвечивает её по этому значению, а Settings даёт
+			// его менять. До правки порог жил только в логе балансера
+			// (`threshold=85`), и оператор не мог узнать, какая температура
+			// считается критичной.
+			"gpuMaxTemp":        s.config.Resources.GPU.MaxTemperature,
+			"gpuMaxTempDefault": gpuMaxTempDefaultR757,
+			"gpuMaxTempMin":     gpuMaxTempMinR757,
+			"gpuMaxTempMax":     gpuMaxTempMaxR757,
+			"operatingMode":     s.config.Balancing.OperatingMode,
 			// R234: язык логов и ошибок. Рантайм-значение (после PUT) может
 			// отличаться от сохранённого "auto", поэтому отдаём и то, и другое:
 			// WebUI показывает действующий, а в select подставляет настройку.
@@ -297,10 +326,13 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			CPUUsage            *float64 `json:"cpuMaxUsage"`
 			RAMUsage            *float64 `json:"ramMaxUsage"`
 			MinFreeDisk         *float64 `json:"minFreeDisk"`
-			OperatingMode       string   `json:"operatingMode"`
-			Initialized         *bool    `json:"initialized"`
-			BackendEngine       string   `json:"backendEngine"`
-			LogLanguage         string   `json:"logLanguage"`
+			// R757: порог температуры GPU. Pointer — чтобы отличить «не прислано»
+			// от «прислано 0».
+			GPUMaxTemp    *int   `json:"gpuMaxTemp"`
+			OperatingMode string `json:"operatingMode"`
+			Initialized   *bool  `json:"initialized"`
+			BackendEngine string `json:"backendEngine"`
+			LogLanguage   string `json:"logLanguage"`
 			// Session 17 (2026-07-27): глобальные настройки llama.cpp (per-model
 			// profile и per-backend CppWorkerConfig имеют приоритет). Pointer
 			// чтобы отличить "не прислано" от "прислано как zero value".
@@ -449,6 +481,37 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 		if req.GPUUsage != nil {
 			s.config.Resources.GPU.MaxUsagePercent = *req.GPUUsage
 			updatedFields = append(updatedFields, "gpuMaxUsage")
+		}
+		// R757 (2026-11-25): порог температуры GPU меняется из панели.
+		//
+		// До правки поле было не только нередактируемым — оно вообще нигде не
+		// отображалось: балансер писал в лог `temperature=88 threshold=85`, а в
+		// WebUI оператор видел лишь GPU% и не понимал, почему в логах звучит
+		// «троттлинг». Теперь порог редактируется (с валидацией) и рисуется в
+		// Monitor рядом с температурой.
+		//
+		// 0 трактуем как «сбросить к умолчанию»: `config.Load` и `configDefaults`
+		// и так подставляют 85 при нуле, а пустое поле в форме присылает 0.
+		if req.GPUMaxTemp != nil {
+			v := *req.GPUMaxTemp
+			if v == 0 {
+				v = gpuMaxTempDefaultR757
+			}
+			if v < gpuMaxTempMinR757 || v > gpuMaxTempMaxR757 {
+				s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"success": false,
+					"error": fmt.Sprintf(
+						"gpuMaxTemp: ожидается целое число °C от %d до %d, получено %d",
+						gpuMaxTempMinR757, gpuMaxTempMaxR757, v),
+					"field": "gpuMaxTemp",
+					"min":   gpuMaxTempMinR757,
+					"max":   gpuMaxTempMaxR757,
+					"unit":  "C",
+				})
+				return
+			}
+			s.config.Resources.GPU.MaxTemperature = v
+			updatedFields = append(updatedFields, "gpuMaxTemp")
 		}
 		if req.VRAMUsage != nil {
 			s.config.Resources.GPU.MaxVRAMUsagePercent = *req.VRAMUsage

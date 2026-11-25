@@ -2271,6 +2271,15 @@
     color: var(--text-secondary, var(--text-muted));
 }
 
+/* R757: причина, по которой «Докачать недостающее» нечего делать.
+   Раньше кнопка была disabled, и объяснение жило только в title: оператор видел
+   «не реагирует». Теперь причина - строкой под сводкой. */
+.imf-note {
+    margin-bottom: 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+}
+
 .imf-list {
     display: flex;
     flex-direction: column;

@@ -140,6 +140,11 @@ var llamaCppServiceTokens = []string{
 	"<|eot|>",
 	"<|end|>",
 	"<|eos|>",
+	// R757: конверт сообщения Inkling-2 (architecture=inkling2_loop).
+	"<|message_model|>",
+	"<|content_thinking|>",
+	"<|content_text|>",
+	"<|end_message|>",
 	// Короткие — строго после длинных
 	"<bos>",
 	"<eos>",
@@ -171,6 +176,11 @@ var llamaCppReasoningMarkers = []string{
 	"<reasoning>", "</reasoning>",
 	"<analysis>", "</analysis>",
 	"<think>", "</think>",
+	// R757: Inkling-2 — маркеры конверта и блока рассуждений. Если воркер
+	// старой версии не разделил ответ, клиент не должен видеть ни маркеры, ни
+	// размышления в content.
+	"<|content_thinking|>", "<|end_message|>",
+	"<|message_model|>", "<|content_text|>",
 }
 
 // stripReasoningMarkersFromVisible вырезает маркеры размышлений из видимого

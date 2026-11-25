@@ -264,6 +264,71 @@
         });
     }
 
+    // =====================================================================
+    // R757 (2026-11-25): ПОЧЕМУ «Докачать недостающее» нечего делать
+    // =====================================================================
+    //
+    // ЖИВАЯ ЖАЛОБА: «во вкладке по image-моделям в скачанных моделях у той, что
+    // не хватало элементов для запуска, кнопка „докачать необходимое“ никак не
+    // реагировала».
+    //
+    // ЧТО БЫЛО. Кнопка рисовалась с атрибутом `disabled` и объяснением ТОЛЬКО в
+    // `title` (всплывающая подсказка). Нажатие disabled-кнопки не порождает
+    // события вообще — то есть «никак не реагировала» было буквально верно. Хуже
+    // того, причина в самом частом случае вообще не про файлы: не хватающие для
+    // запуска роли (VAE/text encoder) есть в вердикте совместимости
+    // (`compat.missing`), но файлов для них в профиле НЕТ, поэтому кнопка
+    // считала «докачивать нечего», хотя набор неполный. Такие роли добавляются
+    // компонентами из каталога (R710) в строке модели — но панель об этом молчала.
+    //
+    // ТЕПЕРЬ: причина видна ТЕКСТОМ под сводкой и повторяется тостом при нажатии
+    // (кнопка остаётся нажимаемой — она всегда даёт ответ), а роли, которых нет в
+    // профиле, названы явно.
+    function missingRolesNotInProfile() {
+        var compat = (state.model && state.model.compat) || {};
+        var missing = Array.isArray(compat.missing) ? compat.missing : [];
+        if (!missing.length) return [];
+        return missing.slice();
+    }
+
+    /** filesWithoutSource — отсутствующие файлы, у которых неизвестен источник. */
+    function filesWithoutSource() {
+        return files().filter(function (f) {
+            return !f.unregistered && f.present !== true && (!f.repo || !f.role);
+        });
+    }
+
+    /**
+     * downloadMissingReason — почему очередь пуста (null = есть что докачивать).
+     * Возвращает {text, hint} — текст виден в панели и в тосте.
+     */
+    function downloadMissingReason() {
+        if (countableMissing().length > 0) return null;
+        var roles = missingRolesNotInProfile();
+        if (roles.length) {
+            return {
+                text: t('imageModels.files_note_missing_roles',
+                    'Не хватает ролей: {roles}. Файлов для них в профиле нет, поэтому докачивать нечего — добавьте их кнопками компонентов в строке модели, затем вернитесь сюда.',
+                    { roles: roles.join(', ') }),
+                hint: 'missing_roles'
+            };
+        }
+        var noSource = filesWithoutSource();
+        if (noSource.length) {
+            return {
+                text: t('imageModels.files_note_unknown_source',
+                    'У {n} отсутствующих файлов неизвестен источник (в profile.json нет repo) — такие файлы докачать нельзя, добавьте их как компонент (R710).',
+                    { n: noSource.length }),
+                hint: 'unknown_source'
+            };
+        }
+        return {
+            text: t('imageModels.files_note_all_present',
+                'Докачивать нечего: все файлы профиля уже на узле.'),
+            hint: 'all_present'
+        };
+    }
+
     function sizeText(f) {
         var expected = Number(f.sizeBytes || 0);
         var onDisk = Number(f.diskSizeBytes || 0);
@@ -359,13 +424,24 @@
             parts.push(t('imageModels.files_summary_extra', 'вне профиля: {n}', { n: extra }));
         }
         var canDownload = countableMissing().length;
-        var btn = '<button class="btn btn-secondary btn-sm" data-admin-only data-imf-action="download-missing"' +
-            (canDownload ? '' : ' disabled title="' + escapeHtml(t('imageModels.files_nothing_missing',
-                'Докачивать нечего: у всех отсутствующих файлов известен источник, файлы на узле')) + '"') + '>' +
+        var reason = downloadMissingReason();
+        // R757: кнопка НЕ disabled. Нажатие на disabled-кнопку не даёт события —
+        // именно это оператор описал как «никак не реагировала». Теперь она
+        // всегда нажимаема и всегда отвечает: либо ставит очередь, либо называет
+        // причину тостом (и та же причина видна текстом ниже).
+        var btn = '<button class="btn ' + (canDownload ? 'btn-secondary' : 'btn-secondary') + ' btn-sm" data-admin-only data-imf-action="download-missing"' +
+            (reason ? ' title="' + escapeHtml(reason.text) + '"' : '') + '>' +
             '<i class="fas fa-circle-down"></i> ' +
-            escapeHtml(t('imageModels.files_download_missing', 'Докачать недостающее')) +
+            escapeHtml(canDownload
+                ? t('imageModels.files_download_missing', 'Докачать недостающее')
+                : t('imageModels.files_download_missing_none', 'Докачивать нечего')) +
             (canDownload ? ' (' + canDownload + ')' : '') + '</button>';
-        return '<div class="imf-summary"><span>' + escapeHtml(parts.join(' · ')) + '</span>' + btn + '</div>';
+        var note = reason
+            ? '<div class="imf-note" data-imf-note="' + escapeHtml(reason.hint) + '">' +
+                '<i class="fas fa-circle-info"></i> ' + escapeHtml(reason.text) + '</div>'
+            : '';
+        return '<div class="imf-summary"><span>' + escapeHtml(parts.join(' · ')) + '</span>' + btn +
+            '</div>' + note;
     }
 
     function html() {
@@ -592,8 +668,11 @@
     function startMissingQueue() {
         var list = countableMissing();
         if (!list.length) {
-            toast(t('imageModels.files_nothing_missing',
-                'Докачивать нечего: у всех отсутствующих файлов известен источник, файлы на узле'), 'info');
+            // R757: нажатие обязано давать ответ — называем КОНКРЕТНУЮ причину
+            // (роли без файлов в профиле / неизвестный источник / всё на узле).
+            var reason = downloadMissingReason();
+            toast(reason ? reason.text : t('imageModels.files_nothing_missing',
+                'Докачивать нечего: файлов, которые можно докачать, нет.'), 'info');
             return;
         }
         state.queue = list.slice();

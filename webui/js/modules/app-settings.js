@@ -183,6 +183,95 @@
         });
     }
 
+    // ---- R757 (2026-11-25): порог температуры GPU ----
+    //
+    // ЖИВАЯ ЖАЛОБА. «В балансере постоянно фигурировала информация о возможном
+    // троттлинге из-за температуры выше пороговой, но явно об этом не
+    // сообщалось в WebUI и не понятно, какая на самом деле температура
+    // критична для видеокарты».
+    //
+    // Так и было: балансер писал WARN `backend GPU горячее заданного предела
+    // (soft, не блокирует) temperature=88 threshold=85` (14 раз в архиве), а в
+    // панели температура не показывалась ВООБЩЕ, и значение порога нельзя было
+    // ни увидеть, ни изменить.
+    //
+    // Здесь — подсказка рядом с полем: что означает порог, чем он отличается от
+    // аппаратного троттлинга карты и какая температура на узлах СЕЙЧАС.
+    var GPU_MAX_TEMP_DEFAULT = 85;
+    var GPU_MAX_TEMP_MIN = 50;
+    var GPU_MAX_TEMP_MAX = 120;
+
+    function gpuTempOf(b) {
+        if (!b || !b.gpu) return null;
+        var t = Number(b.gpu.temperature);
+        if (!Number.isFinite(t) || t <= 0) return null;
+        return Math.round(t);
+    }
+
+    // updateGpuTempBounds — границы/умолчание с сервера (gpuMaxTempDefault и
+    // соседние ключи GET /api/v1/cluster/config): вторая копия чисел в JS
+    // разошлась бы с валидацией в handlers_cluster.go.
+    function updateGpuTempBounds(serverConfig) {
+        if (!serverConfig) return;
+        var d = parseInt(serverConfig.gpuMaxTempDefault, 10);
+        if (Number.isFinite(d) && d > 0) GPU_MAX_TEMP_DEFAULT = d;
+        var mn = parseInt(serverConfig.gpuMaxTempMin, 10);
+        if (Number.isFinite(mn) && mn > 0) GPU_MAX_TEMP_MIN = mn;
+        var mx = parseInt(serverConfig.gpuMaxTempMax, 10);
+        if (Number.isFinite(mx) && mx > 0) GPU_MAX_TEMP_MAX = mx;
+        var el = document.getElementById('gpuMaxTemp');
+        if (el) {
+            if (mn > 0) el.setAttribute('min', String(GPU_MAX_TEMP_MIN));
+            if (mx > 0) el.setAttribute('max', String(GPU_MAX_TEMP_MAX));
+        }
+    }
+
+    // refreshGpuTempHint — «что означает порог + температура сейчас».
+    function refreshGpuTempHint() {
+        var hint = document.getElementById('gpuMaxTempHint');
+        if (!hint) return;
+        var el = document.getElementById('gpuMaxTemp');
+        var threshold = el ? parseInt(el.value, 10) : NaN;
+        if (!Number.isFinite(threshold) || threshold <= 0) threshold = GPU_MAX_TEMP_DEFAULT;
+        loadDiskGuardBackends(false).then(function (backends) {
+            var parts = [];
+            parts.push(i18nT('settings.gpu_max_temp.soft', { threshold: threshold },
+                'Порог мягкий: выше ' + threshold + ' °C балансер помечает узел как перегретый и пишет предупреждение, но не блокирует запросы. Аппаратный троттлинг карта включает сама — обычно около 90-95 °C, и он не зависит от этого значения.'));
+            var rows = [];
+            (backends || []).forEach(function (b) {
+                var t = gpuTempOf(b);
+                if (t === null) return;
+                rows.push({ id: (b && b.id) || '?', temp: t });
+            });
+            if (!rows.length) {
+                parts.push(i18nT('settings.gpu_max_temp.no_data', {},
+                    'Узлы ещё не прислали температуру GPU — сравнивать порог не с чем.'));
+            } else {
+                rows.sort(function (a, b) { return b.temp - a.temp; });
+                var list = rows.map(function (r) { return r.id + ': ' + r.temp + ' °C'; }).join(', ');
+                parts.push(i18nT('settings.gpu_max_temp.current', { backends: list, threshold: threshold },
+                    'Сейчас на узлах — ' + list + ' (порог ' + threshold + ' °C).'));
+                if (rows[0].temp > threshold) {
+                    parts.push(i18nT('settings.gpu_max_temp.hot',
+                        { backend: rows[0].id, temp: rows[0].temp, threshold: threshold },
+                        'Узел ' + rows[0].id + ' (' + rows[0].temp + ' °C) сейчас выше порога ' + threshold + ' °C.'));
+                }
+            }
+            hint.textContent = parts.join(' ');
+        });
+    }
+
+    // bindGpuTempUI — живое обновление подсказки при вводе. Как и у порога
+    // диска, навешивается один раз: loadSettings вызывается на каждый тик.
+    var gpuTempBound = false;
+    function bindGpuTempUI() {
+        if (gpuTempBound) return;
+        var input = document.getElementById('gpuMaxTemp');
+        if (!input || !input.addEventListener) return;
+        gpuTempBound = true;
+        input.addEventListener('input', refreshGpuTempHint);
+    }
+
     // bindDiskGuardUI — кнопка «по умолчанию» и живое обновление подсказки.
     // Навешивается один раз: loadSettings вызывается на каждый вход на страницу
     // и на каждый тик, повторные слушатели задвоили бы сохранение.
@@ -480,6 +569,9 @@
         // объяснять, что измеряется.
         bindDiskGuardUI();
         refreshDiskGuardHint();
+        // R757: порог температуры GPU — подсказка «что означает + сколько сейчас».
+        bindGpuTempUI();
+        refreshGpuTempHint();
         // --- SERVER-FIRST RULE: сервер = источник истины ---
         // Сначала пытаемся загрузить с сервера. Если не получилось — fallback в localStorage.
         Api.config().then(function (serverConfig) {
@@ -550,6 +642,10 @@
         if (serverConfig.cpuMaxUsage) writeValue(document.getElementById('cpuMaxUsage'), serverConfig.cpuMaxUsage);
         if (serverConfig.ramMaxUsage) writeValue(document.getElementById('ramMaxUsage'), serverConfig.ramMaxUsage);
         if (serverConfig.minFreeDisk) writeValue(document.getElementById('minFreeDisk'), serverConfig.minFreeDisk);
+        // R757: порог температуры GPU — значение, границы и подсказка.
+        if (serverConfig.gpuMaxTemp) writeValue(document.getElementById('gpuMaxTemp'), serverConfig.gpuMaxTemp);
+        updateGpuTempBounds(serverConfig);
+        refreshGpuTempHint();
         // R700: границы порога — с сервера, подсказка («что измеряется + сколько
         // сейчас») — сразу после заливки значения.
         updateDiskGuardBounds(serverConfig);
@@ -782,6 +878,9 @@
         if (config.cpuMaxUsage) writeValue(document.getElementById('cpuMaxUsage'), config.cpuMaxUsage);
         if (config.ramMaxUsage) writeValue(document.getElementById('ramMaxUsage'), config.ramMaxUsage);
         if (config.minFreeDisk) writeValue(document.getElementById('minFreeDisk'), config.minFreeDisk);
+        // R757: локальный fallback тоже обновляет порог температуры и подсказку.
+        if (config.gpuMaxTemp) writeValue(document.getElementById('gpuMaxTemp'), config.gpuMaxTemp);
+        refreshGpuTempHint();
         // R700: локальный fallback тоже обновляет подсказку — иначе при
         // недоступном сервере рядом с порогом остался бы пустой блок.
         refreshDiskGuardHint();
@@ -834,6 +933,26 @@
             }
             clearDiskGuardError();
             minDisk = minDiskNum;
+        }
+        // R757: порог температуры GPU — та же явная валидация, что и у диска.
+        // Пустое поле присылает 0; сервер трактует 0 как «вернуть умолчание», но
+        // отрицательное или 500 он отвергнет 400-й, поэтому проверяем здесь, до
+        // PUT, чтобы оператор видел причину рядом с полем, а не общий тост.
+        var gpuTemp = GPU_MAX_TEMP_DEFAULT;
+        var gpuTempEl = document.getElementById('gpuMaxTemp');
+        if (gpuTempEl) {
+            var gpuTempRaw = String(gpuTempEl.value == null ? '' : gpuTempEl.value).trim();
+            var gpuTempNum = Number(gpuTempRaw);
+            var gpuTempBad = gpuTempRaw !== '' && (!Number.isFinite(gpuTempNum) ||
+                Math.floor(gpuTempNum) !== gpuTempNum ||
+                gpuTempNum !== 0 && (gpuTempNum < GPU_MAX_TEMP_MIN || gpuTempNum > GPU_MAX_TEMP_MAX));
+            if (gpuTempBad) {
+                if (!silent) showToast(i18nT('settings.gpu_max_temp.invalid',
+                    { min: GPU_MAX_TEMP_MIN, max: GPU_MAX_TEMP_MAX },
+                    'GPU Max Temperature: нужно целое число °C от ' + GPU_MAX_TEMP_MIN + ' до ' + GPU_MAX_TEMP_MAX + '.'), 'error');
+                return;
+            }
+            if (gpuTempNum > 0) gpuTemp = gpuTempNum;
         }
         // R65d: apiToken больше не читается и не отправляется — сервер его не
         // принимает (нет поля в PUT-структуре). Смена API-токена на лету
@@ -998,6 +1117,8 @@
             cpuMaxUsage: cpuMax,
             ramMaxUsage: ramMax,
             minFreeDisk: minDisk,
+            // R757: порог температуры GPU (soft-WARN балансера).
+            gpuMaxTemp: gpuTemp,
             modelReplication: {
                 enabled: modelReplicationEnabled,
                 defaultMinInstances: modelReplicationMinInstances,
@@ -1074,6 +1195,9 @@
             // показать новое сравнение (иначе рядом с полем висит старая
             // строка «узел исключён», хотя он уже проходит).
             refreshDiskGuardHint();
+            // R757: то же для порога температуры GPU — сравнение «узел выше
+            // порога» должно пересчитаться сразу после сохранения.
+            refreshGpuTempHint();
             if (!silent) showToast(window.I18N ? I18N.t('settings.saved') : 'Settings saved', 'success');
         }).catch(function (err) {
             if (!silent) showToast((window.I18N ? I18N.t('common.error') : 'Error') + ': ' + (err.message || err), 'error');
@@ -1110,6 +1234,13 @@
             }
             if (expectedConfig.backendEngine && serverConfig.backendEngine !== expectedConfig.backendEngine) {
                 mismatches.push('backendEngine: expected ' + expectedConfig.backendEngine + ', got ' + serverConfig.backendEngine);
+            }
+            // R757: порог температуры GPU. Проверяем по той же причине, что и
+            // секции ниже: настройка, которую PUT молча не применил, не должна
+            // откатываться «тихо» с тостом «Settings saved».
+            if (expectedConfig.gpuMaxTemp !== undefined &&
+                Number(serverConfig.gpuMaxTemp) !== Number(expectedConfig.gpuMaxTemp)) {
+                mismatches.push('gpuMaxTemp: expected ' + expectedConfig.gpuMaxTemp + ', got ' + serverConfig.gpuMaxTemp);
             }
 
             // Секции: сравниваем только те поля, которые форма реально
@@ -1184,6 +1315,9 @@
             // Экспортируется для теста: проверяется поведение (текст с числами и
             // упоминанием измеряемой ФС), а не факт наличия функции в файле.
             refreshDiskGuardHint: refreshDiskGuardHint,
+            // R757: подсказка у порога температуры GPU (смысл порога + текущая
+            // температура узлов). Экспортируется для теста по той же причине.
+            refreshGpuTempHint: refreshGpuTempHint,
             // R671 (2026-11-21): пять сборщиков данных, ПОТЕРЯННЫХ при выносе в
             // фабрику (R652-R655). Они определены выше в этом же файле, но не
             // возвращались, а `app.js` продолжал звать их bare-именами — панель

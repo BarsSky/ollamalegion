@@ -840,9 +840,23 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	target := fmt.Sprintf("http://%s:%d/api/models/reload", host, port)
 
 	body := map[string]interface{}{
-		"name":        modelName,
-		"contextSize": profile.ContextLength,
-		"batchSize":   profile.BatchSize,
+		"name": modelName,
+		// R757 (2026-11-25): contextSize/batchSize больше НЕ отправляются всегда —
+		// только когда в профиле есть значение (> 0). Ноль в профиле означает
+		// «не задано»: воркер сам решает по своим дефолтам.
+		//
+		// ЖИВОЙ ДЕФЕКТ (архив второго стенда, 06:17:50): после ответа модель
+		// перезагружалась «по профилю», где BatchSize не был задан (0), и
+		// балансер отправлял `batchSize: 0`. cppworker отвечал
+		//
+		//     400 {"error":"batchSize must be >= 1"}
+		//
+		// поэтому перезагрузка НЕ происходила вовсе: старый экземпляр оставался
+		// занят (`unload refused: model has active requests active_queries=1`),
+		// клиент получал 502, а модель уходила из памяти только полной
+		// остановкой контейнера. Отправлять «не задано» как ноль нельзя: у этого
+		// поля ноль — недопустимое значение, а «не задано» выражается отсутствием
+		// ключа.
 		// R66d (2026-09-23): ключ ДОЛЖЕН быть "gpuLayers", а не "numGpuLayers".
 		//
 		// cppworker декодирует reload-запрос в reloadModelRequest
@@ -863,6 +877,14 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 		// балансер всё равно писал "reloaded" → в UI «профиль применён», по факту
 		// ничего не изменилось («не могу применить профиль из WebUI»).
 		"force": true,
+	}
+	// R757: «не задано» = ключа нет. Отрицательное значение тоже не шлём: у
+	// cppworker это не «авто», а ошибка валидации.
+	if profile.ContextLength > 0 {
+		body["contextSize"] = profile.ContextLength
+	}
+	if profile.BatchSize > 0 {
+		body["batchSize"] = profile.BatchSize
 	}
 	if profile.FlashAttn != nil {
 		// Round 25 (2026-08-06): cppworker's reloadModelRequest expects flashAttn as

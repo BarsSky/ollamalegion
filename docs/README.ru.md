@@ -70,6 +70,7 @@
 | **VRAM на узлах раскладки** | [RU](operations/rpc-donor-vram-lifecycle.ru.md) | [EN](operations/rpc-donor-vram-lifecycle.md) | Когда освобождается VRAM на узлах раскладки и что остаётся занятым. |
 | **Troubleshooting** | [RU](operations/troubleshooting.ru.md) | [EN](operations/troubleshooting.md) | Симптомы, причины и исправления из живых инцидентов. |
 | **Инциденты развёртывания** | [RU](operations/deployment-troubleshooting.ru.md) | [EN](operations/deployment-troubleshooting.md) | Ловушки развёртывания и разборы инцидентов. |
+| **Температура GPU и троттлинг** | [RU](operations/gpu-temperature-r757.ru.md) | — | Два разных порога: мягкий порог балансера и аппаратный троттлинг карты; где видно оба и какое значение ставить. |
 | **Runbook tools/tool_calls** | [RU](operations/runbook-tools.ru.md) | [EN](operations/runbook-tools.md) | Пошаговый дебаг сбросов tool_calls (сценарии A-G). |
 | **Ре-экспорт GGUF** | [RU](operations/gguf-reexport.ru.md) | — | Опциональный модуль (профиль `reexport`): зачем отдельный сервис, API, как WebUI узнаёт о нём, живой прогон на Inkling-2. |
 

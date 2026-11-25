@@ -282,13 +282,30 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 					// ожидания, поэтому отдаём 404 немедленно — как это делают
 					// handler-пути (model_missing_r119).
 					if isModelMissingLoadError(loadErr) {
+						// R757 (2026-11-25): в ответе — узлы, где файл модели
+						// ЕСТЬ. Живой разбор второго стенда: клиент получил 404
+						// «model not found in ./models» по узлу A10-126, тогда
+						// как файл лежал на cppworker-gpu-bundled-agent, и
+						// оператор искал причину в логах воркера. Разные факты
+						// («нет на этом узле» и «нет в кластере») обязаны
+						// выглядеть по-разному прямо в ответе.
+						nodesWithFile := p.backendsWithModelOnDiskR757(model)
 						logger.Get().Infow("proxyRequest: модель отсутствует — 404 без ожидания (R325.2)",
-							"backend", backendID, "model", model, "error", loadErr)
-						writeJSON(w, http.StatusNotFound, map[string]interface{}{
+							"backend", backendID, "model", model, "error", loadErr,
+							"nodes_with_file", nodesWithFile)
+						resp := map[string]interface{}{
 							"error": fmt.Sprintf("model %q not found on backend: %v", model, loadErr),
 							"model": model,
 							"code":  "model_not_found",
-						})
+						}
+						if len(nodesWithFile) > 0 {
+							resp["nodesWithFile"] = nodesWithFile
+							resp["hint"] = fmt.Sprintf(
+								"файл модели есть на узлах %v — выбор узла обязан был отдать один из них; "+
+									"обновите каталог моделей (GET /api/v1/models/catalog) и повторите запрос",
+								nodesWithFile)
+						}
+						writeJSON(w, http.StatusNotFound, resp)
 						return nil
 					}
 					// R325.3: воркер недоступен — ждать нечего (см. helper).

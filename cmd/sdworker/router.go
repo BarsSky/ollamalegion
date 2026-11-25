@@ -68,6 +68,10 @@ func (a *App) setupRouter() http.Handler {
 
 	// --- Наш нативный контракт ---
 	mux.HandleFunc("/api/image/capabilities", a.handleCapabilities)
+	// R755: матрица форматов «что движок читает» (GGUF/safetensors/sft/ckpt × роль
+	// × семейство) + предупреждения по имени (MLX-квант). Данные, а не вёрстка:
+	// тот же ответ нужен странице HF, панели файлов группы и агенту.
+	mux.HandleFunc("/api/image/formats", a.handleImageFormats)
 	mux.HandleFunc("/api/image/models", a.handleListModels)
 	mux.HandleFunc("/api/image/models/load", a.handleLoadModel)
 	mux.HandleFunc("/api/image/models/unload", a.handleUnloadModel)

@@ -223,6 +223,12 @@
         // onlyMissing — одноразовый режим startBundle: отправить ТОЛЬКО те
         // отмеченные файлы, которых нет на узле (кнопка «Скачать недостающее»).
         onlyMissing: false,
+        // ==== R755 (2026-11-25): матрица форматов (что движок читает) ====
+        // formatMatrices — family → ответ GET .../formats. Кэш на страницу:
+        // правила статические, а нужны на каждую строку файла. formatLoading —
+        // family → true, чтобы не дёргать воркер на каждый рендер.
+        formatMatrices: {},
+        formatLoading: {},
         busy: false
     };
 
@@ -801,6 +807,78 @@
     }
 
     /**
+     * formatFamily — для какого семейства спрашивать матрицу форматов.
+     *
+     * План репозитория знает семейство точнее селектора (он читает заголовок
+     * главного файла), поэтому приоритет у plan.family; селектор — запасной путь,
+     * пока паспорт не приехал.
+     */
+    function formatFamily() {
+        if (state.plan && state.plan.family) return String(state.plan.family);
+        return String(state.bundleFamily || '');
+    }
+
+    /** formatMatrix — матрица форматов текущего семейства (или null). */
+    function formatMatrix() {
+        var m = state.formatMatrices[formatFamily()];
+        return (m && !m.error) ? m : null;
+    }
+
+    /**
+     * ensureFormatMatrix — один запрос на семейство.
+     *
+     * Сеть не блокирует рендер: сначала рисуем без бейджей (probe-бейджи R696
+     * остаются), после ответа перерисовываем список файлов.
+     */
+    function ensureFormatMatrix(family) {
+        var key = String(family || '');
+        if (Object.prototype.hasOwnProperty.call(state.formatMatrices, key)) return;
+        if (state.formatLoading[key]) return;
+        if (!backendId()) return;
+        state.formatLoading[key] = true;
+        request(backendUrl('formats?family=' + encodeURIComponent(key)), { timeoutMs: TIMEOUT_CONTROL_MS })
+            .then(function (data) {
+                state.formatMatrices[key] = data || { error: true };
+            })
+            .catch(function (e) {
+                // Ошибка сети: бейджи не рисуем, probe-проверка остаётся источником
+                // правды. Повторять на каждый рендер нельзя (шторм запросов).
+                state.formatMatrices[key] = { error: true, message: (e && e.message) || String(e) };
+            })
+            .then(function () {
+                state.formatLoading[key] = false;
+                if (state.selectedRepo) renderFiles();
+            });
+    }
+
+    /** formatBadgeHtml — бейдж формата для файла (пусто, пока матрицы нет). */
+    function formatBadgeHtml(path, role) {
+        var api = window.ImageFormatBadges;
+        var m = formatMatrix();
+        if (!api || !m) return '';
+        return ' ' + api.badgeHtml(m, path, role);
+    }
+
+    /** formatSummaryHtml — строка «Форматы: …» под паспортом репозитория. */
+    function formatSummaryHtml() {
+        var api = window.ImageFormatBadges;
+        var m = formatMatrix();
+        if (!api || !m) return '';
+        var text = api.summaryText(m);
+        if (!text) return '';
+        return '<div class="ifb-summary">' + escapeHtml(text) + '</div>';
+    }
+
+    /** formatMlxWarningHtml — предупреждение о MLX-файлах в репозитории. */
+    function formatMlxWarningHtml(files) {
+        var api = window.ImageFormatBadges;
+        var m = formatMatrix();
+        if (!api || !m) return '';
+        var names = (files || []).map(filePath);
+        return api.mlxWarningHtml(m, names);
+    }
+
+    /**
      * DIT_FAMILIES — семейства, которые движок грузит ТОЛЬКО через
      * --diffusion-model (pkg/types/image_model.go: diTFamilies). Держим список
      * здесь ещё и для UI-подсказки: если пред-проверка говорит «DiT», а в
@@ -986,6 +1064,9 @@
             renderSelectionSummary();
             return;
         }
+        // R755: матрица форматов (что движок читает в этой роли) — один запрос на
+        // семейство; бейджи рисуются, когда ответ приедет, и не блокируют список.
+        ensureFormatMatrix(formatFamily());
         // Предупреждение о неполном наборе (DiT-семейства), вердикт репозитория и
         // расхождение «DiT-файл, а в профиле all-in-one семейство».
         var hint = ditHint(files, state.selectedRepo);
@@ -1009,6 +1090,10 @@
         // действий. Заменяет собой прежнюю догадку по автору репозитория: вердикт
         // теперь считается по факту (заголовок главного файла + состав файлов).
         header += planHtml(state.plan);
+        // R755: «Форматы: …» — ответ на вопрос «примет ли это движок» ДО
+        // скачивания, и предупреждение, если в репозитории есть MLX-кванты.
+        header += formatSummaryHtml();
+        header += formatMlxWarningHtml(files);
         if (mainProbe && mainProbe.verdict === 'supported') {
             header += '<div style="margin-bottom:8px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
                 escapeHtml(t('imageModels.main_file_verdict', 'Главный файл')) + ': ' + compatBadgeHtml(probeBadge(mainProbe), '') + '</div>';
@@ -1048,6 +1133,9 @@
             var roleHint = suggested && suggested !== role
                 ? ' <span style="font-size:var(--font-size-xs);color:var(--text-muted);">(' + escapeHtml(t('imageModels.hf_suggested', 'предложено')) + ': ' + escapeHtml(roleLabel(suggested)) + ')</span>'
                 : '';
+            // R755: бейдж формата — «примет ли движок этот файл в выбранной роли»
+            // (GGUF/нужен GGUF/MLX…). Точный вердикт по содержимому даёт probe ниже.
+            var formatBadge = formatBadgeHtml(path, role);
             var compat = '';
             if (probe) {
                 compat = compatBadgeHtml(probeBadge(probe), isWeight ? path : '');
@@ -1064,7 +1152,7 @@
                 '</label>' +
                 '<select class="form-control" data-imh-role="' + escapeHtml(path) + '" style="max-width:200px;font-size:var(--font-size-xs);">' +
                     roleOptions(role) +
-                '</select>' + roleHint + detectedHint +
+                '</select>' + roleHint + detectedHint + formatBadge +
                 compat +
                 '<span class="gguf-file-size">' + escapeHtml(formatBytes(fileSize(f))) + '</span>' +
             '</div>';
@@ -1081,7 +1169,7 @@
                 '</span>' +
                 '<span style="font-size:var(--font-size-xs);color:var(--text-muted);">' +
                     escapeHtml(roleLabel(c.role)) + ' · ' + escapeHtml(String(c.repo || '')) +
-                '</span>' +
+                '</span>' + formatBadgeHtml(c.filename, c.role) +
                 '<span class="gguf-file-size">' + escapeHtml(c.sizeBytes ? formatBytes(c.sizeBytes) : '-') + '</span>' +
                 '<button class="btn btn-secondary btn-sm" data-icom-remove="' + escapeHtml(String(c.role || '')) + '"' +
                     ' title="' + escapeHtml(t('imageModels.component_remove_hint', 'Убрать этот компонент из набора')) + '">' +

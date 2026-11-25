@@ -2189,6 +2189,29 @@ window.I18N_RU = {
   "imageModels.files_no_source": "источник неизвестен: в profile.json нет repo — добавьте файл как компонент",
   "imageModels.files_busy": "Дождитесь окончания текущей операции",
   "imageModels.files_empty": "В профиле нет файлов",
+  // ==== R755 (2026-11-25): бейджи форматов (что движок читает) ====
+  // Правила приходят с воркера (GET /api/image/formats): GGUF читается всегда,
+  // VAE/энкодеры в safetensors читаются, safetensors-диффузия Qwen-Image — нет
+  // (нужен GGUF), MLX-кванты — не читаются вовсе.
+  "imageModels.format_chip_reads": "читается",
+  "imageModels.format_chip_needs_gguf": "нужен GGUF",
+  "imageModels.format_chip_warn": "проверьте формат",
+  "imageModels.format_chip_unsupported": "не читается",
+  "imageModels.format_chip_unknown": "формат не проверен",
+  "imageModels.format_chip_mlx": "MLX-квант: не читается",
+  "imageModels.format_hint_reads": "Движок читает этот формат в этой роли.",
+  "imageModels.format_hint_needs_gguf": "В этой роли движок читает только GGUF: возьмите GGUF-квант этого файла.",
+  "imageModels.format_hint_warn": "Формат допустим не всегда: нажмите «Проверить» — воркер прочитает заголовок.",
+  "imageModels.format_hint_unsupported": "Движок этот файл не прочитает. Для diffusion нужен GGUF; VAE и энкодеры в safetensors допустимы.",
+  "imageModels.format_hint_unknown": "Данных о формате нет: прочитайте заголовок кнопкой «Проверить».",
+  "imageModels.format_hint_mlx": "MLX-квант safetensors (веса U32) движок не читает. Для diffusion возьмите GGUF; VAE и энкодеры в safetensors допустимы.",
+  "imageModels.format_summary_prefix": "Форматы",
+  "imageModels.format_summary_gguf": "GGUF - читается",
+  "imageModels.format_summary_safetensors_allinone": "safetensors all-in-one - читается",
+  "imageModels.format_summary_safetensors_needs_gguf": "safetensors diffusion - нужен GGUF",
+  "imageModels.format_summary_safetensors_warn": "safetensors diffusion - решает заголовок («Проверить»)",
+  "imageModels.format_summary_components": "VAE/энкодеры в safetensors - читаются",
+  "imageModels.format_mlx_warning": "В наборе есть файлы с «MLX» в имени: это MLX-квант safetensors (веса U32), движок его не читает. Для diffusion возьмите GGUF; VAE и энкодеры в safetensors допустимы.",
   // ==== R696 (2026-11-23): липкая панель выбора и вердикт набора ====
   // Живой дефект: в репозитории 16+ файлов список уходил за кромку окна, кнопка
   // скачивания была в отдельной карточке ниже, и не было видно, что скачается

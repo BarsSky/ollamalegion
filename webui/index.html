@@ -2822,6 +2822,11 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script defer src="js/modules/virtual-models-page.js?v=R595"></script>
     <script defer src="js/modules/image-page.js?v=R425"></script>
     <script defer src="js/modules/image-models-page.js?v=R425"></script>
+    <!-- R755 (2026-11-25): бейджи форматов файлов (GGUF/safetensors × роль ×
+         семейство, MLX-предупреждение). Правила приходят с воркера
+         (GET /api/image/formats), здесь — только отрисовка кодов. Грузится ДО
+         image-models-hf.js / image-model-files.js: обе панели его вызывают. -->
+    <script defer src="js/modules/image-format-badges.js?v=R755"></script>
     <!-- R-Image Phase 9: табы «HuggingFace» и «Загрузки» страницы «Image-модели»
          (поиск репо, файлы с suggestedRole, bundle-загрузка, история/остатки). -->
     <script defer src="js/modules/image-models-hf.js?v=R425"></script>

@@ -2145,6 +2145,63 @@
 }
 
 /* ============================================================
+   R755 (2026-11-25): бейджи форматов файлов («что движок читает»).
+   Зелёный - читается, жёлтый - решает заголовок, оранжевый - нужен GGUF,
+   красный - не читается (MLX-квант). Цвета только токенами темы.
+   ============================================================ */
+.ifb-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    margin-left: 6px;
+    font-size: var(--font-size-xs);
+    font-family: var(--font-family-mono);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    white-space: nowrap;
+    vertical-align: middle;
+}
+
+.ifb-badge.ifb-ok {
+    color: var(--success, #5cb85c);
+    border-color: var(--success, #5cb85c);
+}
+
+.ifb-badge.ifb-needs {
+    color: var(--warning, #e0a030);
+    border-color: var(--warning, #e0a030);
+}
+
+.ifb-badge.ifb-warn,
+.ifb-badge.ifb-unknown {
+    color: var(--text-muted);
+}
+
+.ifb-badge.ifb-bad {
+    color: var(--danger, #d9534f);
+    border-color: var(--danger, #d9534f);
+}
+
+.ifb-summary {
+    margin-bottom: 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary, var(--text-muted));
+    white-space: normal;
+}
+
+.ifb-warning {
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    background: var(--bg-secondary, var(--bg-primary));
+    border-left: 3px solid var(--danger, #d9534f);
+    border-radius: var(--radius-sm);
+    white-space: normal;
+}
+
+/* ============================================================
    R751 (2026-11-25): панель файлов image-группы на «Моделях на диске».
    Живой дефект: у оператора не было управления файлами ВНУТРИ группы (только
    «удалить bundle целиком»), а недокачанный/удалённый файл был виден лишь по

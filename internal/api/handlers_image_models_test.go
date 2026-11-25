@@ -73,6 +73,16 @@ func newMockImageWorker() *mockImageWorker {
 			"maxSize":  2048,
 		})
 	})
+	// R755: матрица форматов — алиас /formats на балансере.
+	mux.HandleFunc("/api/image/formats", func(w http.ResponseWriter, r *http.Request) {
+		record(w, r, "/api/image/formats")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"engine":      "stable-diffusion.cpp",
+			"family":      "sd15",
+			"familyKnown": true,
+		})
+	})
 	mux.HandleFunc("/api/image/models/load", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "use POST", http.StatusMethodNotAllowed)
@@ -313,6 +323,23 @@ func TestImageBackendProxy_ModelsAlias(t *testing.T) {
 
 	body, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(body), "z-image-turbo-q3-k")
+}
+
+func TestImageBackendProxy_FormatsAlias_R755(t *testing.T) {
+	mock := newMockImageWorker()
+	defer mock.close()
+
+	server, _ := createImageTestServer(t, mock.server.URL)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/image/backends/img_mock/formats?family=sd15")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, 1, mock.hits("/api/image/formats"))
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "stable-diffusion.cpp")
 }
 
 func TestImageBackendProxy_LoadUnloadAliases(t *testing.T) {

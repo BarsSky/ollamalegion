@@ -220,6 +220,9 @@ func (s *Server) handleImageBackendRoutes(w http.ResponseWriter, r *http.Request
 	aliases := []alias{
 		{http.MethodGet, "models", "/api/image/models"},
 		{http.MethodGet, "capabilities", "/api/image/capabilities"},
+		// R755: матрица форматов «что движок читает» — страница HF и панель
+		// файлов группы рисуют бейджи по ней (данные воркера, не хардкод в JS).
+		{http.MethodGet, "formats", "/api/image/formats"},
 		{http.MethodGet, "models/load/progress", "/api/image/models/load/progress"},
 		{http.MethodPost, "models/load", "/api/image/models/load"},
 		{http.MethodPost, "models/unload", "/api/image/models/unload"},

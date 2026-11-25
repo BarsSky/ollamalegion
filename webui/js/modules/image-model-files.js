@@ -48,7 +48,12 @@
         op: null,          // {file, trackingId, mode}
         poll: null,
         status: '',        // строка прогресса под заголовком
-        busy: false
+        busy: false,
+        // R755: матрица форматов — family → ответ GET .../formats. Кэш на
+        // страницу (правила статические); formatLoading — чтобы не дёргать
+        // воркер на каждый рендер панели.
+        formatMatrices: {},
+        formatLoading: {}
     };
 
     function t(key, fallback, vars) {
@@ -92,6 +97,65 @@
         var api = window.ImageModelsHf && window.ImageModelsHf.pure;
         if (api && typeof api.roleLabel === 'function') return api.roleLabel(role);
         return role || '-';
+    }
+
+    // =====================================================================
+    // R755: бейджи форматов «что движок читает» (GET .../formats)
+    // =====================================================================
+
+    /** modelFamily — семейство текущей группы (для матрицы форматов). */
+    function modelFamily() {
+        return String((state.model && state.model.family) || '');
+    }
+
+    function formatMatrix() {
+        var m = state.formatMatrices[modelFamily()];
+        return (m && !m.error) ? m : null;
+    }
+
+    /** ensureFormatMatrix — один запрос на семейство; рендер не блокирует. */
+    function ensureFormatMatrix() {
+        var key = modelFamily();
+        if (!state.backendId) return;
+        if (Object.prototype.hasOwnProperty.call(state.formatMatrices, key)) return;
+        if (state.formatLoading[key]) return;
+        state.formatLoading[key] = true;
+        request(backendUrl('formats?family=' + encodeURIComponent(key)), { timeoutMs: TIMEOUT_MS })
+            .then(function (data) { state.formatMatrices[key] = data || { error: true }; })
+            .catch(function (e) {
+                state.formatMatrices[key] = { error: true, message: (e && e.message) || String(e) };
+            })
+            .then(function () {
+                state.formatLoading[key] = false;
+                refreshPanel();
+            });
+    }
+
+    /** formatBadge — бейдж формата файла (пусто, пока матрицы нет). */
+    function formatBadge(filename, role) {
+        var api = window.ImageFormatBadges;
+        var m = formatMatrix();
+        if (!api || !m) return '';
+        var html = api.badgeHtml(m, filename, role);
+        return html ? ' ' + html : '';
+    }
+
+    /** formatSummary — строка «Форматы: …» в шапке панели. */
+    function formatSummary() {
+        var api = window.ImageFormatBadges;
+        var m = formatMatrix();
+        if (!api || !m) return '';
+        var text = api.summaryText(m);
+        return text ? '<div class="ifb-summary">' + escapeHtml(text) + '</div>' : '';
+    }
+
+    /** formatMlxWarning — предупреждение о MLX-квантах среди файлов группы. */
+    function formatMlxWarning() {
+        var api = window.ImageFormatBadges;
+        var m = formatMatrix();
+        if (!api || !m) return '';
+        var names = files().map(function (f) { return f.filename; });
+        return api.mlxWarningHtml(m, names);
     }
 
     function apiBase() {
@@ -272,7 +336,7 @@
             : '';
         return '<div class="imf-row" data-imf-row="' + escapeHtml(f.filename) + '">' +
             '<span class="imf-role">' + escapeHtml(f.unregistered ? '-' : roleLabel(f.role)) + '</span>' +
-            '<span class="imf-name">' + escapeHtml(f.filename) + unregHint + sourceHint + '</span>' +
+            '<span class="imf-name">' + escapeHtml(f.filename) + formatBadge(f.filename, f.role) + unregHint + sourceHint + '</span>' +
             '<span class="imf-size">' + escapeHtml(sizeText(f)) + '</span>' +
             '<span class="imf-state ' + st.level + '">' + escapeHtml(st.text) + '</span>' +
             '<span class="imf-actions">' + actionBtns + '</span>' +
@@ -319,6 +383,8 @@
                     escapeHtml(t('imageModels.files_close', 'Свернуть')) + '</button>' +
             '</div>' +
             compatLine() +
+            formatSummary() +
+            formatMlxWarning() +
             summaryHtml() +
             (files().length
                 ? '<div class="imf-list">' + files().map(rowHtml).join('') + '</div>'
@@ -346,6 +412,9 @@
         state.host = el(opts.hostId || 'imModelFilesHost');
         if (!state.host || !state.model) return false;
         state.open = true;
+        // R755: матрица форматов нужна бейджам; запрос один на семейство и не
+        // блокирует отрисовку (при ответе панель перерисуется).
+        ensureFormatMatrix();
         state.host.innerHTML = html();
         if (!state.host.onclick) state.host.onclick = onClick;
         return true;

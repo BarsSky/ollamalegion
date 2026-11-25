@@ -273,6 +273,12 @@ func TestDeleteModelFile_LastFileUnregistersBundle_R751(t *testing.T) {
 	if _, ok := reg.Profile("solo-group"); ok {
 		t.Fatal("модель без файлов осталась в реестре")
 	}
+	// Пустой переименованный каталог НЕ должен появляться «сломанной моделью».
+	for name := range reg.Profiles() {
+		if strings.HasPrefix(name, ".unregistered-") {
+			t.Fatalf("каталог со снятой регистрацией попал в реестр как модель: %q", name)
+		}
+	}
 }
 
 func TestDeleteModelFile_RemovesFileAndProfileEntry_R751(t *testing.T) {

@@ -248,9 +248,17 @@ func (r *Registry) Load() error {
 
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() {
-			names = append(names, e.Name())
+		if !e.IsDir() {
+			continue
 		}
+		// R752: каталоги со снятой регистрацией (.unregistered-*) — не модели.
+		// Без этого после удаления последнего файла (файловый DELETE или
+		// /api/hf/cleanup) реестр видел ПУСТОЙ переименованный каталог и
+		// показывал его как «сломанную» модель без файлов.
+		if strings.HasPrefix(e.Name(), hfBundleDirPrefix) {
+			continue
+		}
+		names = append(names, e.Name())
 	}
 	sort.Strings(names)
 

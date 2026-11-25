@@ -182,10 +182,10 @@ type ModelFileInstall struct {
 	Filename    string `json:"filename"` // basename в каталоге группы
 	Repo        string `json:"repo"`
 	Revision    string `json:"revision"`
-	SizeBytes   int64  `json:"sizeBytes"`
-	Replace     bool   `json:"replace,omitempty"`
 	TrackingID  string `json:"trackingId,omitempty"`
 	ProgressURL string `json:"progressUrl,omitempty"`
+	SizeBytes   int64  `json:"sizeBytes"`
+	Replace     bool   `json:"replace,omitempty"`
 }
 
 // ModelFileTrackingID — идентификатор фоновой загрузки файла (его же принимает
@@ -283,17 +283,15 @@ func (m *HFManager) StartModelFileInstall(req ModelFileInstallRequest) (*ModelFi
 		}
 	}
 
-	// Что уже есть у роли на диске.
+	// Что уже есть у роли на диске (только PRESENT-файлы: отсутствующие записи
+	// роли не должны блокировать докачку — replace=false как раз для этого).
 	var rolePresent []types.ImageModelFile
-	var roleMissing []types.ImageModelFile
 	for _, f := range profile.Files {
 		if f.Role != role || filepath.Base(f.Filename) == base {
 			continue
 		}
 		if present, _ := fileDiskState(fileLocalPath(f, dir)); present {
 			rolePresent = append(rolePresent, f)
-		} else {
-			roleMissing = append(roleMissing, f)
 		}
 	}
 	targetPresent, targetSize := fileDiskState(targetPath)
@@ -483,8 +481,8 @@ type ModelFileDelete struct {
 	Status        string   `json:"status"` // deleted | noop
 	Bundle        string   `json:"bundle"`
 	Filename      string   `json:"filename"`
-	BytesFreed    int64    `json:"bytesFreed"`
 	RemovedRoles  []string `json:"removedRoles,omitempty"`
+	BytesFreed    int64    `json:"bytesFreed"`
 	ProfileChange bool     `json:"profileChanged"`
 }
 

@@ -193,37 +193,29 @@ func TestModelFilesHTTP_InventoryInstallReplaceDelete_R751(t *testing.T) {
 	}
 
 	// 5. Отказы кодами.
-	cases := []struct {
-		name   string
-		method string
-		path   string
-		body   map[string]any
-		want   int
-		code   string
-	}{
-		{"unknown role", http.MethodPost, "/api/image/models/qwen-edit-2511/files",
-			map[string]any{"role": "bogus", "repo": repo, "filename": "vae/qwen_image_vae.safetensors"},
-			http.StatusBadRequest, sdbackend.CompErrRoleInvalid},
-		{"missing repo", http.MethodPost, "/api/image/models/qwen-edit-2511/files",
-			map[string]any{"role": "vae", "filename": "vae/qwen_image_vae.safetensors"},
-			http.StatusBadRequest, sdbackend.CompErrRepoRequired},
-		{"unknown bundle", http.MethodPost, "/api/image/models/no-such-bundle/files",
-			map[string]any{"role": "vae", "repo": repo, "filename": "vae/qwen_image_vae.safetensors"},
-			http.StatusNotFound, sdbackend.CompErrBundleNotFound},
-		{"delete profile", http.MethodDelete, "/api/image/models/qwen-edit-2511/files?filename=profile.json",
-			nil, http.StatusBadRequest, sdbackend.ModelFileErrInvalidName},
-		{"delete traversal", http.MethodDelete, "/api/image/models/qwen-edit-2511/files?filename=../evil.gguf",
-			nil, http.StatusBadRequest, sdbackend.ModelFileErrInvalidName},
-	}
-	for _, tc := range cases {
-		code, body := hfDo(t, client, srv.URL, tc.method, tc.path, tc.body, "")
-		if code != tc.want {
-			t.Fatalf("%s: status = %d, want %d (%s)", tc.name, code, tc.want, string(body))
+	expectError := func(name, method, path string, body map[string]any, want int, wantCode string) {
+		t.Helper()
+		code, respBody := hfDo(t, client, srv.URL, method, path, body, "")
+		if code != want {
+			t.Fatalf("%s: status = %d, want %d (%s)", name, code, want, string(respBody))
 		}
-		if got := decodeMap(t, body)["code"]; got != tc.code {
-			t.Fatalf("%s: code = %v, want %q (%s)", tc.name, got, tc.code, string(body))
+		if got := decodeMap(t, respBody)["code"]; got != wantCode {
+			t.Fatalf("%s: code = %v, want %q (%s)", name, got, wantCode, string(respBody))
 		}
 	}
+	expectError("unknown role", http.MethodPost, "/api/image/models/qwen-edit-2511/files",
+		map[string]any{"role": "bogus", "repo": repo, "filename": "vae/qwen_image_vae.safetensors"},
+		http.StatusBadRequest, sdbackend.CompErrRoleInvalid)
+	expectError("missing repo", http.MethodPost, "/api/image/models/qwen-edit-2511/files",
+		map[string]any{"role": "vae", "filename": "vae/qwen_image_vae.safetensors"},
+		http.StatusBadRequest, sdbackend.CompErrRepoRequired)
+	expectError("unknown bundle", http.MethodPost, "/api/image/models/no-such-bundle/files",
+		map[string]any{"role": "vae", "repo": repo, "filename": "vae/qwen_image_vae.safetensors"},
+		http.StatusNotFound, sdbackend.CompErrBundleNotFound)
+	expectError("delete profile", http.MethodDelete, "/api/image/models/qwen-edit-2511/files?filename=profile.json",
+		nil, http.StatusBadRequest, sdbackend.ModelFileErrInvalidName)
+	expectError("delete traversal", http.MethodDelete, "/api/image/models/qwen-edit-2511/files?filename=../evil.gguf",
+		nil, http.StatusBadRequest, sdbackend.ModelFileErrInvalidName)
 
 	code, _ = hfDo(t, client, srv.URL, http.MethodGet, "/api/image/models/qwen-edit-2511/files", nil, "")
 	if code != http.StatusMethodNotAllowed {

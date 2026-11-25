@@ -33,61 +33,114 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 )
 
-// bundleEntry — файл bundle'а: имя, размер и путь на диске.
+// bundleEntry — файл bundle'а: имя (относительный путь внутри bundle), размер и
+// путь на диске.
+//
+// R759 (2026-11-25): ИМЯ — ОТНОСИТЕЛЬНЫЙ ПУТЬ, а не basename.
+//
+// ЖИВАЯ ЖАЛОБА: «не копируется полностью все файлы группы для модели image,
+// когда делается перенос». Причина была здесь: каталог bundle читался ОДНИМ
+// уровнем (`os.ReadDir` + `e.IsDir() → continue`), поэтому файлы во вложенных
+// каталогах (например `split_files/diffusion_x.safetensors`, `text_encoders/…`)
+// молча не попадали в tar, а перенос отчитывался успехом. Приёмник получал
+// bundle без части файлов — вердикт совместимости потом честно говорил «не
+// хватает ролей», но причина была в копировании.
 type bundleEntry struct {
 	Name string
 	Path string
 	Size int64
 }
 
-// resolveExportableBundle — каталог bundle'а по имени модели.
+// bundleSkipLog — что именно не поехало и почему (для лога и ответа).
+//
+// «Все файлы» должно быть определимым: скрытые КАТАЛОГИ (`.cache` — служебный
+// каталог загрузчика: замки и метаданные) не переносятся осознанно, и об этом
+// пишется строка, а не молчание.
+type bundleSkipLog struct {
+	HiddenDirs []string
+	Symlinks   []string
+	Unreadable []string
+}
+
+// resolveExportableBundle — каталог bundle'а по имени модели + РЕКУРСИВНЫЙ
+// список файлов.
 //
 // Имя приходит извне, поэтому путь строится ТОЛЬКО от каталога моделей и
 // проверяется на выход за его пределы (никаких «..»).
-func (a *App) resolveExportableBundle(name string) (string, []bundleEntry, int64, error) {
+func (a *App) resolveExportableBundle(name string) (string, []bundleEntry, int64, *bundleSkipLog, error) {
 	modelsDir := strings.TrimSpace(a.svc.Config.ModelsDir)
 	if modelsDir == "" {
-		return "", nil, 0, fmt.Errorf("models directory is not configured")
+		return "", nil, 0, nil, fmt.Errorf("models directory is not configured")
 	}
 	clean := filepath.Base(strings.TrimSpace(name))
 	if clean == "" || clean == "." || clean == string(filepath.Separator) {
-		return "", nil, 0, fmt.Errorf("name is required")
+		return "", nil, 0, nil, fmt.Errorf("name is required")
 	}
 	dir := filepath.Join(modelsDir, clean)
 	if !pathInsideDir(modelsDir, dir) {
-		return "", nil, 0, fmt.Errorf("bundle name escapes the models directory")
+		return "", nil, 0, nil, fmt.Errorf("bundle name escapes the models directory")
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil, 0, fmt.Errorf("bundle %q not found on this worker (known: %s)",
+	if st, statErr := os.Stat(dir); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return "", nil, 0, nil, fmt.Errorf("bundle %q not found on this worker (known: %s)",
 				clean, strings.Join(a.svc.Registry.Names(), ", "))
 		}
-		return "", nil, 0, fmt.Errorf("cannot read bundle %q: %v", clean, err)
+		return "", nil, 0, nil, fmt.Errorf("cannot read bundle %q: %v", clean, statErr)
+	} else if !st.IsDir() {
+		return "", nil, 0, nil, fmt.Errorf("bundle %q is not a directory", clean)
 	}
+
 	var files []bundleEntry
 	var total int64
-	for _, e := range entries {
-		if e.IsDir() {
-			// Вложенные каталоги в bundle не поддерживаются: движку они не нужны,
-			// а tar с ними усложнил бы проверку путей на приёмнике.
-			continue
+	skipped := &bundleSkipLog{}
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			skipped.Unreadable = append(skipped.Unreadable, path)
+			return nil
 		}
-		info, err := e.Info()
-		if err != nil {
-			continue
+		if path == dir {
+			return nil
+		}
+		rel, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel) // в tar пути всегда через «/»
+		if d.IsDir() {
+			// Скрытые каталоги — служебные (`.cache` загрузчика). Пропускаем
+			// целиком и НАЗЫВАЕМ в логе: молчаливый пропуск и был причиной
+			// «скопировалось не всё».
+			if strings.HasPrefix(d.Name(), ".") {
+				skipped.HiddenDirs = append(skipped.HiddenDirs, rel)
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			// Симлинк может указывать куда угодно — не переносим и говорим об этом.
+			skipped.Symlinks = append(skipped.Symlinks, rel)
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil || !info.Mode().IsRegular() {
+			skipped.Unreadable = append(skipped.Unreadable, rel)
+			return nil
 		}
 		files = append(files, bundleEntry{
-			Name: e.Name(),
-			Path: filepath.Join(dir, e.Name()),
+			Name: rel,
+			Path: path,
 			Size: info.Size(),
 		})
 		total += info.Size()
+		return nil
+	})
+	if err != nil {
+		return "", nil, 0, nil, fmt.Errorf("cannot walk bundle %q: %v", clean, err)
 	}
 	if len(files) == 0 {
-		return "", nil, 0, errors.New(i18n.T("sdworker.model_share.bundle_empty", clean))
+		return "", nil, 0, skipped, errors.New(i18n.T("sdworker.model_share.bundle_empty", clean))
 	}
-	return clean, files, total, nil
+	return clean, files, total, skipped, nil
 }
 
 // handleExportBundle — GET/HEAD /api/image/models/export (tar-поток каталога bundle).
@@ -99,10 +152,19 @@ func (a *App) handleExportBundle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "use GET or HEAD")
 		return
 	}
-	name, files, total, err := a.resolveExportableBundle(r.URL.Query().Get("name"))
+	name, files, total, skipped, err := a.resolveExportableBundle(r.URL.Query().Get("name"))
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "bundle_not_found", err.Error())
 		return
+	}
+	if skipped != nil && (len(skipped.HiddenDirs) > 0 || len(skipped.Symlinks) > 0 || len(skipped.Unreadable) > 0) {
+		logger.Get().Infow("bundle export: часть записей каталога не переносится",
+			"bundle", name,
+			"hidden_dirs", strings.Join(skipped.HiddenDirs, ","),
+			"symlinks", strings.Join(skipped.Symlinks, ","),
+			"unreadable", strings.Join(skipped.Unreadable, ","),
+			"files_to_send", len(files),
+			"reason", "служебные каталоги загрузчика и симлинки не входят в bundle-контент")
 	}
 
 	w.Header().Set("Content-Type", "application/x-tar")
@@ -264,9 +326,13 @@ func (a *App) handleImportBundle(w http.ResponseWriter, r *http.Request) {
 
 // extractBundleTar — распаковать tar в dir, вернув сумму байтов файлов и их число.
 //
-// Принимаем ТОЛЬКО обычные файлы верхнего уровня: symlink/hardlink/устройства и
-// любой путь с разделителем отклоняем — иначе чужой tar мог бы писать вне каталога
-// (path traversal). Пустые каталоги игнорируем.
+// R759 (2026-11-25): ВЛОЖЕННЫЕ КАТАЛОГИ РАЗРЕШЕНЫ (относительные пути).
+//
+// Раньше любой путь с разделителем отклонялся, и bundle с вложенными файлами
+// нельзя было ни выгрузить (экспорт их не включал), ни принять. Теперь источник
+// отдаёт относительные пути, а приёмник их воспроизводит — с проверкой, что
+// итоговый путь остаётся ВНУТРИ каталога распаковки (path traversal) и что это
+// обычный файл (симлинки/устройства отклоняются).
 func extractBundleTar(r io.Reader, dir string) (int64, int, error) {
 	if dir == "" {
 		return 0, 0, fmt.Errorf("empty destination")
@@ -287,19 +353,22 @@ func extractBundleTar(r io.Reader, dir string) (int64, int, error) {
 			continue
 		}
 		if hdr.Typeflag == tar.TypeDir {
-			continue
+			continue // каталоги создаются по мере записи файлов
 		}
 		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
 			return written, files, fmt.Errorf("unsupported tar entry %q (type %c)", name, hdr.Typeflag)
 		}
-		if strings.ContainsAny(name, `/\`) || name == ".." || name == "." {
+		clean := cleanBundleEntryName(name)
+		if clean == "" {
 			return written, files, fmt.Errorf("unsafe tar entry %q", name)
 		}
-		clean := filepath.Base(name)
-		if clean != name {
+		dst := filepath.Join(dir, filepath.FromSlash(clean))
+		if !pathInsideDir(dir, dst) || dst == dir {
 			return written, files, fmt.Errorf("unsafe tar entry %q", name)
 		}
-		dst := filepath.Join(dir, clean)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return written, files, err
+		}
 		out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 		if err != nil {
 			return written, files, err
@@ -319,6 +388,36 @@ func extractBundleTar(r io.Reader, dir string) (int64, int, error) {
 		return written, files, errors.New(i18n.T("sdworker.model_share.empty_tar"))
 	}
 	return written, files, nil
+}
+
+// cleanBundleEntryName — безопасное относительное имя записи tar.
+//
+// Возвращает "" для любой записи, которую нельзя принимать: абсолютный путь,
+// «..»-сегмент, буква диска (`C:`), пустое имя, имя из одного «.» или обратные
+// слэши (Windows-разделитель в чужом tar — тоже попытка выйти из каталога).
+// Разрешённые разделители нормализуются в «/».
+func cleanBundleEntryName(name string) string {
+	n := strings.TrimSpace(strings.ReplaceAll(name, `\`, `/`))
+	n = strings.TrimPrefix(n, "./")
+	if n == "" || n == "." {
+		return ""
+	}
+	if strings.HasPrefix(n, "/") || strings.Contains(n, ":") {
+		return "" // абсолютный путь или «C:/…»
+	}
+	parts := strings.Split(n, "/")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		switch p {
+		case "", ".", "..":
+			return ""
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, "/")
 }
 
 // pathInsideDir — true, если path лежит внутри dir (защита от «..» в имени).

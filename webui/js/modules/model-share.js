@@ -1,4 +1,4 @@
-﻿// model-share.js — R89 (2026-10-08): «Поделиться моделью» — перенос модели с
+// model-share.js — R89 (2026-10-08): «Поделиться моделью» — перенос модели с
 // одного бэкенда на другие.
 //
 // ЗАЧЕМ. В кластере несколько машин, и модель обычно лежит только на одной.
@@ -88,6 +88,14 @@
      * переносе могут слегка обгонять «полезную нагрузку» (tar-заголовки), и
      * прогресс-бар, показывающий 100% на ещё идущем переносе, читается как
      * «зависло».
+     *
+     * R759 (2026-11-25): для image-bundle в строке видно СОСТАВ — «файлов N/M».
+     *
+     * Живая жалоба: «не копируется полностью все файлы группы». Раньше строка
+     * показывала только байты, и неполный перенос (меньше файлов при меньшем
+     * объёме) выглядел как нормальное завершение. Теперь балансер отдаёт
+     * totalFiles/filesCopied, а панель называет их прямо: оператор видит «5 из 7»
+     * ещё до того, как пойдёт проверять каталог.
      */
     function targetView(target) {
         var state = String((target && target.state) || 'pending');
@@ -99,7 +107,8 @@
             percent: pct,
             state: state,
             label: stateLabel(state),
-            detail: ''
+            detail: '',
+            files: ''
         };
         if (state === 'running' || state === 'done') {
             var bytes = Number((target && target.bytes) || 0);
@@ -108,9 +117,34 @@
             var speed = formatSpeed(target && target.speedBps);
             if (speed && state === 'running') out.detail += ' · ' + speed;
         }
+        out.files = filesLine(target);
+        if (out.files) {
+            out.detail = out.detail ? (out.detail + ' · ' + out.files) : out.files;
+        }
         if (target && target.note) out.detail = target.note;
         if (target && target.error) out.detail = target.error;
         return out;
+    }
+
+    /**
+     * filesLine — «файлов N/M» для image-bundle (для .gguf пусто).
+     *
+     * Числа приходят из probe источника (totalFiles) и сверки после импорта
+     * (filesCopied). Показываем ТОЛЬКО когда известно ожидаемое число: «файлов
+     * 3/0» было бы хуже, чем ничего.
+     */
+    function filesLine(target) {
+        var total = Number((target && target.totalFiles) || 0);
+        if (!isFinite(total) || total <= 0) return '';
+        var got = Number((target && target.filesCopied) || 0);
+        if (!isFinite(got) || got < 0) got = 0;
+        var state = String((target && target.state) || '');
+        if (state !== 'done' && state !== 'failed') {
+            // Ещё идёт: показываем только ожидание — «сколько уже доехало» до
+            // сверки неизвестно, и врать частичным числом нельзя.
+            return t('share.files_expected', 'файлов: {total}', { total: total });
+        }
+        return t('share.files_count', 'файлов: {got} из {total}', { got: got, total: total });
     }
 
     /** stateLabel — человеческое имя состояния цели. */

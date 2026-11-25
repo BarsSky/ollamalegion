@@ -806,6 +806,9 @@ window.I18N_EN = {
   "share.done": "done",
   "share.skipped": "skipped",
   "share.failed": "failed",
+  // R759: image bundle transfer shows its CONTENTS — "files: 5 of 7".
+  "share.files_expected": "files: {total}",
+  "share.files_count": "files: {got} of {total}",
 
   // clientAccess — the "Client connection" block next to a backend (2026-10-03).
   // The key is the same one the WebUI sends as X-API-Token; we surface it because

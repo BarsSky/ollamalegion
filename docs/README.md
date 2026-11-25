@@ -64,6 +64,7 @@ Run, update and debug a live cluster.
 | **Deployment incidents** | [EN](operations/deployment-troubleshooting.md) | [RU](operations/deployment-troubleshooting.ru.md) | Deployment traps and incident write-ups. |
 | **GPU temperature / throttling** | — | [RU](operations/gpu-temperature-r757.ru.md) | The balancer's soft temperature limit vs the card's hardware throttling: where both are visible and what to set. |
 | **Repeated model answers** | — | [RU](operations/repeated-answers-r758.ru.md) | "The model answers the same thing again" is a client retry; which log lines prove it and what to fix. |
+| **Image bundle transfer** | — | [RU](operations/image-bundle-transfer-r759.ru.md) | A bundle is a directory of several files: what counts as "all files", why copies used to be incomplete, and how completeness is verified. |
 | **Tools/tool_calls runbook** | [EN](operations/runbook-tools.md) | [RU](operations/runbook-tools.ru.md) | Step-by-step debugging of tool-call resets (scenarios A-G). |
 
 ## API and reference

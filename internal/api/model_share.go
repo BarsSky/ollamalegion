@@ -136,51 +136,64 @@ func shareHumanBytes(b int64) string {
 }
 
 // modelShareTarget — одна цель переноса.
+//
+// Порядок полей — под fieldalignment (govet в CI): сначала time.Time (24 байта,
+// содержит указатель), затем строки, затем числа. JSON-теги от порядка не
+// зависят, поэтому контракт с WebUI сохраняется.
 type modelShareTarget struct {
+	StartedAt  time.Time `json:"startedAt,omitempty"`
+	FinishedAt time.Time `json:"finishedAt,omitempty"`
 	BackendID  string    `json:"backendId"`
 	State      string    `json:"state"`
+	Error      string    `json:"error,omitempty"`
+	Note       string    `json:"note,omitempty"`
 	Bytes      int64     `json:"bytes"`
 	Total      int64     `json:"total"`
 	Percent    float64   `json:"percent"`
 	SpeedBps   float64   `json:"speedBps"`
-	StartedAt  time.Time `json:"startedAt,omitempty"`
-	FinishedAt time.Time `json:"finishedAt,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	Note       string    `json:"note,omitempty"`
+	// R759: состав переноса — сколько файлов ожидалось и сколько доехало.
+	// Для image-bundle это и есть ответ на вопрос «все ли файлы группы скопированы».
+	TotalFiles  int `json:"totalFiles,omitempty"`
+	FilesCopied int `json:"filesCopied,omitempty"`
 }
 
 // modelShareJob — задание «перенести <model> с <source> на <targets>».
 type modelShareJob struct {
-	ID         string             `json:"id"`
-	Source     string             `json:"source"`
-	Model      string             `json:"model"`
-	Kind       string             `json:"kind"` // text | image
-	State      string             `json:"state"`
-	Overwrite  bool               `json:"overwrite"`
-	Targets    []modelShareTarget `json:"targets"`
-	Error      string             `json:"error,omitempty"`
-	StartedAt  time.Time          `json:"startedAt"`
-	FinishedAt time.Time          `json:"finishedAt,omitempty"`
-
+	StartedAt  time.Time `json:"startedAt"`
+	FinishedAt time.Time `json:"finishedAt,omitempty"`
+	// cancel — отмена фоновой копии (POST .../cancel).
+	cancel context.CancelFunc
+	Kind   string `json:"kind"` // text | image
+	State  string `json:"state"`
+	Error  string `json:"error,omitempty"`
+	ID     string `json:"id"`
+	Model  string `json:"model"`
 	// Filename — фактическое имя файла у источника (для текстовых моделей имя в
 	// списке и на диске может отличаться регистром/суффиксом).
-	Filename string `json:"filename,omitempty"`
-
+	Filename string             `json:"filename,omitempty"`
+	Source   string             `json:"source"`
+	Targets  []modelShareTarget `json:"targets"`
+	// ExpectedFiles / SizeBytes — снимок состава источника (R759).
+	//
+	// У image-bundle «перенеслось» значит «все файлы группы», а не «суммарный
+	// размер совпал». Числа фиксирует probe один раз; они уходят приёмнику в
+	// параметрах `files`/`bytes` и сверяются с фактом после импорта.
+	ExpectedFiles int   `json:"expectedFiles,omitempty"`
+	SizeBytes     int64 `json:"sizeBytes,omitempty"`
 	// mu защищает изменяемые поля от гонки между горутиной копирования и
 	// HTTP-хендлером прогресса. Без него JSON-ответ мог быть «рваным»
 	// (половина целей из старого состояния), а `go test -race` падал.
-	mu sync.Mutex
-
-	cancel context.CancelFunc
+	mu        sync.Mutex
+	Overwrite bool `json:"overwrite"`
 }
 
 // modelShareManager — реестр заданий переноса.
 type modelShareManager struct {
-	mu      sync.Mutex
 	jobs    map[string]*modelShareJob
 	order   []string // порядок создания (для списка)
 	seq     int64
 	maxKept int
+	mu      sync.Mutex
 }
 
 func newModelShareManager() *modelShareManager {
@@ -395,7 +408,7 @@ func (s *Server) runModelShare(ctx context.Context, job *modelShareJob) {
 	// прогресс-бару. Ошибка здесь означает, что переносить нечего: помечаем
 	// задание и каждую цель отказом с одной и той же причиной (иначе цели
 	// остались бы «pending» и UI показывал бы вечное ожидание).
-	total, filename, err := s.probeShareSource(ctx, job)
+	total, filename, fileCount, err := s.probeShareSource(ctx, job)
 	if err != nil {
 		job.mu.Lock()
 		job.State = shareStateFailed
@@ -412,8 +425,11 @@ func (s *Server) runModelShare(ctx context.Context, job *modelShareJob) {
 	}
 	job.mu.Lock()
 	job.Filename = filename
+	job.ExpectedFiles = fileCount
+	job.SizeBytes = total
 	for i := range job.Targets {
 		job.Targets[i].Total = total
+		job.Targets[i].TotalFiles = fileCount
 	}
 	job.mu.Unlock()
 
@@ -506,8 +522,36 @@ func (s *Server) shareToOne(ctx context.Context, job *modelShareJob, idx int) {
 		job.mu.Unlock()
 		return
 	}
+	job.mu.Unlock()
+
+	// R759 (2026-11-25): СВЕРКА СОСТАВА ПОСЛЕ ИМПОРТА.
+	//
+	// Приёмник уже проверил `bytes`/`files` из параметров, но это его слово о
+	// принятом потоке. Здесь балансер сам спрашивает у приёмника HEAD экспорта и
+	// сравнивает ЧИСЛО ФАЙЛОВ и размер с источником: «перенеслось» для
+	// image-bundle значит «все файлы группы на месте», а не «поток закрылся».
+	ok, gotFiles, gotBytes, verifyErr := s.verifyShareTargetR759(ctx, job, backendID)
+	job.mu.Lock()
+	if !ok {
+		job.Targets[idx].State = shareTargetFailed
+		job.Targets[idx].Error = verifyErr
+		job.Targets[idx].FilesCopied = gotFiles
+		job.Targets[idx].Note = i18n.T("api.model_share.verify_failed_note")
+		job.mu.Unlock()
+		if log := logger.Get(); log != nil {
+			log.Errorw("model share: состав на приёмнике не совпал с источником",
+				"job", job.ID, "source", job.Source, "target", backendID, "model", job.Model,
+				"kind", job.Kind, "got_files", gotFiles, "got_bytes", gotBytes,
+				"want_files", job.ExpectedFiles, "want_bytes", job.SizeBytes,
+				"error", verifyErr)
+		}
+		return
+	}
 	job.Targets[idx].State = shareTargetDone
 	job.Targets[idx].Percent = 100
+	if gotFiles > 0 {
+		job.Targets[idx].FilesCopied = gotFiles
+	}
 	job.mu.Unlock()
 }
 
@@ -573,12 +617,12 @@ func (s *Server) streamModel(ctx context.Context, job *modelShareJob, idx int, s
 // Обновляем не на каждый Read (их десятки тысяч): по байтам и по времени —
 // иначе прогресс-бар дёргается, а мьютекс задания становится горячей точкой.
 type shareProgressReader struct {
+	lastEmit time.Time
+	started  time.Time
 	r        io.Reader
 	job      *modelShareJob
 	idx      int
 	n        int64
-	lastEmit time.Time
-	started  time.Time
 }
 
 func (p *shareProgressReader) Read(b []byte) (int, error) {
@@ -606,8 +650,17 @@ func (p *shareProgressReader) Read(b []byte) (int, error) {
 	return n, err
 }
 
-// probeShareSource — HEAD источника: полный размер и фактическое имя файла.
-func (s *Server) probeShareSource(ctx context.Context, job *modelShareJob) (int64, string, error) {
+// probeShareSource — HEAD источника: полный размер, фактическое имя файла и
+// число файлов (у image-bundle — состав группы).
+//
+// R759 (2026-11-25): ЧИСЛО ФАЙЛОВ — часть контракта, а не «полезная нагрузка».
+//
+// Живая жалоба: «не копируется полностью все файлы группы для модели image».
+// Размер (X-Bundle-Bytes) probe уже знал, но число файлов (X-Bundle-FileCount)
+// терял, а приёмнику его никто не передавал — поэтому неполный bundle (меньше
+// файлов при том же суммарном размере его части) принимался как успешный
+// перенос. Теперь число файлов доезжает до приёмника и сверяется после импорта.
+func (s *Server) probeShareSource(ctx context.Context, job *modelShareJob) (int64, string, int, error) {
 	var path string
 	switch job.Kind {
 	case "image":
@@ -617,35 +670,47 @@ func (s *Server) probeShareSource(ctx context.Context, job *modelShareJob) (int6
 	}
 	base, err := s.shareWorkerBaseURL(job.Source, job.Kind)
 	if err != nil {
-		return 0, "", err
+		return 0, "", 0, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, base+path, nil)
 	if err != nil {
-		return 0, "", err
+		return 0, "", 0, err
 	}
 	s.addWorkerAuth(req, job.Source, job.Kind)
 	resp, err := s.shareHTTPClient().Do(req)
 	if err != nil {
-		return 0, "", fmt.Errorf("%s: %w", i18n.T("api.model_share.source_unreachable", job.Source), err)
+		return 0, "", 0, fmt.Errorf("%s: %w", i18n.T("api.model_share.source_unreachable", job.Source), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return 0, "", fmt.Errorf("%s", i18n.T("api.model_share.source_model_missing",
+		return 0, "", 0, fmt.Errorf("%s", i18n.T("api.model_share.source_model_missing",
 			job.Source, job.Model, strings.TrimSpace(string(body))))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return 0, "", fmt.Errorf("%s", i18n.T("api.model_share.source_size_http_status", job.Source, resp.StatusCode))
+		return 0, "", 0, fmt.Errorf("%s", i18n.T("api.model_share.source_size_http_status", job.Source, resp.StatusCode))
 	}
 	total := resp.ContentLength
 	if n := headerInt64(resp.Header, "X-Bundle-Bytes"); n > 0 {
 		total = n
 	}
+	fileCount := 0
+	if n := headerInt64(resp.Header, "X-Bundle-FileCount"); n > 0 {
+		fileCount = int(n)
+	}
 	filename := strings.TrimSpace(resp.Header.Get("X-Model-Filename"))
-	return total, filename, nil
+	return total, filename, fileCount, nil
 }
 
 // shareEndpointURLs — URL источника (GET) и приёмника (POST) для этого задания.
+//
+// R759 (2026-11-25): ПРИЁМНИКУ ПЕРЕДАЁТСЯ ОЖИДАЕМЫЙ СОСТАВ.
+//
+// Приёмник умеет проверять `bytes`/`files` (или `size` для одного .gguf) и
+// отклонять неполный поток, но балансер эти параметры не передавал — то есть
+// проверка существовала и не использовалась. Живая жалоба («скопировались не
+// все файлы группы») — ровно про этот случай: перенос считался успешным, хотя
+// файлов доехало меньше.
 func (s *Server) shareEndpointURLs(job *modelShareJob, targetID string) (string, string, error) {
 	srcBase, err := s.shareWorkerBaseURL(job.Source, job.Kind)
 	if err != nil {
@@ -655,9 +720,36 @@ func (s *Server) shareEndpointURLs(job *modelShareJob, targetID string) (string,
 	if err != nil {
 		return "", "", err
 	}
+	// Ожидаемые числа берём из снимка задания (total/expectedFiles), чтобы URL и
+	// прогресс считались по ОДНОМУ источнику правды.
+	job.mu.Lock()
+	total, files, targetIdx := int64(0), 0, -1
+	for i := range job.Targets {
+		if job.Targets[i].BackendID == targetID {
+			targetIdx = i
+			break
+		}
+	}
+	if targetIdx >= 0 {
+		total, files = job.Targets[targetIdx].Total, job.Targets[targetIdx].TotalFiles
+	}
+	if total <= 0 {
+		total = job.SizeBytes
+	}
+	if files <= 0 {
+		files = job.ExpectedFiles
+	}
+	job.mu.Unlock()
+
 	if job.Kind == "image" {
 		src := srcBase + "/api/image/models/export?name=" + urlQueryEscape(job.Model)
 		q := "?name=" + urlQueryEscape(job.Model)
+		if total > 0 {
+			q += "&bytes=" + strconv.FormatInt(total, 10)
+		}
+		if files > 0 {
+			q += "&files=" + strconv.Itoa(files)
+		}
 		if job.Overwrite {
 			q += "&overwrite=1"
 		}
@@ -669,10 +761,73 @@ func (s *Server) shareEndpointURLs(job *modelShareJob, targetID string) (string,
 	}
 	src := srcBase + "/api/models/export?name=" + urlQueryEscape(job.Model)
 	q := "?filename=" + urlQueryEscape(name)
+	if total > 0 {
+		q += "&size=" + strconv.FormatInt(total, 10)
+	}
 	if job.Overwrite {
 		q += "&overwrite=1"
 	}
 	return src, dstBase + "/api/models/import" + q, nil
+}
+
+// verifyShareTargetR759 — сверка состава на приёмнике ПОСЛЕ импорта.
+//
+// Зачем после, а не только в параметрах: параметры проверяет приёмник, но это
+// его слово. Здесь балансер сам спрашивает у приёмника HEAD экспорта и сравнивает
+// число файлов и суммарный размер с источником — то есть проверяет результат, а
+// не намерение.
+//
+// Возвращает (ok, gotFiles, gotBytes, errText). Если приёмник не умеет HEAD
+// экспорта для этого вида (или ответ не 200), сверка НЕ блокирует перенос:
+// отсутствие проверки — не повод объявлять успех ошибкой (см. тот же принцип в
+// shareTargetDiskShortfall).
+func (s *Server) verifyShareTargetR759(ctx context.Context, job *modelShareJob, backendID string) (bool, int, int64, string) {
+	base, err := s.shareWorkerBaseURL(backendID, job.Kind)
+	if err != nil {
+		return true, 0, 0, ""
+	}
+	var path string
+	switch job.Kind {
+	case "image":
+		path = "/api/image/models/export?name=" + urlQueryEscape(job.Model)
+	default:
+		path = "/api/models/export?name=" + urlQueryEscape(job.Model)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, base+path, nil)
+	if err != nil {
+		return true, 0, 0, ""
+	}
+	s.addWorkerAuth(req, backendID, job.Kind)
+	resp, err := s.shareHTTPClient().Do(req)
+	if err != nil {
+		return true, 0, 0, ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return true, 0, 0, ""
+	}
+	gotBytes := resp.ContentLength
+	if n := headerInt64(resp.Header, "X-Bundle-Bytes"); n > 0 {
+		gotBytes = n
+	}
+	gotFiles := 0
+	if n := headerInt64(resp.Header, "X-Bundle-FileCount"); n > 0 {
+		gotFiles = int(n)
+	}
+
+	job.mu.Lock()
+	wantBytes, wantFiles := job.SizeBytes, job.ExpectedFiles
+	job.mu.Unlock()
+
+	// Сверяем только то, что известно с ОБЕИХ сторон.
+	if wantFiles > 0 && gotFiles > 0 && gotFiles != wantFiles {
+		return false, gotFiles, gotBytes, i18n.T("api.model_share.verify_files_mismatch", gotFiles, wantFiles)
+	}
+	if wantBytes > 0 && gotBytes > 0 && gotBytes != wantBytes {
+		return false, gotFiles, gotBytes, i18n.T("api.model_share.verify_bytes_mismatch",
+			shareHumanBytes(gotBytes), shareHumanBytes(wantBytes))
+	}
+	return true, gotFiles, gotBytes, ""
 }
 
 // shareWorkerBaseURL — базовый URL воркера бэкенда (по типу модели-переноса).

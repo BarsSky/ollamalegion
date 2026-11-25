@@ -106,6 +106,25 @@ check('targetView: пустая/битая цель не роняет отрис
     assert.strictEqual(P.targetView({ state: 'running', percent: NaN }).percent, 0);
 });
 
+// R759 (2026-11-25): «не копируется полностью все файлы группы» — состав виден.
+check('targetView: image-bundle показывает состав «файлов N из M»', function () {
+    const done = P.targetView({ state: 'done', totalFiles: 7, filesCopied: 7 });
+    assert.ok(done.files.indexOf('7') !== -1, 'нет состава: ' + done.files);
+    assert.ok(done.detail.indexOf('файлов') !== -1, 'состав не попал в строку деталей: ' + done.detail);
+
+    const partial = P.targetView({ state: 'failed', totalFiles: 7, filesCopied: 5, error: 'на приёмнике 5 файлов вместо 7' });
+    assert.ok(partial.files.indexOf('5') !== -1 && partial.files.indexOf('7') !== -1,
+        'неполный состав не назван: ' + partial.files);
+
+    const running = P.targetView({ state: 'running', totalFiles: 7, percent: 30 });
+    assert.ok(running.files.indexOf('7') !== -1, 'ожидаемое число файлов не показано: ' + running.files);
+    assert.ok(running.files.indexOf('из') === -1,
+        'до сверки нельзя писать «из»: сколько доехало — неизвестно (' + running.files + ')');
+
+    // Для одиночного .gguf состава нет — и выдумывать «файлов: 0» нельзя.
+    assert.strictEqual(P.targetView({ state: 'done', totalFiles: 0 }).files, '');
+});
+
 check('jobFinished: активным считается только running', function () {
     assert.strictEqual(P.jobFinished({ state: 'running' }), false);
     ['done', 'partial', 'failed', 'canceled'].forEach(function (s) {

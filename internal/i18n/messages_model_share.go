@@ -67,6 +67,25 @@ var messagesAPI = map[string]map[Lang]string{
 		RU: "перенос не начат: не хватает места на диске приёмника",
 		EN: "transfer not started: the receiver does not have enough disk space",
 	},
+	// R759 (2026-11-25): сверка состава ПОСЛЕ импорта.
+	//
+	// Живая жалоба: «не копируется полностью все файлы группы для модели image».
+	// Приёмник мог принять поток и отчитаться успехом, а файлов доехало меньше
+	// (поток закрылся на границе файла). Эти сообщения называет балансер, когда
+	// сам сравнил состав у приёмника с источником, — с числами, чтобы оператор
+	// видел, чего именно не хватило.
+	"api.model_share.verify_files_mismatch": {
+		RU: "на приёмнике %d файлов вместо %d — перенос неполный, повторите с перезаписью",
+		EN: "the receiver has %d files instead of %d - the transfer is incomplete, retry with overwrite",
+	},
+	"api.model_share.verify_bytes_mismatch": {
+		RU: "на приёмнике %s вместо %s — перенос неполный, повторите с перезаписью",
+		EN: "the receiver has %s instead of %s - the transfer is incomplete, retry with overwrite",
+	},
+	"api.model_share.verify_failed_note": {
+		RU: "состав на приёмнике не совпал с источником: файлы могли доехать не все",
+		EN: "the receiver's contents do not match the source: some files may be missing",
+	},
 	"api.model_share.source_failed": {
 		RU: "источник %s не отдал модель",
 		EN: "source %s did not return the model",

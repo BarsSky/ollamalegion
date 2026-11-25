@@ -814,8 +814,15 @@
      * пока паспорт не приехал.
      */
     function formatFamily() {
-        if (state.plan && state.plan.family) return String(state.plan.family);
-        return String(state.bundleFamily || '');
+        var pf = (state.plan && state.plan.family) ? String(state.plan.family) : '';
+        if (pf && pf !== 'other') return pf;
+        var bf = String(state.bundleFamily || '');
+        // sd15 — ДЕФОЛТ селекта, а не факт о репозитории. Пока семейство не
+        // выбрал оператор (familyManual) и план его не определил, матрица должна
+        // быть консервативной: иначе для Qwen-репозитория показывалось бы
+        // «safetensors all-in-one читается» из матрицы SD1.5.
+        if (bf && (state.familyManual || bf !== 'sd15')) return bf;
+        return '';
     }
 
     /** formatMatrix — матрица форматов текущего семейства (или null). */

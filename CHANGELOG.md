@@ -12,7 +12,7 @@
 
 **ЧТО СДЕЛАНО.** `internal/sdbackend/model_files.go`: после успешного удаления файла вызывается существующий `dropRegistrationIfEmpty(dir)` (тот же путь, что у `/api/hf/cleanup`): если весовых файлов в каталоге не осталось, каталог переименовывается в `.unregistered-<name>` и модель уходит из реестра; файлы остаются на диске (ошибочное удаление восстановимо). Ошибка чтения/записи профиля больше не глотается — возвращается клиенту. `internal/sdbackend/model_files_test.go`: `TestDeleteModelFile_LastFileUnregistersBundle_R751` — после удаления единственного файла каталога-модели нет, есть `.unregistered-*`, реестр модель не показывает.
 
-**ПРОГОНЫ.** `go test -tags llama_stub ./internal/sdbackend/ ./cmd/sdworker/` — зелёные; живой прогон (imageworker `r261120-r752`): тестовая группа с одним файлом удалена через `DELETE .../files`, каталог переименован в `.unregistered-r751-live-test2`, `GET .../models` группу не показывает; основной стенд — три модели на месте.
+**ПРОГОНЫ.** `go test -tags llama_stub ./internal/sdbackend/ ./cmd/sdworker/` — зелёные; живой прогон (imageworker `r261120-r752`) поймал СЛЕДУЮЩИЙ дефект: каталог после снятия регистрации переименовывается корректно, но `Registry.Load` всё ещё обходил `.unregistered-*` и показывал его «сломанной» моделью — исправлено в R753.
 
 ## [0.7.492 - R751: Image — управление файлами группы (инвентарь диска, докачка, перекачка, удаление), 2026-11-25]
 
@@ -28,6 +28,12 @@
 - i18n: 31 ключ `imageModels.files_*` в ru/en. Документация: `docs/features/image-generation.ru.md` §12.3 — панель и контракт новых ручек.
 
 **ТЕСТЫ.** Новые: `internal/sdbackend/model_files_test.go` (инвентарь/диск-правда вердикта, установка+идемпотентность+replace, конфликт роли, удаление+профиль+noop+path traversal), `cmd/sdworker/handlers_model_files_test.go` (HTTP: инвентарь, докачка VAE, замена diffusion, удаление, коды отказов), `webui/tests/image-model-files-r751.test.js` (10 проверок панели и действий), расширен `image-page.test.js` (files/compat/present сохраняются). Прогоны: `scripts/run-webui-tests.js` — **171/171**; `go test -tags llama_stub ./internal/imagemodel ./internal/sdbackend ./cmd/sdworker ./internal/api ./internal/balancer` — зелёные; `i18n_dead_keys` (unused 0), `i18n_diff --strict`, `check_webui_i18n_keys.py`, `check_webui_assets.py`, `check_webui_refs.js`, `TestLintCSSAndI18nNoEmDash`, `TestR222`, R628-страж — зелёные.
+
+**ЖИВОЙ ПРОГОН (webui + imageworker `r261120-r751`, playwright, панель 18083, бэкенд `imageworker`):**
+- инвентарь `GET /api/v1/image/backends/imageworker/models` на боевых моделях: `present:true` и `diskSizeBytes` совпадают с файлами на диске (flux 4 файла, sd15 1, qwen 1);
+- тестовая группа `r751-live-test` (21 B diffusion, частичный `.download` VAE 10 B, файл вне профиля 9 B): панель «Файлы» раскрывается под строкой модели, сводка «файлов: 3 · на узле: 1 · нет: 0 · частично: 1 · вне профиля: 1», строки «на узле»/«частично (размер неизвестен)»/«вне профиля» с кнопками «Перекачать»/«Докачать»/«Удалить с узла», «Докачать недостающее (1)»;
+- «Удалить с узла» для файла вне профиля — реальный DELETE через прокси: файл удалён, сводка пересчитана («файлов: 2»), панель свернулась, ошибок консоли нет;
+- тестовая группа удалена через `POST .../models/delete`; на стенде снова ровно три боевые модели. Скриншот — `test-results/image-model-files-r751.png`.
 
 **СЛЕДУЮЩИЙ ЭТАП:** 4 — бейджи форматов (`safetensors` где движок читает, где нужен только GGUF; предупреждение про MLX-квантованные safetensors).
 

@@ -4,7 +4,7 @@
 
 **ЧТО СДЕЛАНО.** `webui/js/modules/image-models-hf.js`: `formatFamily()` использует план репозитория, а дефолт `sd15` — только если оператор сам выбрал семейство (`familyManual`) или семейство не дефолтное; иначе запрашивается консервативная матрица без семейства («safetensors diffusion — решает заголовок»). Правка в UI; правила воркера не менялись.
 
-**ПРОГОНЫ.** `scripts/run-webui-tests.js` — 172/172; `image-format-badges-r755.test.js` — 8/8; живой прогон webui `r261120-r756` — GGUF-репозиторий: все файлы зелёные, сводка консервативная; safetensors-репозиторий Comfy-Org/Qwen-Image_ComfyUI: diffusion-файлы «нужен GGUF», VAE/энкодеры «читается».
+**ПРОГОНЫ.** `scripts/run-webui-tests.js` — 172/172; `image-format-badges-r755.test.js` — 8/8; живой прогон webui `r261120-r756` — GGUF-репозиторий: все 9 файлов зелёные, сводка консервативная («safetensors diffusion — решает заголовок»); safetensors-репозиторий Comfy-Org/Qwen-Image_ComfyUI: 9 diffusion-файлов «нужен GGUF», 3 VAE/энкодера «читается»; панель файлов группы sd15 — бейдж «gguf · читается»; ошибок консоли нет.
 
 ## [0.7.495 - R755: Image — бейджи форматов (GGUF/нужен GGUF/MLX) и матрица «что движок читает», 2026-11-25]
 
@@ -17,6 +17,8 @@
 - i18n: 19 ключей `imageModels.format_*` в ru/en. Документация: `docs/features/image-generation.ru.md` §8.1 (матрица, endpoint, MLX).
 
 **ТЕСТЫ.** Новые: `internal/imagemodel/formats_test.go` (диффузия по семействам, компоненты/контейнеры, MLX-имя, unknown), `cmd/sdworker/handlers_formats_test.go` (HTTP-контракт, консервативная матрица без family, 405), `internal/api` — алиас `/formats` через прокси, `webui/tests/image-format-badges-r755.test.js` (8 проверок: resolve/бейджи/сводка/MLX, панель файлов и один запрос матрицы, использование в HF, CSS, порядок скриптов, i18n). Прогоны: `scripts/run-webui-tests.js` — **172/172**; `go test -tags llama_stub ./internal/imagemodel ./cmd/sdworker ./internal/api` — зелёные; `i18n_dead_keys` (unused 0), `i18n_diff --strict`, `check_webui_i18n_keys.py`, fieldalignment по новым файлам — чисто.
+
+**ЖИВОЙ ПРОГОН (webui `r261120-r756`, imageworker/балансер `r261120-r755`, playwright):** матрица через балансер `GET .../formats?family=qwen_image` → 200 (`safetensors/diffusion = needs_gguf`, `safetensors/vae = reads`, `gguf/* = reads`, MLX-предупреждение); GGUF-репозиторий `AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF` — 9/9 файлов с зелёным «gguf · читается»; safetensors-репозиторий `Comfy-Org/Qwen-Image_ComfyUI` — 9 diffusion-файлов с янтарным «safetensors · нужен GGUF», 3 VAE/энкодера с зелёным «safetensors · читается», строка «Форматы: GGUF - читается; safetensors diffusion - нужен GGUF; VAE/энкодеры в safetensors - читаются»; панель файлов группы sd15 — «gguf · читается»; скриншот `test-results/image-format-badges-r755.png`; ошибок консоли нет.
 
 **СЛЕДУЮЩИЕ ШАГИ:** бейджи уже отвечают на вопрос о safetensors; дальше по плану — при желании автоматический подбор GGUF-кванта вместо safetensors-диффузии и статусы форматов в «Паспорте репозитория».
 

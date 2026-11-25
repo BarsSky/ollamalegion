@@ -2150,6 +2150,45 @@ window.I18N_RU = {
   "imageModels.cart_scan_failed": "Не удалось прочитать список файлов узла: {error}",
   "imageModels.cart_extra_source": "из {repo}",
   "imageModels.cart_registry": "в реестре узла: {n} моделей",
+  // ==== R751 (2026-11-25): файлы группы на «Моделях на диске» ====
+  // Живой дефект: управлять отдельными файлами скачанной группы было нельзя -
+  // только удалить bundle целиком; недокачанный/удалённый файл виден лишь по
+  // «модель не загрузилась», а заменить квант diffusion - только перекачкой всей
+  // группы. Панель показывает состав с состоянием диска и три действия.
+  "imageModels.files_open": "Файлы",
+  "imageModels.files_open_tip": "Файлы группы: что лежит на узле, докачать/перекачать/удалить",
+  "imageModels.files_title": "Файлы группы",
+  "imageModels.files_close": "Свернуть",
+  "imageModels.files_group_path": "каталог: {path}",
+  "imageModels.files_summary": "файлов: {total} · на узле: {present} · нет: {missing} · частично: {partial}",
+  "imageModels.files_summary_extra": "вне профиля: {n}",
+  "imageModels.files_unregistered": "вне профиля",
+  "imageModels.files_unregistered_hint": "файл не попадёт в набор: удалите его или перекачайте нужный файл роли",
+  "imageModels.files_present": "на узле",
+  "imageModels.files_missing": "файла нет",
+  "imageModels.files_partial": "частично {pct}%",
+  "imageModels.files_partial_unknown": "частично (размер неизвестен)",
+  "imageModels.files_unknown": "состояние не сообщено",
+  "imageModels.files_expected_size": "ожидается {size}",
+  "imageModels.files_partial_size": "{have} из {total}",
+  "imageModels.files_download": "Докачать",
+  "imageModels.files_redownload": "Перекачать",
+  "imageModels.files_delete": "Удалить с узла",
+  "imageModels.files_download_missing": "Докачать недостающее",
+  "imageModels.files_nothing_missing": "Докачивать нечего: у всех отсутствующих файлов известен источник, файлы на узле",
+  "imageModels.files_confirm_redownload": "Перекачать {file}? Текущий файл будет удалён и скачан заново.",
+  "imageModels.files_confirm_delete": "Удалить {file} с узла? Файл будет удалён безвозвратно.",
+  "imageModels.files_deleted": "Удалено: {file} ({size})",
+  "imageModels.files_delete_failed": "Не удалось удалить {file}: {error}",
+  "imageModels.files_started": "Скачиваю {file}…",
+  "imageModels.files_progress": "{file}: {pct}%",
+  "imageModels.files_progress_failed": "Не удалось узнать прогресс: {error}",
+  "imageModels.files_done": "Готово: {file}",
+  "imageModels.files_failed": "Не удалось скачать {file}: {error}",
+  "imageModels.files_conflict": "Файл уже на узле: используйте «Перекачать», чтобы скачать заново ({error})",
+  "imageModels.files_no_source": "источник неизвестен: в profile.json нет repo — добавьте файл как компонент",
+  "imageModels.files_busy": "Дождитесь окончания текущей операции",
+  "imageModels.files_empty": "В профиле нет файлов",
   // ==== R696 (2026-11-23): липкая панель выбора и вердикт набора ====
   // Живой дефект: в репозитории 16+ файлов список уходил за кромку окна, кнопка
   // скачивания была в отдельной карточке ниже, и не было видно, что скачается

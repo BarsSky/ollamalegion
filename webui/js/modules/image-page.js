@@ -176,6 +176,30 @@
                 // Состав bundle: роли файлов + признак применённого профиля.
                 roles: rolesSummary(files),
                 files_count: files.length,
+                // R751: состав с фактическим состоянием диска нужен панели
+                // управления файлами группы (докачать/перекачать/удалить), а
+                // вердикт compat - кнопкам «чего не хватает». Раньше оба поля
+                // отбрасывались здесь, поэтому таблица «Модели на диске» никогда
+                // не показывала вердикт и кнопки компонентов R710.
+                files: files.map(function (f) {
+                    f = f || {};
+                    return {
+                        role: String(f.role || ''),
+                        repo: String(f.repo || ''),
+                        filename: String(f.filename || ''),
+                        revision: String(f.revision || ''),
+                        sizeBytes: Number(f.size_bytes || f.sizeBytes || 0),
+                        localPath: String(f.localPath || f.local_path || ''),
+                        // present отсутствует у старого воркера: «не сообщено» и
+                        // «нет файла» - разные состояния, их нельзя склеивать.
+                        present: (f.present === true || f.present === false) ? f.present : null,
+                        diskSizeBytes: Number(f.diskSizeBytes || f.disk_size_bytes || 0),
+                        partialBytes: Number(f.partialBytes || f.partial_bytes || 0),
+                        unregistered: !!f.unregistered
+                    };
+                }),
+                compat: m.compat || null,
+                notes: String(m.notes || ''),
                 bundle_path: m.bundle_path || m.bundlePath || '',
                 loaded_at: m.loaded_at || m.loadedAt || '',
                 disabled: !!m.disabled
@@ -315,6 +339,10 @@
         backends: [],
         selectedBackendId: '',
         models: [],
+        // R751: имя модели, у которой РАСКРЫТА панель файлов группы. Пусто =
+        // панель закрыта; раскрыта всегда максимум одна (как карточка файлов на
+        // вкладке HF), иначе таблица превращалась бы в список простыней.
+        openFilesModel: '',
         loadPoll: null,         // { timer, name }
         notifiedApiMissing: false,
         // R710: каталог компонентов по семейству (family → ответ API) и флаги
@@ -890,14 +918,24 @@
                 if (missing) compatHtml += componentButtonsFor(m);
             }
             var actions = '';
+            // R751: панель файлов группы доступна в любом состоянии модели:
+            // смотреть состав и состояние диска можно и у загруженной (менять
+            // файлы ей всё равно не даст сервер, но кнопки подтверждения это
+            // объясняют), а «не хватает VAE» видно именно до загрузки.
+            actions = '<button class="btn btn-secondary btn-sm" data-img-action="model-files" data-model="' +
+                escapeHtml(m.name) + '" title="' +
+                escapeHtml(t('imageModels.files_open_tip', 'Файлы группы: что лежит на узле, докачать/перекачать/удалить')) + '">' +
+                '<i class="fas fa-folder-tree"></i> ' +
+                escapeHtml(t('imageModels.files_open', 'Файлы')) +
+                (state.openFilesModel === m.name ? ' ▴' : '') + '</button>';
             if (isBusy) {
-                actions = '<span style="font-size:var(--font-size-xs);color:var(--text-muted);"><i class="fas fa-circle-notch fa-spin"></i> ' +
+                actions += ' <span style="font-size:var(--font-size-xs);color:var(--text-muted);"><i class="fas fa-circle-notch fa-spin"></i> ' +
                     escapeHtml(t('gguf.loading_indicator', 'Loading')) + '</span>';
             } else if (isLoaded) {
-                actions = '<button class="btn btn-secondary btn-sm" data-img-action="unload-model" data-model="' + escapeHtml(m.name) + '">' +
+                actions += ' <button class="btn btn-secondary btn-sm" data-img-action="unload-model" data-model="' + escapeHtml(m.name) + '">' +
                     escapeHtml(t('gguf.unload_model', 'Unload')) + '</button>';
             } else {
-                actions = '<button class="btn btn-primary btn-sm" data-img-action="load-model" data-model="' + escapeHtml(m.name) + '"' +
+                actions += ' <button class="btn btn-primary btn-sm" data-img-action="load-model" data-model="' + escapeHtml(m.name) + '"' +
                     (force ? ' data-force="1" title="' + escapeHtml(t('imageModels.compat_force_tip',
                         'imageworker считает набор несовместимым: {reason}. Нажмите, чтобы попробовать всё равно.',
                         { reason: compatTip })) + '"' : '') + '>' +
@@ -916,7 +954,7 @@
             var roles = (m.roles && m.roles.length)
                 ? m.roles.map(function (r) { return escapeHtml(t('imageModels.role_' + r, r)); }).join(', ')
                 : escapeHtml(t('imageModels.roles_unknown', 'нет данных'));
-            return '<tr>' +
+            var row = '<tr>' +
                 '<td><strong>' + escapeHtml(m.name) + '</strong>' + (m.disabled ? ' <span class="badge">disabled</span>' : '') +
                     compatHtml + '</td>' +
                 '<td>' + escapeHtml(t(stateLabelKey(m.state), m.state)) + '</td>' +
@@ -927,7 +965,33 @@
                 '<td>' + (m.vram_estimate_mb ? escapeHtml(formatBytes(m.vram_estimate_mb * 1024 * 1024)) : '-') + '</td>' +
                 '<td>' + actions + '</td>' +
                 '</tr>';
+            // R751: раскрытая панель файлов — отдельной строкой под моделью,
+            // чтобы не сжимать остальные колонки таблицы.
+            if (state.openFilesModel === m.name) {
+                row += '<tr class="im-files-row"><td colspan="8">' +
+                    '<div class="im-model-files-host" id="imModelFilesHost" data-model="' + escapeHtml(m.name) + '"></div>' +
+                    '</td></tr>';
+            }
+            return row;
         }).join('');
+        // R751: панель файлов рисует отдельный модуль (R628: не растить этот
+        // файл). Модель могла исчезнуть (удалили/сменили бэкенд) — закрываем.
+        if (state.openFilesModel) {
+            var openModel = null;
+            state.models.forEach(function (x) { if (x.name === state.openFilesModel) openModel = x; });
+            if (!openModel) {
+                state.openFilesModel = '';
+                if (window.ImageModelFiles && typeof window.ImageModelFiles.close === 'function') {
+                    window.ImageModelFiles.close();
+                }
+            } else if (window.ImageModelFiles && typeof window.ImageModelFiles.render === 'function') {
+                window.ImageModelFiles.render({
+                    backendId: state.selectedBackendId,
+                    model: openModel,
+                    hostId: 'imModelFilesHost'
+                });
+            }
+        }
     }
 
     // =====================================================================
@@ -1202,6 +1266,20 @@
         var actionEl = target && target.closest ? target.closest('[data-img-action]') : null;
         if (!actionEl) return;
         var action = actionEl.getAttribute('data-img-action');
+        if (action === 'model-files') {
+            // R751: раскрыть/свернуть панель файлов группы. Открыта максимум
+            // одна: при переключении старую закрываем, чтобы не крутились её
+            // таймеры прогресса.
+            var filesModel = actionEl.getAttribute('data-model') || '';
+            if (!filesModel) return;
+            var willOpen = state.openFilesModel !== filesModel;
+            if (!willOpen && window.ImageModelFiles && typeof window.ImageModelFiles.close === 'function') {
+                window.ImageModelFiles.close();
+            }
+            state.openFilesModel = willOpen ? filesModel : '';
+            renderModelsTable();
+            return;
+        }
         if (action === 'load-model') {
             // data-force=1 — «Загрузить всё равно»: вердикт compat несовместим,
             // оператор осознанно пробует (R696).
@@ -1351,7 +1429,13 @@
             unloadModel: onUnloadModel,
             deleteModel: onDeleteModel,
             renderBackendParamsState: renderBackendParamsState,
-            stopPolling: stopLoadPolling
+            stopPolling: stopLoadPolling,
+            // R751: панель файлов группы (image-model-files.js) просит страницу
+            // свернуть её без сетевого refresh — перерисовываем только таблицу.
+            closeModelFiles: function () {
+                state.openFilesModel = '';
+                renderModelsTable();
+            }
         }
     };
 })();

@@ -93,6 +93,23 @@ type ImageModelFile struct {
 	SizeBytes int64  `json:"sizeBytes,omitempty"` // для прогресса/оценки VRAM (0 = неизвестно)
 	// LocalPath — путь к скачанному файлу (заполняется после bundle-загрузки).
 	LocalPath string `json:"localPath,omitempty"`
+
+	// ==== R751 (2026-11-25): состояние файла на диске (ТОЛЬКО для ответа API) ====
+	//
+	// Эти поля НЕ хранятся в profile.json: их считает реестр при каждом чтении
+	// (internal/sdbackend/model_files.go) по фактическому содержимому каталога
+	// bundle. Present — указатель, а не bool, чтобы «файла нет» уходило в JSON
+	// явным present:false, а не исчезало из ответа (UI обязан отличать «нет
+	// файла» от «поле не прислали»).
+	//
+	// ЗАЧЕМ. До R751 профиль считался правдой о диске: удалённый вручную файл
+	// оставался в profile.json, вердикт совместимости отвечал «набор полный», а
+	// движок падал на старте. Теперь UI видит по каждому файлу «есть/нет/качается»
+	// и может докачать или перекачать его, не гадая.
+	Present       *bool  `json:"present,omitempty"`
+	DiskSizeBytes int64  `json:"diskSizeBytes,omitempty"`
+	PartialBytes  int64  `json:"partialBytes,omitempty"`
+	Unregistered  bool   `json:"unregistered,omitempty"`
 }
 
 // ImageGenDefaults — дефолты генерации для модели (пользователь/пресет).

@@ -2145,6 +2145,169 @@
 }
 
 /* ============================================================
+   R751 (2026-11-25): панель файлов image-группы на «Моделях на диске».
+   Живой дефект: у оператора не было управления файлами ВНУТРИ группы (только
+   «удалить bundle целиком»), а недокачанный/удалённый файл был виден лишь по
+   «модель не загрузилась». Строки панели: роль, имя, размер, состояние, кнопки.
+   Цвета - только токенами темы; горизонтальная прокрутка не нужна (сетка).
+   ============================================================ */
+.im-files-row > td {
+    padding: 0;
+    background: var(--bg-secondary, var(--bg-primary));
+}
+
+.imf-panel {
+    padding: 10px 12px 12px;
+    border-top: 1px solid var(--border);
+}
+
+.imf-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px 16px;
+    margin-bottom: 6px;
+}
+
+.imf-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+}
+
+.imf-meta,
+.imf-path {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+
+.imf-path {
+    font-family: var(--font-family-mono);
+    word-break: break-all;
+}
+
+.imf-close {
+    margin-left: auto;
+}
+
+.imf-compat {
+    margin-bottom: 6px;
+    font-size: var(--font-size-xs);
+    white-space: normal;
+}
+
+.imf-compat.ok {
+    color: var(--success, #5cb85c);
+}
+
+.imf-compat.bad {
+    color: var(--danger, #d9534f);
+}
+
+.imf-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary, var(--text-muted));
+}
+
+.imf-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.imf-row {
+    display: grid;
+    grid-template-columns: minmax(90px, 140px) minmax(0, 1fr) auto auto auto;
+    gap: 8px;
+    align-items: center;
+    padding: 5px 8px;
+    font-size: var(--font-size-xs);
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.imf-role {
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.imf-name {
+    font-family: var(--font-family-mono);
+    word-break: break-all;
+}
+
+.imf-size {
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.imf-state {
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.imf-state.ok {
+    color: var(--success, #5cb85c);
+}
+
+.imf-state.warn {
+    color: var(--warning, #e0a030);
+}
+
+.imf-state.bad {
+    color: var(--danger, #d9534f);
+}
+
+.imf-state.unknown {
+    color: var(--text-muted);
+}
+
+.imf-actions {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.imf-hint {
+    margin-top: 2px;
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    white-space: normal;
+}
+
+.imf-status {
+    margin-top: 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+
+.imf-empty {
+    padding: 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+}
+
+@media (max-width: 1100px) {
+    .imf-row {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .imf-role,
+    .imf-actions {
+        grid-column: 1 / -1;
+    }
+}
+
+/* ============================================================
    R749 (2026-11-25): корзина загрузки на верху вкладки HuggingFace.
    Живой дефект: имя bundle, семейство, токен и кнопка скачивания жили в
    ОТДЕЛЬНОЙ карточке НИЖЕ списка файлов, а вверху были только галочки.

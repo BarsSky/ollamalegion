@@ -89,6 +89,34 @@ check('normalizeModels: альтернативные написания (id/size
     assert.deepStrictEqual(P.normalizeModels({}), []);
 });
 
+// R751: files и compat нельзя терять — на них работают вердикт в строке модели,
+// кнопки R710 и панель файлов группы (докачать/перекачать/удалить).
+check('R751: normalizeModels сохраняет состав файлов с состоянием диска и вердикт', function () {
+    const list = P.normalizeModels({
+        models: [{
+            name: 'qwen-edit-2511', family: 'qwen_image',
+            compat: { verdict: 'incomplete', runnable: false, missing: ['VAE'] },
+            files: [
+                { role: 'diffusion', repo: 'acme/qwen', filename: 'a.gguf', present: true, diskSizeBytes: 100 },
+                { role: 'vae', repo: 'acme/qwen', filename: 'vae.safetensors', present: false, partialBytes: 10 },
+                { role: '', unregistered: true, filename: 'old.gguf', present: true, diskSizeBytes: 7 },
+            ],
+        }],
+    });
+    assert.strictEqual(list.length, 1);
+    const m = list[0];
+    assert.ok(m.compat && m.compat.verdict === 'incomplete', 'compat потерян');
+    assert.strictEqual(m.files.length, 3, 'files потеряны');
+    assert.strictEqual(m.files[0].present, true, 'present не сохранён');
+    assert.strictEqual(m.files[0].diskSizeBytes, 100, 'diskSizeBytes не сохранён');
+    assert.strictEqual(m.files[1].present, false, 'present=false потерян');
+    assert.strictEqual(m.files[1].partialBytes, 10, 'partialBytes не сохранён');
+    assert.strictEqual(m.files[2].unregistered, true, 'unregistered не сохранён');
+    // Старый воркер не присылает present: это «не сообщено», а не «файла нет».
+    const legacy = P.normalizeModels([{ name: 'x', files: [{ role: 'vae', filename: 'v.safetensors' }] }]);
+    assert.strictEqual(legacy[0].files[0].present, null, 'отсутствие present склеено с false');
+});
+
 // --- 3. normalizeBackends --------------------------------------------------
 check('normalizeBackends: /api/v1/image/backends — берём все, читаем imagePort', function () {
     const list = P.normalizeBackends({ backends: [{ id: 'img-1', name: 'GPU image', host: '10.0.0.5', imagePort: 18093, status: 'healthy' }] }, false);

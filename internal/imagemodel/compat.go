@@ -258,7 +258,7 @@ func BuildBundleCompat(p *types.ImageModelProfile, bundleDir string) *BundleComp
 		}
 		probes[f.Filename] = res
 	}
-	return VerifyBundleProbes(p, probes, probeErrors)
+	return verifyBundleProbes(p, probes, probeErrors, bundleDir)
 }
 
 // VerifyBundleProbes — вердикт по УЖЕ снятым заголовкам файлов.
@@ -267,7 +267,18 @@ func BuildBundleCompat(p *types.ImageModelProfile, bundleDir string) *BundleComp
 // воркер читает их заголовки Range-запросами к HF (файлов на диске ещё нет) и
 // отвечает тем же вердиктом, что потом покажет вкладка «Модели». probes/errors
 // ключуются Filename файла в профиле.
+//
+// R751: у этой функции НЕТ каталога bundle, поэтому «найденность» роли считается
+// по профилю (набора ещё нет на диске). Вердикт по СКАЧАННОМУ набору считает
+// BuildBundleCompat и обязан учитывать фактическое наличие файлов — иначе
+// удалённый файл оставался бы в вердикте «найден».
 func VerifyBundleProbes(p *types.ImageModelProfile, probes map[string]*HFProbeResult, probeErrors map[string]string) *BundleCompat {
+	return verifyBundleProbes(p, probes, probeErrors, "")
+}
+
+// verifyBundleProbes — общая реализация; bundleDir=="" означает «набора на диске
+// ещё нет, наличие файлов не проверяем».
+func verifyBundleProbes(p *types.ImageModelProfile, probes map[string]*HFProbeResult, probeErrors map[string]string, bundleDir string) *BundleCompat {
 	out := &BundleCompat{CheckedAt: time.Now().UTC()}
 	if p == nil {
 		out.Verdict = CompatUnknown
@@ -344,12 +355,12 @@ func VerifyBundleProbes(p *types.ImageModelProfile, probes map[string]*HFProbeRe
 		out.Runnable = false
 		out.Reason = reason
 		out.Missing = compatMissingForHardFailure(out.Files, dit)
-		out.Roles = compatRoleCompleteness(p, effectiveFamily, dit)
+		out.Roles = compatRoleCompleteness(p, effectiveFamily, dit, bundleDir)
 		return out
 	}
 
 	// 4) Комплектность ролей.
-	out.Roles = compatRoleCompleteness(p, effectiveFamily, dit)
+	out.Roles = compatRoleCompleteness(p, effectiveFamily, dit, bundleDir)
 	for _, r := range out.Roles {
 		if r.Required && !r.Found {
 			out.Missing = append(out.Missing, r.Label)
@@ -452,14 +463,41 @@ func compatMissingForHardFailure(files []CompatFile, dit bool) []string {
 	return out
 }
 
+// imageFilePresent — есть ли файл профиля на диске (R751).
+//
+// LocalPath заполняется реестром при чтении; если его нет (профиль только что
+// прочитан из profile.json), путь собирается из каталога bundle и Filename.
+// Ошибка stat = файла нет: «не читается» и «отсутствует» для вердикта одно и то
+// же (движок не получит файл ни в одном случае).
+func imageFilePresent(bundleDir string, f types.ImageModelFile) bool {
+	path := f.LocalPath
+	if path == "" && f.Filename != "" {
+		path = filepath.Join(bundleDir, filepath.FromSlash(f.Filename))
+	}
+	if path == "" {
+		return false
+	}
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir()
+}
+
 // compatRoleCompleteness — какие роли нужны семейству и что найдено.
-func compatRoleCompleteness(p *types.ImageModelProfile, family string, dit bool) []CompatRole {
+//
+// R751: «найдено» = файл роли ЕСТЬ НА ДИСКЕ, а не просто записан в профиле.
+// Живой дефект: файл удалили (в том числе новый UI «Удалить с узла» или вручную),
+// profile.json продолжал перечислять его, вердикт отвечал «набор полный», и
+// загрузка падала уже на движке. bundleDir=="" (проверка ДО скачивания) сохраняет
+// прежнее поведение: файлов на диске ещё нет, судим по профилю.
+func compatRoleCompleteness(p *types.ImageModelProfile, family string, dit bool, bundleDir string) []CompatRole {
 	found := map[string][]string{}
 	for _, f := range p.Files {
 		if f.Role == "" || f.Filename == "" {
 			continue
 		}
 		if f.Role == types.ImageFileRoleLora {
+			continue
+		}
+		if bundleDir != "" && !imageFilePresent(bundleDir, f) {
 			continue
 		}
 		found[f.Role] = append(found[f.Role], f.Filename)

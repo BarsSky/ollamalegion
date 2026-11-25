@@ -670,9 +670,12 @@ func (r *Registry) Info(p types.ImageModelProfile, state, lastErr string, loaded
 		Disabled:       p.Disabled,
 		Error:          lastErr,
 		Defaults:       p.Defaults,
-		Files:          p.Files,
-		Notes:          p.Notes,
-		Compat:         r.Compat(p.Name),
+		// R751: состав с фактическим состоянием на диске (present/partial и файлы
+		// вне профиля). Реестр — единственное место, которое знает и профиль, и
+		// каталог, поэтому инвентарь собирается здесь, а не в HTTP-слое.
+		Files: modelFilesWithDiskState(p.Files, p.BundleDir(r.modelsDir)),
+		Notes: p.Notes,
+		Compat: r.Compat(p.Name),
 	}
 	if !loadedAt.IsZero() {
 		info.LoadedAt = loadedAt.UTC().Format(time.RFC3339)

@@ -130,7 +130,18 @@ func (a *App) handleModelComponents(w http.ResponseWriter, r *http.Request) {
 	// "/api/image/models/", и для чужих подпутей (опечатка клиента) честный
 	// ответ — 404 «такого пути нет», а не 405 «не тот метод».
 	name, rest, ok := splitModelScopedPath(r.URL.Path)
-	if !ok || name == "" || rest != "components" {
+	if !ok || name == "" {
+		writeJSONError(w, http.StatusNotFound, "unknown_model_path",
+			"expected POST /api/image/models/{name}/components")
+		return
+	}
+	// R751: префикс "/api/image/models/" обслуживает и файловые операции группы
+	// (POST/DELETE .../files) — отдельный mux-префикс невозможен.
+	if rest == "files" {
+		a.handleModelFiles(w, r, name)
+		return
+	}
+	if rest != "components" {
 		writeJSONError(w, http.StatusNotFound, "unknown_model_path",
 			"expected POST /api/image/models/{name}/components")
 		return
@@ -226,9 +237,11 @@ func writeComponentError(w http.ResponseWriter, err error) {
 	}
 	status := http.StatusBadRequest
 	switch ce.Code {
-	case sdbackend.CompErrRolePresent, sdbackend.CompErrFileConflicts:
+	case sdbackend.CompErrRolePresent, sdbackend.CompErrFileConflicts,
+		sdbackend.ModelFileErrPresent, sdbackend.ModelFileErrRoleConflict:
 		status = http.StatusConflict
-	case sdbackend.CompErrBundleNotFound, sdbackend.CompErrFileNotFound:
+	case sdbackend.CompErrBundleNotFound, sdbackend.CompErrFileNotFound,
+		sdbackend.ModelFileErrNotFound:
 		status = http.StatusNotFound
 	case sdbackend.CompErrTooLarge:
 		status = http.StatusRequestEntityTooLarge
